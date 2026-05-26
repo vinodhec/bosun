@@ -44,7 +44,7 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
 
 // Resume the SAME session with more changes. Allowed only while the fix is complete and
 // NOT yet deployed (PR not merged). Cost accrues on the same session; pollSessions bills
-// the incremental round. Revisions are charged actual × 2 with NO ₹75 floor.
+// the incremental round. Revisions are charged actual × 2.5 with NO ₹75 floor.
 export const reviseSession = onCall(
   { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
   async (request) => {

@@ -14,7 +14,7 @@ const BETA = 'managed-agents-2026-04-01';
  *
  * Returns { sessionId }. The `pollSessions` scheduled function finalizes + bills.
  */
-export async function startFixSession({ prompt, repoUrl, githubToken, vaultId, agentId }) {
+export async function startFixSession({ prompt, images = [], repoUrl, githubToken, vaultId, agentId }) {
   const resolvedAgent = agentId || process.env.ANTHROPIC_MANAGED_AGENT_ID;
   if (!resolvedAgent) throw new Error('ANTHROPIC_MANAGED_AGENT_ID not configured');
   const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID;
@@ -39,8 +39,20 @@ export async function startFixSession({ prompt, repoUrl, githubToken, vaultId, a
     ],
   });
 
+  // The owner may attach screenshots; append them as image blocks after the text so the
+  // agent sees exactly what the user sees. buildFixPrompt notes their presence.
+  const imageBlocks = (images || []).map((img) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: img.mediaType, data: img.data },
+  }));
+
   await client.beta.sessions.events.send(session.id, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text: buildFixPrompt(prompt) }] }],
+    events: [
+      {
+        type: 'user.message',
+        content: [{ type: 'text', text: buildFixPrompt(prompt, imageBlocks.length) }, ...imageBlocks],
+      },
+    ],
   });
 
   return { sessionId: session.id };

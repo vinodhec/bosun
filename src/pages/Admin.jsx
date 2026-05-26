@@ -26,7 +26,7 @@ export default function Admin() {
   const [busy, setBusy] = useState(false);
   const [newOrg, setNewOrg] = useState('');
   const [credit, setCredit] = useState({ orgId: '', amount: '' });
-  const [assign, setAssign] = useState({ uid: '', orgId: '' });
+  const [assign, setAssign] = useState({ email: '', orgId: '' });
   const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '' });
   const [test, setTest] = useState({ orgId: '', prompt: '' });
   const [taskId, setTaskId] = useState(null);
@@ -126,9 +126,9 @@ export default function Admin() {
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Assign user to organisation</h2>
-          <input className={field} value={assign.uid} onChange={(e) => setAssign({ ...assign, uid: e.target.value })} placeholder="user uid" />
+          <input className={field} type="email" value={assign.email} onChange={(e) => setAssign({ ...assign, email: e.target.value })} placeholder="user email" />
           <input className={field} value={assign.orgId} onChange={(e) => setAssign({ ...assign, orgId: e.target.value })} placeholder="orgId" />
-          <button className={btn} disabled={busy || !assign.uid || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ uid: assign.uid.trim(), orgId: assign.orgId.trim() }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
+          <button className={btn} disabled={busy || !assign.email || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ email: assign.email.trim(), orgId: assign.orgId.trim() }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
         </section>
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
@@ -192,9 +192,8 @@ export default function Admin() {
                 </div>
                 {t.finalCharge != null && (
                   <div className="mt-0.5 text-xs text-ink-soft">
-                    cost {t.actualCostInr != null ? formatINR(Math.round(t.actualCostInr)) : '—'}
-                    {' · '}charged <span className="font-semibold text-ink">{formatINR(t.finalCharge)}</span>
-                    {t.actualCostInr != null ? ` · margin ${formatINR(Math.round(t.finalCharge - t.actualCostInr))}` : ''}
+                    {/* Single figure: the charged amount already includes our 2.5× margin. */}
+                    cost <span className="font-semibold text-ink">{formatINR(t.finalCharge)}</span>
                   </div>
                 )}
                 {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}

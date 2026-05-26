@@ -5,7 +5,7 @@
  *
  * Charge formula for a COMPLETED task:
  *   actual_cost_inr = actual_cost_usd * rate
- *   final_charge    = max( ceil(actual_cost_inr * 2), 75 )   // whole rupees
+ *   final_charge    = max( ceil(actual_cost_inr * 2.5), 75 )   // whole rupees
  *
  * Rules:
  *   - Never charge a FAILED task.
@@ -16,8 +16,8 @@ import { usdToInr, DEFAULT_USD_TO_INR } from './currency.js';
 
 /** Minimum charge for any completed fix (INR). */
 export const MIN_CHARGE_INR = 75;
-/** Markup multiplier applied to actual API cost. */
-export const MARKUP_MULTIPLIER = 2;
+/** Markup multiplier applied to actual API cost. (2× base + 25% = 2.5×) */
+export const MARKUP_MULTIPLIER = 2.5;
 
 /**
  * Canonical charge for a completed task.
@@ -65,14 +65,14 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * friendly range shown to the user. The cap is chosen so the true max chargeable
  * (maxChargeForBudget) is always <= the shown maxInr, so "never charged more than
  * the maximum shown" always holds.
- *   simple : cap 0.45 -> true max ₹75  (shown 75–150) — covered by the ₹75 free credit
- *   medium : cap 1.50 -> true max ₹249 (shown 150–300)
- *   complex: cap 3.00 -> true max ₹498 (shown 300–600)
+ *   simple : cap 0.45 -> true max ₹94  (shown 75–150) — covered by the ₹75 free credit
+ *   medium : cap 1.50 -> true max ₹312 (shown 150–375)
+ *   complex: cap 3.00 -> true max ₹623 (shown 300–650)
  */
 export const COMPLEXITY_TIERS = {
   simple:  { maxBudgetUsd: 0.45, minInr: 75,  maxInr: 150 },
-  medium:  { maxBudgetUsd: 1.50, minInr: 150, maxInr: 300 },
-  complex: { maxBudgetUsd: 3.00, minInr: 300, maxInr: 600 },
+  medium:  { maxBudgetUsd: 1.50, minInr: 150, maxInr: 375 },
+  complex: { maxBudgetUsd: 3.00, minInr: 300, maxInr: 650 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
@@ -94,8 +94,8 @@ export function requiredBalanceFor(complexity, opts) {
  *   'unresolved' — same problem still not fixed (we fell short)
  *   'new_scope'  — a new or expanded request
  *
- * Every round is charged at actual × 2. The ₹75 MINIMUM applies to 'initial' and
- * 'new_scope'. A fair revision ('unresolved', our shortfall) is charged at actual × 2
+ * Every round is charged at actual × 2.5. The ₹75 MINIMUM applies to 'initial' and
+ * 'new_scope'. A fair revision ('unresolved', our shortfall) is charged at actual × 2.5
  * with NO floor — the customer covers the real cost of the re-fix but isn't hit with
  * the minimum again.
  */

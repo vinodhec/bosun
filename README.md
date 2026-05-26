@@ -7,12 +7,13 @@ Describe what's broken → AI fixes it → download the fixed files. Pay-as-you-
 
 ```
 actual_cost_inr = actual_cost_usd × rate          (rate is backend-authoritative)
-final_charge    = max( ceil(actual_cost_inr × 2), 75 )   // whole rupees, min ₹75
+final_charge    = max( ceil(actual_cost_inr × 2.5), 75 )   // whole rupees, min ₹75
 ```
 
+- The markup multiplier is **2.5×** (2× base + an extra 25% margin).
 - The user is charged **only on success**, in an **atomic + idempotent** Firestore transaction.
-- The displayed estimate (₹75–₹150) is derived from the agent's hard budget cap
-  (`AGENT_MAX_BUDGET_USD=0.90` → max charge ₹150) so the quote can never drift from reality.
+- The displayed estimate (₹75–₹187) is derived from the agent's hard budget cap
+  (`AGENT_MAX_BUDGET_USD=0.90` → max charge ₹187) so the quote can never drift from reality.
 - New users get **₹75 free credit** on signup (one minimum fix).
 
 ## Architecture

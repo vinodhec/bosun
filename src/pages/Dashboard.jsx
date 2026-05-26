@@ -4,6 +4,7 @@ import { useOrg } from '../hooks/useOrg.js';
 import { createTask, listMySessions, reviseSession } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import { formatINR } from '@shared/currency.js';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, ACCEPTED_TYPES, readImageAttachment, imageFilesFrom } from '../utils/images.js';
 
 const STATUS = {
   queued: 'Starting…',
@@ -27,6 +28,9 @@ export default function Dashboard() {
   const { user } = useAuth();
   const org = useOrg(user);
   const [problem, setProblem] = useState('');
+  const [images, setImages] = useState([]); // pasted/dropped screenshots, max MAX_IMAGES
+  const [imgErr, setImgErr] = useState('');
+  const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
@@ -57,12 +61,44 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [user, refresh]);
 
+  // Add pasted/dropped screenshots, respecting the MAX_IMAGES cap and size/type limits.
+  const addFiles = useCallback(async (files) => {
+    if (!files?.length) return;
+    setImgErr('');
+    const slots = MAX_IMAGES - images.length;
+    if (slots <= 0) { setImgErr(`You can attach up to ${MAX_IMAGES} screenshots.`); return; }
+    const accepted = [];
+    for (const f of files.slice(0, slots)) {
+      if (!ACCEPTED_TYPES.includes(f.type)) { setImgErr('Only PNG, JPG, WEBP or GIF images.'); continue; }
+      if (f.size > MAX_IMAGE_BYTES) { setImgErr('Each screenshot must be under 10 MB.'); continue; }
+      try { accepted.push(await readImageAttachment(f)); }
+      catch { setImgErr('Could not read that image.'); }
+    }
+    if (files.length > slots) setImgErr(`You can attach up to ${MAX_IMAGES} screenshots.`);
+    if (accepted.length) setImages((prev) => [...prev, ...accepted].slice(0, MAX_IMAGES));
+  }, [images.length]);
+
+  const onPaste = useCallback((e) => {
+    const files = imageFilesFrom(e.clipboardData);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  }, [addFiles]);
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault(); setDragging(false);
+    addFiles(imageFilesFrom(e.dataTransfer));
+  }, [addFiles]);
+
+  const removeImage = (id) => setImages((prev) => prev.filter((i) => i.id !== id));
+
   const onFix = async () => {
     if (!problem.trim()) return;
     setBusy(true); setErr('');
     try {
-      await createTask({ prompt: problem.trim() });
-      setProblem('');
+      await createTask({
+        prompt: problem.trim(),
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
+      setProblem(''); setImages([]); setImgErr('');
       await refresh();
     } catch (e) {
       setErr(friendlyError(e));
@@ -88,13 +124,42 @@ export default function Dashboard() {
               Connected: <span className="font-medium text-ink">{org.github.repoFullName}</span>
             </p>
           )}
-          <textarea
-            value={problem}
-            onChange={(e) => setProblem(e.target.value)}
-            rows={3}
-            placeholder="Example: My menu disappears on mobile phone"
-            className="mt-4 w-full resize-none rounded-xl border border-line px-4 py-3 outline-none focus:border-brand-500"
-          />
+          <div
+            onDrop={onDrop}
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            className={`mt-4 rounded-xl border ${dragging ? 'border-brand-500 ring-1 ring-brand-500' : 'border-line'}`}
+          >
+            <textarea
+              value={problem}
+              onChange={(e) => setProblem(e.target.value)}
+              onPaste={onPaste}
+              rows={3}
+              placeholder="Example: My menu disappears on mobile phone"
+              className="w-full resize-none rounded-t-xl bg-transparent px-4 py-3 outline-none"
+            />
+            {images.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-4 pb-3">
+                {images.map((img) => (
+                  <div key={img.id} className="relative">
+                    <img src={img.dataUrl} alt="screenshot" className="h-16 w-16 rounded-lg border border-line object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => removeImage(img.id)}
+                      aria-label="Remove screenshot"
+                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-xs text-white shadow"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <p className="mt-1.5 text-xs text-ink-soft">
+            📎 Paste a screenshot (Ctrl/⌘+V) or drag one in — up to {MAX_IMAGES}. It helps us see exactly what’s wrong.
+          </p>
+          {imgErr && <p className="mt-1 text-sm text-bad">{imgErr}</p>}
           {err && <p className="mt-2 text-sm text-bad">{err}</p>}
           <button
             onClick={onFix}
@@ -104,7 +169,7 @@ export default function Dashboard() {
             {busy ? 'Starting…' : 'Fix My Website →'}
           </button>
           <p className="mt-2 text-xs text-ink-soft">
-            You’re only charged after the fix is done — never more than ₹498.
+            You’re only charged after the fix is done.
           </p>
         </section>
 

@@ -67,15 +67,22 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
-  const uid = String(request.data?.uid ?? '');
+  const email = String(request.data?.email ?? '').trim().toLowerCase();
   const orgId = String(request.data?.orgId ?? '');
-  if (!uid || !orgId) throw new HttpsError('invalid-argument', 'uid and orgId required.');
+  if (!email || !orgId) throw new HttpsError('invalid-argument', 'email and orgId required.');
   const db = getFirestore();
   if (!(await db.collection('organisations').doc(orgId).get()).exists) {
     throw new HttpsError('not-found', 'Organisation not found.');
   }
+  // Resolve the email to a Firebase Auth uid (the user must have signed in at least once).
+  let uid;
+  try {
+    ({ uid } = await getAuth().getUserByEmail(email));
+  } catch {
+    throw new HttpsError('not-found', 'No user with that email (have they signed in yet?).');
+  }
   await db.collection('users').doc(uid).set({ orgId }, { merge: true });
   // Custom claim lets security rules + the app scope reads to the user's org.
   await getAuth().setCustomUserClaims(uid, { orgId });
-  return { uid, orgId };
+  return { uid, email, orgId };
 });

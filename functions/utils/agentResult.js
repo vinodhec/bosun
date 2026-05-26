@@ -49,9 +49,15 @@ export function sessionCostUsd(session) {
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
  */
-export function buildFixPrompt(problem) {
+export function buildFixPrompt(problem, imageCount = 0) {
+  const screenshotNote =
+    imageCount > 0
+      ? `The owner also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} showing the problem — ` +
+        `look at the image${imageCount > 1 ? 's' : ''} to understand exactly what they mean.\n\n`
+      : '';
   return (
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
+    screenshotNote +
     `Investigate the repo at /workspace/repo, make the smallest safe change that resolves it, ` +
     `commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
