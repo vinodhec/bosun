@@ -1,0 +1,19 @@
+{
+  "name": "bosun-functions",
+  "description": "Cloud Functions for Bosun",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "sync": "bash ../scripts/sync-shared.sh",
+    "serve": "npm run sync && firebase emulators:start --only functions,firestore,auth",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "firebase-admin": "^13.0.2",
+    "firebase-functions": "^6.3.0"
+  }
+}

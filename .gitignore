@@ -1,0 +1,27 @@
+# deps
+node_modules/
+functions/node_modules/
+
+# env / secrets
+.env
+.env.local
+.env.*.local
+functions/.env
+functions/.env.*
+
+# build output
+dist/
+functions/lib/
+
+# generated: shared logic copied into functions at predeploy
+functions/shared/
+
+# firebase
+.firebase/
+*-debug.log
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# os
+.DS_Store

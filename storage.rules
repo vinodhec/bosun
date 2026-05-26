@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Storage holds two things:
+//   uploads/{userId}/...  — the website files a user submits for a fix
+//   results/{userId}/...  — the fixed files they download
+// A user may upload to their own folder and read their own results.
+// Result files are WRITTEN by the backend (Admin SDK) after a successful fix.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    match /uploads/{userId}/{allPaths=**} {
+      allow read:  if isOwner(userId);
+      // Limit uploads to <= 25 MB; tighten content types as needed.
+      allow write: if isOwner(userId) && request.resource.size < 25 * 1024 * 1024;
+    }
+
+    match /results/{userId}/{allPaths=**} {
+      allow read:  if isOwner(userId);
+      allow write: if false; // backend only
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

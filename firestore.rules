@@ -1,0 +1,65 @@
+rules_version = '2';
+
+// Website-Fixer security rules.
+// CRITICAL: money-bearing fields (balance, cost, charge) are written ONLY by the
+// Cloud Functions Admin SDK, which bypasses these rules. Clients can READ their own
+// data but can NEVER write balances, tasks, or transactions directly. This prevents
+// a user from setting their own balance or forging a task's charged amount.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // User profile — read your own; all writes are backend-only.
+    match /users/{userId} {
+      allow read:  if isOwner(userId);
+      allow write: if false;
+    }
+
+    // Organisation (holds the credit balance). Readable by members — scoped via the
+    // `orgId` custom claim the operator sets when assigning a user. Writes are
+    // backend-only (admin callables + billing).
+    match /organisations/{orgId} {
+      allow read:  if isSignedIn() && request.auth.token.orgId == orgId;
+      allow write: if false;
+    }
+
+    // Org secrets (the operator-provisioned GitHub token). BACKEND-ONLY — clients can
+    // neither read nor write. Functions reach it via the Admin SDK (bypasses rules).
+    match /orgSecrets/{orgId} {
+      allow read, write: if false;
+    }
+
+    // Tasks — owner-read; writes backend-only. The CUSTOMER UI never reads this directly:
+    // it uses the listMySessions callable, which returns only safe fields (no PR link,
+    // model, or raw API cost). Direct read stays scoped to the owner for the operator's
+    // live-status views (Admin / Running / Result).
+    match /tasks/{taskId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
+    match /transactions/{txnId} {
+      allow read:  if isSignedIn() && request.auth.token.orgId == resource.data.orgId;
+      allow write: if false;
+    }
+
+    // Connected websites (GitHub repos). Doc id = owner uid in v1 (one site/user).
+    // Read your own; the GitHub install callback writes it via the Admin SDK.
+    match /sites/{userId} {
+      allow read:  if isOwner(userId);
+      allow write: if false;
+    }
+
+    // Default deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

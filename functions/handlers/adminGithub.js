@@ -1,0 +1,199 @@
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { ensureOrgGithubVault } from '../utils/vault.js';
+import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { startFixSession } from '../utils/claudeAgent.js';
+import { maxChargeForBudget } from '../utils/billing.js';
+import { chooseModel, agentIdForModel } from '../utils/routeModel.js';
+import { mergePullRequest, promoteBranch } from '../utils/github.js';
+
+function requireAdmin(request) {
+  const email = request.auth?.token?.email;
+  const allow = (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (!email || !allow.includes(email.toLowerCase())) {
+    throw new HttpsError('permission-denied', 'Admin only.');
+  }
+  return email;
+}
+
+// Operator provisions an org's GitHub repo + token. Stores repoFullName + vaultId on the
+// org doc (non-secret), the token in orgSecrets/{orgId} (backend-only), and sets up the
+// org's vault credential for the GitHub MCP so the agent can open PRs.
+export const adminSetGithubRepo = onCall(
+  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
+  async (request) => {
+    requireAdmin(request);
+    const orgId = String(request.data?.orgId ?? '').trim();
+    const repoFullName = String(request.data?.repoFullName ?? '')
+      .trim()
+      .replace(/^https?:\/\/github\.com\//i, '')
+      .replace(/\.git$/i, '')
+      .replace(/\/$/, '');
+    const token = String(request.data?.token ?? '').trim();
+    if (!orgId || !repoFullName || !token) {
+      throw new HttpsError('invalid-argument', 'orgId, repoFullName and token are required.');
+    }
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repoFullName)) {
+      throw new HttpsError('invalid-argument', 'repoFullName must look like owner/repo.');
+    }
+
+    const db = getFirestore();
+    const orgRef = db.collection('organisations').doc(orgId);
+    const orgSnap = await orgRef.get();
+    if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+
+    const existingVaultId = orgSnap.data().github?.vaultId;
+    const vaultId = await ensureOrgGithubVault({ orgId, vaultId: existingVaultId, token });
+
+    await orgRef.set(
+      { github: { repoFullName, vaultId, connectedAt: FieldValue.serverTimestamp() } },
+      { merge: true }
+    );
+    await db.collection('orgSecrets').doc(orgId).set(
+      { githubToken: token, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+
+    return { ok: true, repoFullName };
+  }
+);
+
+// Operator-only: run a fix against ANY org's connected repo (for testing). Same as
+// createTask, but the org is chosen explicitly and the caller is gated by ADMIN_EMAILS.
+export const adminRunFix = onCall(
+  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
+  async (request) => {
+    requireAdmin(request);
+    const uid = request.auth.uid;
+    const orgId = String(request.data?.orgId ?? '').trim();
+    const prompt = String(request.data?.prompt ?? '').trim();
+    if (!orgId || !prompt) throw new HttpsError('invalid-argument', 'orgId and prompt are required.');
+
+    const db = getFirestore();
+    const orgSnap = await db.collection('organisations').doc(orgId).get();
+    if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const org = orgSnap.data();
+    const gh = org.github;
+    if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+
+    const rate = Number(process.env.USD_TO_INR) || undefined;
+    const maxBudgetUsd = Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
+    const required = maxChargeForBudget(maxBudgetUsd, { rate });
+    if (Number(org.balance ?? 0) < required) {
+      throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
+    }
+
+    const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+    const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+    if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+
+    const model = await chooseModel(prompt);
+    const taskRef = db.collection('tasks').doc();
+    await taskRef.set({
+      userId: uid,
+      orgId,
+      prompt,
+      repoFullName: gh.repoFullName,
+      kind: 'initial',
+      model,
+      status: 'queued',
+      billed: false,
+      adminRun: true,
+      maxBudgetUsd,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    try {
+      const { sessionId } = await startFixSession({
+        prompt,
+        repoUrl: `https://github.com/${gh.repoFullName}`,
+        githubToken,
+        vaultId: gh.vaultId,
+        agentId: agentIdForModel(model),
+      });
+      await taskRef.update({ status: 'running', sessionId });
+    } catch {
+      await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+      throw new HttpsError('internal', 'Could not start the fix.');
+    }
+    return { taskId: taskRef.id };
+  }
+);
+
+// Operator: list an org's fix sessions (tasks), newest first.
+export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  const db = getFirestore();
+  let q = db.collection('tasks');
+  if (orgId) q = q.where('orgId', '==', orgId);
+  const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+  return {
+    tasks: snap.docs.map((d) => {
+      const t = d.data();
+      return {
+        id: d.id,
+        prompt: t.prompt ?? '',
+        status: t.status ?? null,
+        model: t.model ?? null,
+        finalCharge: t.finalCharge ?? null,
+        actualCostInr: t.actualCostInr ?? null,
+        prUrl: t.prUrl ?? null,
+        previewUrl: t.previewUrl ?? null,
+        resultSummary: t.resultSummary ?? null,
+        error: t.error ?? null,
+        repoFullName: t.repoFullName ?? null,
+        deployedTesting: t.deployedTesting ?? false,
+        deployedProd: t.deployedProd ?? false,
+        createdAt: t.createdAt?.toMillis?.() ?? null,
+      };
+    }),
+  };
+});
+
+// Deploy to TESTING = merge the PR into its base (main). The push triggers the
+// customer's deploy-testing GitHub Action (Vercel testing + Firebase testing).
+export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const db = getFirestore();
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = snap.data();
+  if (!t.prUrl) throw new HttpsError('failed-precondition', 'This task has no pull request to merge.');
+  const prNum = Number(String(t.prUrl).split('/').pop());
+
+  const secret = await db.collection('orgSecrets').doc(t.orgId).get();
+  const token = secret.exists ? secret.data().githubToken : null;
+  if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
+
+  await mergePullRequest(t.repoFullName, prNum, token);
+  await ref.update({ deployedTesting: true, deployedTestingAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+// Deploy to PRODUCTION = promote `release` to `main`'s head. The push triggers the
+// customer's deploy-prod GitHub Action (Vercel --prod + Firebase prod).
+export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const db = getFirestore();
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = snap.data();
+
+  const secret = await db.collection('orgSecrets').doc(t.orgId).get();
+  const token = secret.exists ? secret.data().githubToken : null;
+  if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
+
+  const result = await promoteBranch(t.repoFullName, 'main', 'release', token);
+  await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp() });
+  return { ok: true, ...result };
+});

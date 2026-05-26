@@ -1,0 +1,43 @@
+# .github/workflows/deploy-prod.yml — Bosun "Deploy to production" promotes release ← main → this runs.
+# Mirrors `yarn deploy` (vercel --prod && firebase deploy) but targets the PRODUCTION projects.
+#
+# Secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID_PROD, FIREBASE_TOKEN
+# Vars:    FIREBASE_PROJECT_PROD (maadiveeduvas)
+name: Deploy — production
+on:
+  push:
+    branches: [release]
+concurrency: { group: deploy-prod, cancel-in-progress: false }
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: release }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: corepack enable
+
+      # ── Vercel (prod project = mav3.0prod). Cloud build — uses the project's own build settings. ──
+      - name: Deploy Vercel (production)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_PROD }}
+        run: |
+          npm i -g vercel@latest
+          vercel --prod --yes --token="$VERCEL_TOKEN"
+
+      # ── Firebase (prod project = maadiveeduvas): functions + firestore + storage. ──
+      # functions is self-contained (plain tsc, no shared-lib deps); the firebase predeploy
+      # builds it, so we only need its deps installed first.
+      - name: Deploy Firebase (production)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_PROJECT_PROD: ${{ vars.FIREBASE_PROJECT_PROD }}
+        run: |
+          npm --prefix functions install
+          npm i -g firebase-tools
+          firebase deploy --only functions,firestore,storage \
+            --project "$FIREBASE_PROJECT_PROD" --token "$FIREBASE_TOKEN" --non-interactive

@@ -1,0 +1,32 @@
+# .github/workflows/deploy-testing.yml — Bosun "Deploy to testing" merges the PR → main → this runs.
+#
+# Vercel (testing project mav3.0) is deployed AUTOMATICALLY by Vercel's own Git integration
+# (it's connected to this repo with production branch = main, and also builds a Preview on
+# every PR). So this workflow only covers the Firebase side for testing.
+#
+# Secrets: FIREBASE_TOKEN    Vars: FIREBASE_PROJECT_TESTING (maadiveedu-6b8ce)
+name: Deploy — testing
+on:
+  push:
+    branches: [main]
+concurrency: { group: deploy-testing, cancel-in-progress: true }
+
+jobs:
+  firebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      # functions is self-contained (plain tsc, no shared-lib deps); the firebase predeploy
+      # builds it, so we only need its deps installed first.
+      - name: Deploy Firebase (testing)
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_PROJECT_TESTING: ${{ vars.FIREBASE_PROJECT_TESTING }}
+        run: |
+          npm --prefix functions install
+          npm i -g firebase-tools
+          firebase deploy --only functions,firestore,storage \
+            --project "$FIREBASE_PROJECT_TESTING" --token "$FIREBASE_TOKEN" --non-interactive
