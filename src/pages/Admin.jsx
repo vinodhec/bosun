@@ -5,6 +5,7 @@ import {
   adminAddCredits,
   adminSetUserOrg,
   adminSetOrgApproval,
+  adminSetOrgDeploy,
   adminQuoteTask,
   adminStopTask,
   adminSetGithubRepo,
@@ -155,6 +156,18 @@ export default function Admin() {
                       onClick={() => run(() => adminSetOrgApproval({ orgId: o.id, requireApproval: !o.requireApproval }), 'Approval setting updated.')}
                     >
                       {o.requireApproval ? 'Switch to auto-charge' : 'Require “Looks good”'}
+                    </button>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="text-ink-soft">
+                      self-deploy: {o.allowCustomerDeploy ? 'customer can go live' : 'operator only'}
+                    </span>
+                    <button
+                      className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+                      disabled={busy}
+                      onClick={() => run(() => adminSetOrgDeploy({ orgId: o.id, allowCustomerDeploy: !o.allowCustomerDeploy }), 'Self-deploy setting updated.')}
+                    >
+                      {o.allowCustomerDeploy ? 'Disable self-deploy' : 'Allow self-deploy'}
                     </button>
                   </div>
                 </li>

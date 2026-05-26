@@ -62,6 +62,7 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       balance: d.data().balance ?? 0,
       repo: d.data().github?.repoFullName ?? null,
       requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
+      allowCustomerDeploy: d.data().allowCustomerDeploy === true, // can the customer self-deploy from the dashboard?
     })),
   };
 });
@@ -78,6 +79,20 @@ export const adminSetOrgApproval = onCall({ region: REGION }, async (request) =>
   if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
   await ref.update({ requireApproval });
   return { orgId, requireApproval };
+});
+
+// Toggle whether this org's customers can deploy their own approved fixes (Testing +
+// Production) straight from the dashboard. Default (false) = deploy stays operator-only.
+export const adminSetOrgDeploy = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '');
+  const allowCustomerDeploy = request.data?.allowCustomerDeploy === true;
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const ref = db.collection('organisations').doc(orgId);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
+  await ref.update({ allowCustomerDeploy });
+  return { orgId, allowCustomerDeploy };
 });
 
 // Quote a BIG job (a 'large' task parked in needs_quote / needs_requote). The operator
