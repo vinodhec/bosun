@@ -270,11 +270,11 @@ export const adminStopTask = onCall(
   }
 );
 
-export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
-  requireAdmin(request);
-  const taskId = String(request.data?.taskId ?? '');
-  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
-  const db = getFirestore();
+// --- Deploy cores (auth-agnostic) — shared by the admin and customer entry points. ---
+
+// Deploy to TESTING = merge the task's PR into its base (main). The push triggers the
+// customer's deploy-testing GitHub Action (Vercel testing + Firebase testing).
+async function deployTaskToTesting(db, taskId) {
   const ref = db.collection('tasks').doc(taskId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
@@ -289,15 +289,11 @@ export const deployTesting = onCall({ region: 'asia-south1' }, async (request) =
   await mergePullRequest(t.repoFullName, prNum, token);
   await ref.update({ deployedTesting: true, deployedTestingAt: FieldValue.serverTimestamp() });
   return { ok: true };
-});
+}
 
 // Deploy to PRODUCTION = promote `release` to `main`'s head. The push triggers the
 // customer's deploy-prod GitHub Action (Vercel --prod + Firebase prod).
-export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
-  requireAdmin(request);
-  const taskId = String(request.data?.taskId ?? '');
-  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
-  const db = getFirestore();
+async function deployTaskToProd(db, taskId) {
   const ref = db.collection('tasks').doc(taskId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
@@ -310,4 +306,56 @@ export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
   const result = await promoteBranch(t.repoFullName, 'main', 'release', token);
   await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp() });
   return { ok: true, ...result };
+}
+
+// Gate for CUSTOMER self-deploy: the signed-in user must belong to the task's org AND that
+// org must have self-deploy switched on (adminSetOrgDeploy). We also require the fix to be
+// finished and APPROVED (paid / auto-charged) before it can go anywhere — never deploy work
+// that's still pending the customer's review. Returns nothing; throws on any failure.
+async function requireCustomerDeploy(db, uid, taskId) {
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const userSnap = await db.collection('users').doc(uid).get();
+  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
+  const taskSnap = await db.collection('tasks').doc(taskId).get();
+  if (!taskSnap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = taskSnap.data();
+  if (t.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your task.');
+  const orgSnap = await db.collection('organisations').doc(orgId).get();
+  if (!orgSnap.exists || orgSnap.data().allowCustomerDeploy !== true) {
+    throw new HttpsError('permission-denied', 'SELF_DEPLOY_DISABLED');
+  }
+  if (t.status !== 'complete' || t.approved !== true) {
+    throw new HttpsError('failed-precondition', 'NOT_DEPLOYABLE');
+  }
+}
+
+export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  return deployTaskToTesting(getFirestore(), taskId);
+});
+
+export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  return deployTaskToProd(getFirestore(), taskId);
+});
+
+// Customer self-deploy (only when the org's allowCustomerDeploy toggle is on).
+export const customerDeployTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  const db = getFirestore();
+  const taskId = String(request.data?.taskId ?? '');
+  await requireCustomerDeploy(db, request.auth?.uid, taskId);
+  return deployTaskToTesting(db, taskId);
+});
+
+export const customerDeployProd = onCall({ region: 'asia-south1' }, async (request) => {
+  const db = getFirestore();
+  const taskId = String(request.data?.taskId ?? '');
+  await requireCustomerDeploy(db, request.auth?.uid, taskId);
+  return deployTaskToProd(db, taskId);
 });

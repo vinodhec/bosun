@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import { formatINR } from '@shared/currency.js';
 import { MAX_IMAGES, MAX_IMAGE_BYTES, ACCEPTED_TYPES, readImageAttachment, imageFilesFrom } from '../utils/images.js';
@@ -211,6 +211,7 @@ function SessionCard({ session: s, onRevised }) {
   const [changes, setChanges] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [deployOpen, setDeployOpen] = useState(false); // expanded Testing|Production picker
   const working = isWorking(s.status);
   const revising = s.status === 'running' && !!s.summary; // re-running with a prior result
   const noFreeLeft = (s.freeRevisionsLeft ?? 0) <= 0;
@@ -376,7 +377,42 @@ function SessionCard({ session: s, onRevised }) {
                 Request changes
               </button>
             )}
-            {s.deployed && <span className="text-sm font-medium text-good">Live ✓</span>}
+
+            {/* Self-deploy (only when the operator enabled it for this org). Mirrors the admin
+                control: pick Testing or Production, with a confirm before going live. */}
+            {s.canDeploy && !open && (
+              deployOpen ? (
+                <>
+                  <span className="text-sm text-ink-soft">Deploy to:</span>
+                  {!s.deployedTesting && (
+                    <button
+                      onClick={() => act(customerDeployTesting)}
+                      disabled={busy}
+                      className="rounded-xl bg-teal-600 px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                    >
+                      {busy ? 'Deploying…' : 'Testing'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
+                    disabled={busy}
+                    className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                  >
+                    {busy ? 'Publishing…' : 'Go live'}
+                  </button>
+                  <button onClick={() => setDeployOpen(false)} disabled={busy} className="px-2 py-2 text-sm font-medium text-ink-soft underline disabled:opacity-60">
+                    cancel
+                  </button>
+                </>
+              ) : (
+                <button onClick={() => setDeployOpen(true)} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700">
+                  Deploy
+                </button>
+              )
+            )}
+
+            {s.deployedTesting && !s.deployedProd && <span className="text-sm font-medium text-ink-soft">✓ on testing</span>}
+            {s.deployedProd && <span className="text-sm font-medium text-good">Live ✓</span>}
           </div>
 
           {open && (

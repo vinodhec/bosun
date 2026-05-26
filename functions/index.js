@@ -17,6 +17,7 @@ export {
   adminListOrgs,
   adminSetUserOrg,
   adminSetOrgApproval,
+  adminSetOrgDeploy,
   adminQuoteTask,
 } from './handlers/admin.js';
 
@@ -29,6 +30,8 @@ export {
   adminStopTask,
   deployTesting,
   deployProd,
+  customerDeployTesting,
+  customerDeployProd,
 } from './handlers/adminGithub.js';
 
 // Scheduled: finalize finished sessions → bill the org; terminate over-budget ones.
