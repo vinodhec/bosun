@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import { formatINR } from '@shared/currency.js';
 import { MAX_IMAGES, MAX_IMAGE_BYTES, ACCEPTED_TYPES, readImageAttachment, imageFilesFrom } from '../utils/images.js';
@@ -11,8 +11,13 @@ const STATUS = {
   running: 'Working on it…',
   complete: 'Your fix is ready! ✅',
   failed: 'Something went wrong 😔',
+  needs_quote: 'Preparing your quote…',
+  quoted: 'Here’s your quote',
+  cancelled: 'Cancelled',
 };
 const isWorking = (s) => s === 'queued' || s === 'running';
+// States that change on their own (operator quoting, agent running) — keep polling for them.
+const isLive = (s) => isWorking(s) || s === 'needs_quote' || s === 'quoted';
 
 function friendlyError(e) {
   const m = String(e?.message || '');
@@ -21,6 +26,8 @@ function friendlyError(e) {
   if (m.includes('NO_ORG')) return 'Your account isn’t set up yet — the Bosun team will sort it.';
   if (m.includes('ALREADY_DEPLOYED')) return 'This fix is already live — start a new fix for further changes.';
   if (m.includes('NOT_READY')) return 'Please wait for the current change to finish.';
+  if (m.includes('NOT_PENDING')) return 'This fix has already been confirmed.';
+  if (m.includes('TOO_MANY_FREE_REVISIONS')) return 'You’ve used all the free re-fixes for this. Approve what you have, or ask for it as a new change.';
   return 'Something went wrong. You were not charged.';
 }
 
@@ -53,7 +60,7 @@ export default function Dashboard() {
     refresh();
     const id = setInterval(() => {
       setSessions((prev) => {
-        if (prev && !prev.some((s) => isWorking(s.status))) return prev; // idle — skip
+        if (prev && !prev.some((s) => isLive(s.status))) return prev; // idle — skip
         refresh();
         return prev;
       });
@@ -186,20 +193,32 @@ export default function Dashboard() {
   );
 }
 
+// Friendly label + cost tag for one iteration in the thread.
+function roundLabel(r) {
+  if (r.kind === 'initial') return 'Initial fix';
+  if (r.kind === 'new_scope') return 'New request';
+  return 'Re-fix';
+}
+function roundCost(r) {
+  if (r.free) return 'Free';
+  if (!r.addedInr) return '';
+  return r.kind === 'initial' ? formatINR(r.addedInr) : `+${formatINR(r.addedInr)}`;
+}
+
 function SessionCard({ session: s, onRevised }) {
   const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('unresolved'); // 'unresolved' (free) | 'new_scope' (paid)
   const [changes, setChanges] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const working = isWorking(s.status);
   const revising = s.status === 'running' && !!s.summary; // re-running with a prior result
+  const noFreeLeft = (s.freeRevisionsLeft ?? 0) <= 0;
 
-  const sendChanges = async () => {
-    if (!changes.trim()) return;
+  const approve = async () => {
     setBusy(true); setErr('');
     try {
-      await reviseSession({ taskId: s.id, changes: changes.trim() });
-      setChanges(''); setOpen(false);
+      await approveFix({ taskId: s.id });
       await onRevised();
     } catch (e) {
       setErr(friendlyError(e));
@@ -207,6 +226,28 @@ function SessionCard({ session: s, onRevised }) {
       setBusy(false);
     }
   };
+
+  const sendChanges = async () => {
+    if (!changes.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await reviseSession({ taskId: s.id, changes: changes.trim(), reason });
+      setChanges(''); setOpen(false); setReason('unresolved');
+      await onRevised();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const act = async (fn) => {
+    setBusy(true); setErr('');
+    try { await fn({ taskId: s.id }); await onRevised(); }
+    catch (e) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
+  };
+  const quoteAmount = s.quoteInr || s.priceInr || 0;
 
   return (
     <div className="rounded-2xl border border-line bg-white p-5">
@@ -228,6 +269,36 @@ function SessionCard({ session: s, onRevised }) {
         <p className="mt-1 text-sm text-ink-soft">Please wait a few minutes. You can leave this open.</p>
       )}
 
+      {/* Big job: waiting for the operator to set a price. */}
+      {s.status === 'needs_quote' && (
+        <p className="mt-1 text-sm text-ink-soft">
+          This is a bigger job, so we’re preparing a price for you. We’ll update this shortly — you can leave it open.
+        </p>
+      )}
+
+      {/* Big job: quote ready — confirm before any work starts (or reduce scope). */}
+      {s.status === 'quoted' && (
+        <div className="mt-2">
+          <p className="text-sm text-ink-soft">
+            This is a bigger job. It’ll cost <span className="font-semibold text-ink">{formatINR(quoteAmount)}</span> — and you’re only charged if we fix it.
+          </p>
+          {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button onClick={() => act(confirmQuote)} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+              {busy ? 'Starting…' : `Yes, fix it for ${formatINR(quoteAmount)}`}
+            </button>
+            <button onClick={() => act(declineQuote)} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-line/40 disabled:opacity-60">
+              Not now
+            </button>
+          </div>
+          <p className="mt-2 text-xs text-ink-soft">Want it cheaper? Tap “Not now” and start again with a smaller request.</p>
+        </div>
+      )}
+
+      {s.status === 'cancelled' && (
+        <p className="mt-1 text-sm text-ink-soft">This quote was cancelled. No charge was applied.</p>
+      )}
+
       {s.status === 'complete' && (
         <>
           {/* Iteration thread: the initial fix + every change request, each with its own
@@ -239,10 +310,10 @@ function SessionCard({ session: s, onRevised }) {
                 <li key={i} className="rounded-xl border border-line bg-canvas p-3">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                      {r.kind === 'initial' ? 'Initial fix' : 'Change request'}
+                      {roundLabel(r)}
                     </span>
-                    {r.charge != null && (
-                      <span className="text-xs font-medium text-ink">{formatINR(r.charge)}</span>
+                    {roundCost(r) && (
+                      <span className="text-xs font-medium text-ink">{roundCost(r)}</span>
                     )}
                   </div>
                   {r.prompt && <p className="mt-1 text-sm text-ink-soft">“{r.prompt}”</p>}
@@ -265,10 +336,23 @@ function SessionCard({ session: s, onRevised }) {
               )}
             </>
           )}
-          {s.charge != null && (
-            <p className="mt-3 text-sm">
-              Total charged: <span className="font-semibold">{formatINR(s.charge)}</span>
-            </p>
+
+          {/* Money summary: what tapping "Looks good" will charge, or what's been charged. */}
+          {s.pendingReview ? (
+            s.owedInr > 0 ? (
+              <p className="mt-3 text-sm text-ink-soft">
+                You’ll pay <span className="font-semibold text-ink">{formatINR(s.owedInr)}</span> when you tap “Looks good”.
+                {s.paidInr > 0 && <> ({formatINR(s.paidInr)} already paid)</>}
+              </p>
+            ) : (
+              <p className="mt-3 text-sm text-ink-soft">No charge for this — it’s a free re-fix.</p>
+            )
+          ) : (
+            s.paidInr > 0 && (
+              <p className="mt-3 text-sm">
+                Total charged: <span className="font-semibold">{formatINR(s.paidInr)}</span>
+              </p>
+            )
           )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -280,6 +364,13 @@ function SessionCard({ session: s, onRevised }) {
               <span className="text-sm text-ink-soft">Building a live preview…</span>
             ) : null}
 
+            {/* "Looks good" appears only when the org requires approval before charging. */}
+            {s.canApprove && !open && (
+              <button onClick={approve} disabled={busy} className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
+                {busy ? 'Confirming…' : (s.owedInr > 0 ? `Looks good — pay ${formatINR(s.owedInr)}` : 'Looks good ✓')}
+              </button>
+            )}
+
             {s.canRevise && !open && (
               <button onClick={() => setOpen(true)} className="rounded-xl px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
                 Request changes
@@ -288,31 +379,56 @@ function SessionCard({ session: s, onRevised }) {
             {s.deployed && <span className="text-sm font-medium text-good">Live ✓</span>}
           </div>
 
-          {s.canRevise && open && (
+          {open && (
             <div className="mt-3 rounded-xl bg-canvas p-3">
+              {/* Why is it not right? — maps to free re-fix vs new, chargeable scope. */}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReason('unresolved')}
+                  disabled={noFreeLeft}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition disabled:opacity-50 ${reason === 'unresolved' ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line'}`}
+                >
+                  It’s not working / not what I meant
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReason('new_scope')}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition ${reason === 'new_scope' ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line'}`}
+                >
+                  I want something new
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-ink-soft">
+                {reason === 'unresolved'
+                  ? (noFreeLeft
+                      ? 'No free re-fixes left — please approve what you have, or choose “something new”.'
+                      : `Free re-fix — ${s.freeRevisionsLeft} left.`)
+                  : `A new change adds ${formatINR(s.priceInr || 0)}, charged when you approve.`}
+              </p>
               <textarea
                 value={changes}
                 onChange={(e) => setChanges(e.target.value)}
                 rows={3}
-                placeholder="What else should change? Example: also make the buttons bigger on mobile"
-                className="w-full resize-none rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
+                placeholder="What should change? Example: also make the buttons bigger on mobile"
+                className="mt-2 w-full resize-none rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
               />
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex gap-2">
                 <button
                   onClick={sendChanges}
-                  disabled={busy || !changes.trim()}
+                  disabled={busy || !changes.trim() || (reason === 'unresolved' && noFreeLeft)}
                   className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
                 >
                   {busy ? 'Sending…' : 'Send changes →'}
                 </button>
-                <button onClick={() => { setOpen(false); setErr(''); }} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); }} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
                   Cancel
                 </button>
               </div>
-              <p className="mt-1 text-xs text-ink-soft">Charged only for the extra work — and only after it’s done.</p>
             </div>
           )}
+          {err && !open && <p className="mt-2 text-sm text-bad">{err}</p>}
         </>
       )}
 

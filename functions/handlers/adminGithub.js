@@ -2,10 +2,16 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { ensureOrgGithubVault } from '../utils/vault.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession } from '../utils/claudeAgent.js';
-import { maxChargeForBudget } from '../utils/billing.js';
-import { chooseModel, agentIdForModel } from '../utils/routeModel.js';
+import { maxChargeForBudget, tierFor, requiredBalanceFor } from '../utils/billing.js';
+import { classifyComplexity } from '../utils/classify.js';
+import { markRoundFailure } from '../utils/finalize.js';
+import { sessionCostUsd } from '../utils/agentResult.js';
+import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { mergePullRequest, promoteBranch } from '../utils/github.js';
+
+const BETA = 'managed-agents-2026-04-01';
 
 function requireAdmin(request) {
   const email = request.auth?.token?.email;
@@ -80,6 +86,67 @@ export const adminRunFix = onCall(
     if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
     const rate = Number(process.env.USD_TO_INR) || undefined;
+
+    // "Run as customer" exercises the REAL customer pipeline (classify → fixed-tier price →
+    // large→quote), so the operator can test pricing end-to-end. Default (false) is the old
+    // plain infra test: flat cap, no classification, no charge.
+    const asCustomer = request.data?.asCustomer === true;
+
+    if (asCustomer) {
+      let complexity = String(request.data?.complexity ?? '').trim();
+      if (!['simple', 'medium', 'complex', 'large'].includes(complexity)) {
+        ({ complexity } = await classifyComplexity(prompt));
+      }
+
+      // Big job → park for a quote (operator quotes, then confirm). Nothing runs/charges yet.
+      if (complexity === 'large') {
+        const quoteRef = db.collection('tasks').doc();
+        await quoteRef.set({
+          userId: uid, orgId, prompt, repoFullName: gh.repoFullName,
+          kind: 'initial', complexity: 'large', status: 'needs_quote',
+          billed: false, approved: false, pendingReview: false,
+          finalCharge: 0, currentRoundCharge: 0, freeRevisionsUsed: 0,
+          adminRun: true, asCustomer: true, imageCount: 0,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return { taskId: quoteRef.id, needsQuote: true };
+      }
+
+      const tier = tierFor(complexity);
+      const required = requiredBalanceFor(complexity, { rate });
+      if (Number(org.balance ?? 0) < required) {
+        throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
+      }
+      const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+      const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+      if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+
+      const model = modelForComplexity(complexity);
+      const taskRef = db.collection('tasks').doc();
+      await taskRef.set({
+        userId: uid, orgId, prompt, repoFullName: gh.repoFullName,
+        kind: 'initial', complexity, model, status: 'queued',
+        billed: false, approved: false, pendingReview: false,
+        maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds, priceInr: tier.priceInr,
+        currentRoundCharge: tier.priceInr, finalCharge: 0, freeRevisionsUsed: 0,
+        pendingRound: { kind: 'initial', reason: null, addedInr: tier.priceInr, prompt },
+        adminRun: true, asCustomer: true, imageCount: 0,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      try {
+        const { sessionId } = await startFixSession({
+          prompt, repoUrl: `https://github.com/${gh.repoFullName}`,
+          githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model),
+        });
+        await taskRef.update({ status: 'running', sessionId });
+      } catch {
+        await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+        throw new HttpsError('internal', 'Could not start the fix.');
+      }
+      return { taskId: taskRef.id };
+    }
+
+    // Plain infra test (operator only): flat cap, no classification, no charge.
     const maxBudgetUsd = Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
     const required = maxChargeForBudget(maxBudgetUsd, { rate });
     if (Number(org.balance ?? 0) < required) {
@@ -90,7 +157,11 @@ export const adminRunFix = onCall(
     const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
     if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
-    const model = await chooseModel(prompt);
+    // Operator may force a model for testing; otherwise derive it from an optional
+    // complexity hint (defaults to Sonnet, matching the customer path).
+    const model = ['sonnet', 'opus'].includes(request.data?.model)
+      ? request.data.model
+      : modelForComplexity(String(request.data?.complexity ?? '').trim());
     const taskRef = db.collection('tasks').doc();
     await taskRef.set({
       userId: uid,
@@ -138,6 +209,14 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         id: d.id,
         prompt: t.prompt ?? '',
         status: t.status ?? null,
+        complexity: t.complexity ?? null,
+        quotedInr: t.quotedInr ?? null,
+        priceInr: t.priceInr ?? null,
+        currentRoundCharge: t.currentRoundCharge ?? null,
+        pendingReview: t.pendingReview ?? false,
+        approved: t.approved ?? false,
+        adminRun: t.adminRun ?? false,
+        asCustomer: t.asCustomer ?? false,
         model: t.model ?? null,
         finalCharge: t.finalCharge ?? null,
         actualCostInr: t.actualCostInr ?? null,
@@ -156,6 +235,41 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
 
 // Deploy to TESTING = merge the PR into its base (main). The push triggers the
 // customer's deploy-testing GitHub Action (Vercel testing + Firebase testing).
+// Operator kill-switch: stop a queued/running fix mid-flight. Cancels the agent session and
+// marks the task failed (never charged). Works for both customer and test runs.
+export const adminStopTask = onCall(
+  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
+  async (request) => {
+    requireAdmin(request);
+    const taskId = String(request.data?.taskId ?? '').trim();
+    if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+    const db = getFirestore();
+    const snap = await db.collection('tasks').doc(taskId).get();
+    if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+    const t = snap.data();
+    if (!['queued', 'running'].includes(t.status)) {
+      throw new HttpsError('failed-precondition', 'This task is not running.');
+    }
+    // Read the session's cost BEFORE cancelling so the stopped run still records the COGS
+    // we ate (markRoundFailure stores it; admin P&L shows the loss).
+    let costUsd = 0;
+    if (t.sessionId) {
+      try {
+        const client = new Anthropic({
+          apiKey: process.env.ANTHROPIC_API_KEY,
+          defaultHeaders: { 'anthropic-beta': BETA },
+        });
+        try { costUsd = sessionCostUsd(await client.beta.sessions.retrieve(t.sessionId)); } catch { /* best-effort */ }
+        await client.beta.sessions.cancel(t.sessionId);
+      } catch (e) {
+        console.error('adminStopTask:cancel', taskId, e?.message || e);
+      }
+    }
+    await markRoundFailure(taskId, { error: 'stopped_by_admin', actualCostUsd: costUsd });
+    return { ok: true };
+  }
+);
+
 export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
   requireAdmin(request);
   const taskId = String(request.data?.taskId ?? '');

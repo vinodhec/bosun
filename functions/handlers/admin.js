@@ -61,8 +61,54 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       name: d.data().name,
       balance: d.data().balance ?? 0,
       repo: d.data().github?.repoFullName ?? null,
+      requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
     })),
   };
+});
+
+// Toggle whether this org's fixes need the customer's "Looks good" before being charged.
+// Default (false) = auto-charge the flat tier price the moment a fix is ready.
+export const adminSetOrgApproval = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '');
+  const requireApproval = request.data?.requireApproval === true;
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const ref = db.collection('organisations').doc(orgId);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
+  await ref.update({ requireApproval });
+  return { orgId, requireApproval };
+});
+
+// Quote a BIG job (a 'large' task parked in needs_quote / needs_requote). The operator
+// eyeballs the scope and sets a fixed rupee price + a budget cap. Moves it to 'quoted' for
+// the customer to confirm. Nothing runs or is charged until they confirm (confirmQuote).
+export const adminQuoteTask = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '').trim();
+  const quoteInr = Math.round(Number(request.data?.quoteInr));
+  const maxBudgetUsd = Number(request.data?.maxBudgetUsd) || 8; // default ~$8 cap for big jobs
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  if (!Number.isFinite(quoteInr) || quoteInr <= 0) throw new HttpsError('invalid-argument', 'quoteInr must be positive.');
+
+  const db = getFirestore();
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = snap.data();
+  if (t.status !== 'needs_quote' && t.status !== 'needs_requote') {
+    throw new HttpsError('failed-precondition', 'This task is not awaiting a quote.');
+  }
+  await ref.update({
+    status: 'quoted',
+    priceInr: quoteInr,
+    currentRoundCharge: quoteInr, // owed on success
+    maxBudgetUsd,
+    pendingRound: { kind: t.kind || 'initial', reason: null, addedInr: quoteInr, prompt: t.prompt || '' },
+    quotedInr: quoteInr,
+    quotedAt: FieldValue.serverTimestamp(),
+  });
+  return { taskId, quoteInr };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {

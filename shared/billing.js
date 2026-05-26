@@ -60,24 +60,61 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
 }
 
 /**
- * Complexity tiers — SINGLE SOURCE OF TRUTH for the estimate flow.
- * `maxBudgetUsd` is the hard cap passed to the agent; `minInr`/`maxInr` is the
- * friendly range shown to the user. The cap is chosen so the true max chargeable
- * (maxChargeForBudget) is always <= the shown maxInr, so "never charged more than
- * the maximum shown" always holds.
- *   simple : cap 0.45 -> true max ₹94  (shown 75–150) — covered by the ₹75 free credit
- *   medium : cap 1.50 -> true max ₹312 (shown 150–375)
- *   complex: cap 3.00 -> true max ₹623 (shown 300–650)
+ * Complexity tiers — SINGLE SOURCE OF TRUTH for pricing.
+ *
+ * `priceInr` is the FIXED price the customer pays for a fix of this tier — charged once,
+ * on approval, regardless of the run's actual token cost. We (not the buyer) absorb token
+ * volatility, spread across volume and re-priced here when needed. A non-technical owner
+ * gets one quotable number, not a figure that wiggles with cache hits.
+ *
+ * `maxBudgetUsd` is the hard spend cap enforced by the poller (Managed Agents have no
+ * native cap). It is chosen so our COGS at the cap stays comfortably below `priceInr`:
+ *   simple : price ₹149, cap $0.45 (~₹37 COGS)  → ~75% margin at the cap
+ *   medium : price ₹375, cap $1.50 (~₹125 COGS) → ~67% margin at the cap
+ *   complex: price ₹749, cap $3.00 (~₹249 COGS) → ~67% margin at the cap
+ *
+ * `maxSeconds` is a SECOND, independent cap: the max active runtime per round. It exists
+ * because the dollar cap can't be trusted alone — Anthropic's `session.usage` can report
+ * $0 for minutes while the agent actually burns tokens, so the per-poll cost check stays
+ * blind and a "simple" run can blow 7× past its budget before the cost finally lands. Active
+ * runtime is always reported, so a tight per-tier time cap reliably bounds the worst case.
+ * Set with headroom over real completion times (simple ~2m, medium ~4m, complex ~11m seen):
+ *   simple : 300s (5m)   medium : 480s (8m)   complex : 900s (15m)
+ * `minInr`/`maxInr` are retained for the legacy estimate UI; with fixed pricing the
+ * estimate IS `priceInr`.
+ *
+ * NOTE: these prices are starting hypotheses to validate in the concierge phase, not
+ * final — tune them here and nowhere else.
  */
 export const COMPLEXITY_TIERS = {
-  simple:  { maxBudgetUsd: 0.45, minInr: 75,  maxInr: 150 },
-  medium:  { maxBudgetUsd: 1.50, minInr: 150, maxInr: 375 },
-  complex: { maxBudgetUsd: 3.00, minInr: 300, maxInr: 650 },
+  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, priceInr: 149, minInr: 149, maxInr: 149 },
+  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, priceInr: 375, minInr: 375, maxInr: 375 },
+  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, priceInr: 749, minInr: 749, maxInr: 749 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
 export function tierFor(complexity) {
   return COMPLEXITY_TIERS[complexity] || COMPLEXITY_TIERS.medium;
+}
+
+/** The fixed price (INR) a completed fix of this complexity costs the customer. */
+export function priceForComplexity(complexity) {
+  return tierFor(complexity).priceInr;
+}
+
+/**
+ * Free-iteration policy for "Request changes" (approve-before-charge model).
+ * The customer pays the flat tier price ONCE, on approval. Getting that one fix right is
+ * free — but capped, so it can't be abused — and genuinely NEW scope always pays again.
+ *   - `unresolved` (didn't work / not what I meant): FREE, up to MAX_FREE_REVISIONS rounds.
+ *   - `new_scope`   (something new): adds another tier price to what's owed.
+ */
+export const MAX_FREE_REVISIONS = 3;
+export const REVISION_REASONS = ['unresolved', 'new_scope'];
+
+/** Is this revision reason a free re-fix (our shortfall) vs new, chargeable scope? */
+export function isFreeRevision(reason) {
+  return reason === 'unresolved';
 }
 
 /**

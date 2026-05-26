@@ -1,7 +1,7 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
-import { billTaskSuccess, billTaskFailure } from '../utils/finalize.js';
+import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { sessionCostUsd, extractResult } from '../utils/agentResult.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -35,20 +35,37 @@ export const pollSessions = onSchedule(
           const costUsd = sessionCostUsd(session); // cumulative across rounds
           const cap = task.maxBudgetUsd || Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
           // Cap the CURRENT round's spend, so a revised session isn't killed by earlier rounds.
-          const roundUsd = costUsd - (Number(task.billedCostUsd) || 0);
+          const roundUsd = costUsd - (Number(task.reviewedCostUsd) || 0);
+
+          // Runtime backstop — the PRIMARY guard. `session.usage` can report $0 for minutes
+          // while the agent really is burning tokens, so the cost check above goes blind and a
+          // run can blow many times past its $ cap before the cost lands. Active runtime is
+          // always reported, so we cap it per TIER. Per-round (subtract runtime already
+          // reviewed) so a revision isn't killed by earlier rounds. Falls back to the global
+          // MAX_SESSION_SECONDS for runs with no tier cap (operator infra tests, big-job quotes).
+          const activeSec = Number(session?.stats?.active_seconds) || 0;
+          const roundSec = activeSec - (Number(task.reviewedSeconds) || 0);
+          const maxSec = Number(task.maxSeconds) || Number(process.env.MAX_SESSION_SECONDS) || 1800;
+          if (roundSec > maxSec) {
+            try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
+            await markRoundFailure(docSnap.id, { error: 'timeout', actualCostUsd: costUsd });
+            continue;
+          }
 
           if (roundUsd > cap) {
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
-            await billTaskFailure(docSnap.id, { error: 'over_budget' });
+            await markRoundFailure(docSnap.id, { error: 'over_budget', actualCostUsd: costUsd });
             continue;
           }
 
           const status = String(session?.status || '');
           if (DONE.has(status)) {
+            // Round done → ready for the customer to review. We do NOT charge here; the
+            // charge happens when they approve the fix (approveFix).
             const { resultSummary, filesChanged, prUrl } = await extractResult(client, task.sessionId);
-            await billTaskSuccess(docSnap.id, { actualCostUsd: costUsd, resultSummary, filesChanged, prUrl });
+            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl });
           } else if (FAILED.has(status)) {
-            await billTaskFailure(docSnap.id, { error: 'agent_failed' });
+            await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
           }
         } catch (e) {
           console.error('pollSessions:run', docSnap.id, e?.message || e);

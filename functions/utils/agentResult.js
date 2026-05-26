@@ -21,6 +21,11 @@ const sessionHourUsd = () => Number(process.env.SESSION_HOUR_USD) || 0.08;
 
 /** Actual USD cost of a session = token cost + runtime cost. */
 export function sessionCostUsd(session) {
+  // Guard against a misconfigured deploy: with token prices unset, cost would be computed
+  // from runtime alone and every charge would be silently too low. Warn loudly instead.
+  if (inputP() <= 0 || PRICE.output() <= 0) {
+    console.error('billing:price_config — PRICE_INPUT/OUTPUT_PER_MTOK is 0 or unset; token cost is undercounted.');
+  }
   const u = session?.usage || {};
   const cc = u.cache_creation || {};
   const input = Number(u.input_tokens) || 0;
@@ -58,8 +63,11 @@ export function buildFixPrompt(problem, imageCount = 0) {
   return (
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
-    `Investigate the repo at /workspace/repo, make the smallest safe change that resolves it, ` +
-    `commit to a new branch, push it, and open a pull request.\n\n` +
+    `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
+    `Focus only on the project's own source files — do NOT open, read, or scan generated or ` +
+    `dependency folders (node_modules, vendor, dist, build, .next, out, coverage) or lock files; ` +
+    `they are noise and reading them only wastes effort. ` +
+    `Commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
     `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>"}`
@@ -74,7 +82,8 @@ export function buildRevisePrompt(changes) {
   return (
     `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
-    `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch.\n\n` +
+    `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
+    `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
     `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>"}`

@@ -4,9 +4,15 @@ import {
   adminCreateOrg,
   adminAddCredits,
   adminSetUserOrg,
+  adminSetOrgApproval,
+  adminQuoteTask,
+  adminStopTask,
   adminSetGithubRepo,
   adminRunFix,
   adminListTasks,
+  confirmQuote,
+  approveFix,
+  declineQuote,
   deployTesting,
   deployProd,
 } from '../firebase/functions.js';
@@ -19,6 +25,36 @@ const btn = 'rounded-lg bg-brand-600 px-4 py-2 font-semibold text-white transiti
 const STATUS = { queued: 'Starting…', running: 'Working on it…', complete: 'Done ✅', failed: 'Failed' };
 const TONE = { complete: 'bg-green-50 text-green-700', running: 'bg-blue-50 text-blue-700', queued: 'bg-slate-100 text-slate-600', failed: 'bg-rose-50 text-rose-700' };
 
+// Admin-only: show sub-rupee COGS at 2dp so a small actual cost isn't rounded to ₹0
+// (which would make every fix look like 100% margin). formatINR stays 0dp for prices.
+const inrPrecise = (n) =>
+  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(n) || 0);
+
+// Per-fix P&L for the admin: what the customer PAID (finalCharge — ₹0 when never charged,
+// i.e. a failed/stopped run) vs what the run actually COST us (actualCostInr = raw COGS in
+// INR, no markup). Margin is shown as an absolute ₹ figure AND a %. A never-charged fix is a
+// pure loss: paid ₹0 → margin = −COGS and −100%. Renders nothing until the run has finished.
+function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
+  if (status !== 'complete' && status !== 'failed') return null;
+  const paid = Number(finalCharge) || 0;
+  const cogs = Number(actualCostInr) || 0;
+  const margin = paid - cogs;
+  // % is margin over revenue. With no revenue but real cost, the whole cost is a loss → −100%.
+  const pct = paid > 0 ? Math.round((margin / paid) * 100) : cogs > 0 ? -100 : 0;
+  const good = margin >= 0;
+  return (
+    <div className={`flex flex-wrap items-center gap-x-2 text-xs text-ink-soft ${className}`}>
+      <span>paid <span className="font-semibold text-ink">{formatINR(paid)}</span></span>
+      <span>·</span>
+      <span>our cost <span className="font-semibold text-ink">{inrPrecise(cogs)}</span></span>
+      <span>·</span>
+      <span className={good ? 'text-green-700' : 'text-rose-600'}>
+        margin <span className="font-semibold">{inrPrecise(margin)}</span> ({pct}%)
+      </span>
+    </div>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [msg, setMsg] = useState('');
@@ -28,12 +64,15 @@ export default function Admin() {
   const [credit, setCredit] = useState({ orgId: '', amount: '' });
   const [assign, setAssign] = useState({ email: '', orgId: '' });
   const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '' });
-  const [test, setTest] = useState({ orgId: '', prompt: '' });
+  const [test, setTest] = useState({ orgId: '', prompt: '', asCustomer: true });
   const [taskId, setTaskId] = useState(null);
   const [task, setTask] = useState(null);
   const [sessOrg, setSessOrg] = useState('');
   const [sessions, setSessions] = useState([]);
   const [deployFor, setDeployFor] = useState(null);
+  const [quoteFor, setQuoteFor] = useState(null);
+  const [quoteAmt, setQuoteAmt] = useState('');
+  const [quoteBudget, setQuoteBudget] = useState('');
 
   const loadSessions = async (id) => {
     setSessOrg(id);
@@ -70,7 +109,7 @@ export default function Admin() {
   const onRun = async () => {
     setBusy(true); setErr(''); setTaskId(null); setTask(null);
     try {
-      const { data } = await adminRunFix({ orgId: test.orgId, prompt: test.prompt.trim() });
+      const { data } = await adminRunFix({ orgId: test.orgId, prompt: test.prompt.trim(), asCustomer: test.asCustomer });
       setTaskId(data.taskId);
     } catch (e) {
       const m = String(e?.message || '');
@@ -105,6 +144,18 @@ export default function Admin() {
                   <div className="mt-0.5 text-ink-soft">id: {o.id}</div>
                   <div className="text-ink-soft">
                     repo: {o.repo ? <span className="text-ink">{o.repo}</span> : <span className="text-warn">not connected</span>}
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="text-ink-soft">
+                      charge: {o.requireApproval ? 'after “Looks good”' : 'auto on completion'}
+                    </span>
+                    <button
+                      className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+                      disabled={busy}
+                      onClick={() => run(() => adminSetOrgApproval({ orgId: o.id, requireApproval: !o.requireApproval }), 'Approval setting updated.')}
+                    >
+                      {o.requireApproval ? 'Switch to auto-charge' : 'Require “Looks good”'}
+                    </button>
                   </div>
                 </li>
               ))
@@ -152,6 +203,10 @@ export default function Admin() {
             {connectedOrgs.map((o) => <option key={o.id} value={o.id}>{o.name} — {o.repo}</option>)}
           </select>
           <textarea className={field} rows={3} value={test.prompt} onChange={(e) => setTest({ ...test, prompt: e.target.value })} placeholder="Describe the issue, e.g. The menu disappears on mobile phone" />
+          <label className="flex items-center gap-2 text-xs text-ink-soft">
+            <input type="checkbox" checked={test.asCustomer} onChange={(e) => setTest({ ...test, asCustomer: e.target.checked })} />
+            Run as customer (real classification, fixed-tier pricing, big-job quote flow)
+          </label>
           <button className={btn} disabled={busy || !test.orgId || !test.prompt.trim()} onClick={onRun}>Run fix</button>
           {taskId && (
             <div className="rounded-lg bg-white p-3 text-sm ring-1 ring-line">
@@ -160,7 +215,7 @@ export default function Admin() {
               {task?.status === 'complete' && (
                 <>
                   {task.resultSummary && <p className="mt-1 text-ink-soft">{task.resultSummary}</p>}
-                  <p className="mt-1">Cost: <span className="font-semibold">{formatINR(task.finalCharge)}</span></p>
+                  <TaskPnL status={task.status} finalCharge={task.finalCharge} actualCostInr={task.actualCostInr} className="mt-1" />
                   {task.prUrl && <a href={task.prUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block font-semibold text-brand-600">See the PR →</a>}
                   {task.previewUrl ? (
                     <a href={task.previewUrl} target="_blank" rel="noreferrer" className="mt-1 ml-3 inline-block font-semibold text-brand-600">Test the preview →</a>
@@ -169,7 +224,12 @@ export default function Admin() {
                   ) : null}
                 </>
               )}
-              {task?.status === 'failed' && <p className="text-ink-soft">No charge applied.</p>}
+              {task?.status === 'failed' && (
+                <>
+                  <p className="text-ink-soft">No charge applied — we absorb the cost of a failed run.</p>
+                  <TaskPnL status={task.status} finalCharge={task.finalCharge} actualCostInr={task.actualCostInr} className="mt-1" />
+                </>
+              )}
             </div>
           )}
         </section>
@@ -194,14 +254,77 @@ export default function Admin() {
                   {t.createdAt ? new Date(t.createdAt).toLocaleString('en-IN') : ''}
                   {t.model ? ` · ${t.model}` : ''}
                 </div>
-                {t.finalCharge != null && (
-                  <div className="mt-0.5 text-xs text-ink-soft">
-                    {/* Single figure: the charged amount already includes our 2.5× margin. */}
-                    cost <span className="font-semibold text-ink">{formatINR(t.finalCharge)}</span>
-                  </div>
-                )}
+                <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
                 {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
                 {t.error && <p className="mt-1 text-bad">error: {t.error}</p>}
+
+                {/* Big job awaiting a quote — set a price + budget cap, sent to the customer. */}
+                {(t.status === 'needs_quote' || t.status === 'needs_requote') && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-medium text-amber-700">
+                      {t.complexity === 'large' ? 'Big job' : 'Needs quote'} — set a price:
+                    </span>
+                    {quoteFor === t.id ? (
+                      <>
+                        <input type="number" className="w-24 rounded-lg border border-line px-2 py-1 text-xs" value={quoteAmt}
+                          onChange={(e) => setQuoteAmt(e.target.value)} placeholder="₹ quote" />
+                        <input type="number" className="w-24 rounded-lg border border-line px-2 py-1 text-xs" value={quoteBudget}
+                          onChange={(e) => setQuoteBudget(e.target.value)} placeholder="$ cap (8)" />
+                        <button className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                          disabled={busy || !quoteAmt}
+                          onClick={() => run(() => adminQuoteTask({ taskId: t.id, quoteInr: Number(quoteAmt), maxBudgetUsd: Number(quoteBudget) || 8 })
+                            .then(() => { setQuoteFor(null); setQuoteAmt(''); setQuoteBudget(''); loadSessions(sessOrg); }), 'Quote sent to customer.')}>
+                          Send quote
+                        </button>
+                        <button className="text-xs text-ink-soft underline disabled:opacity-60" disabled={busy} onClick={() => setQuoteFor(null)}>cancel</button>
+                      </>
+                    ) : (
+                      <button className="rounded-lg bg-amber-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                        disabled={busy} onClick={() => { setQuoteFor(t.id); setQuoteAmt(''); setQuoteBudget(''); }}>
+                        Quote
+                      </button>
+                    )}
+                  </div>
+                )}
+                {t.status === 'quoted' && (t.adminRun ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-ink-soft">Quoted {formatINR(t.quotedInr)}:</span>
+                    <button className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                      disabled={busy}
+                      onClick={() => run(() => confirmQuote({ taskId: t.id }).then(() => loadSessions(sessOrg)), 'Confirmed — work started.')}>
+                      Confirm {formatINR(t.quotedInr)} (as customer)
+                    </button>
+                    <button className="text-xs text-ink-soft underline disabled:opacity-60" disabled={busy}
+                      onClick={() => run(() => declineQuote({ taskId: t.id }).then(() => loadSessions(sessOrg)), 'Quote declined.')}>
+                      Decline
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-xs text-ink-soft">Quoted {formatINR(t.quotedInr)} — waiting for the customer to confirm.</p>
+                ))}
+
+                {/* Run-as-customer test: approve (and charge) a finished fix awaiting review. */}
+                {t.adminRun && t.status === 'complete' && t.pendingReview && (
+                  <div className="mt-2">
+                    <button className="rounded-lg bg-green-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                      disabled={busy}
+                      onClick={() => run(() => approveFix({ taskId: t.id }).then(() => loadSessions(sessOrg)), 'Approved & charged.')}>
+                      Looks good — pay {formatINR(t.currentRoundCharge || 0)} (as customer)
+                    </button>
+                  </div>
+                )}
+
+                {/* Stop a run mid-flight — marks it failed, never charged. */}
+                {(t.status === 'queued' || t.status === 'running') && (
+                  <div className="mt-2">
+                    <button className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                      disabled={busy}
+                      onClick={() => { if (window.confirm('Stop this run? It will be marked failed and not charged.')) run(() => adminStopTask({ taskId: t.id }).then(() => loadSessions(sessOrg)), 'Run stopped.'); }}>
+                      Stop run
+                    </button>
+                  </div>
+                )}
+
                 <div className="mt-1 flex gap-3">
                   {t.prUrl && <a href={t.prUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
                   {t.previewUrl && <a href={t.previewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
