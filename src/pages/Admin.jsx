@@ -33,6 +33,7 @@ export default function Admin() {
   const [task, setTask] = useState(null);
   const [sessOrg, setSessOrg] = useState('');
   const [sessions, setSessions] = useState([]);
+  const [deployFor, setDeployFor] = useState(null);
 
   const loadSessions = async (id) => {
     setSessOrg(id);
@@ -127,8 +128,11 @@ export default function Admin() {
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Assign user to organisation</h2>
           <input className={field} type="email" value={assign.email} onChange={(e) => setAssign({ ...assign, email: e.target.value })} placeholder="user email" />
-          <input className={field} value={assign.orgId} onChange={(e) => setAssign({ ...assign, orgId: e.target.value })} placeholder="orgId" />
-          <button className={btn} disabled={busy || !assign.email || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ email: assign.email.trim(), orgId: assign.orgId.trim() }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
+          <select className={field} value={assign.orgId} onChange={(e) => setAssign({ ...assign, orgId: e.target.value })}>
+            <option value="">Select organisation…</option>
+            {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          <button className={btn} disabled={busy || !assign.email || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ email: assign.email.trim(), orgId: assign.orgId }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
         </section>
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
@@ -204,24 +208,30 @@ export default function Admin() {
                 </div>
                 {t.status === 'complete' && t.prUrl && (
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    {!t.deployedTesting ? (
-                      <button className="rounded-lg bg-teal-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
-                        disabled={busy}
-                        onClick={() => deploy(() => deployTesting({ taskId: t.id }), 'Merged → deploying to testing.')}>
-                        Deploy to testing
-                      </button>
+                    {deployFor === t.id ? (
+                      <>
+                        <span className="text-xs text-ink-soft">Deploy to:</span>
+                        <button className="rounded-lg bg-teal-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                          disabled={busy}
+                          onClick={() => { setDeployFor(null); deploy(() => deployTesting({ taskId: t.id }), 'Merged → deploying to testing.'); }}>
+                          Testing
+                        </button>
+                        <button className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                          disabled={busy}
+                          onClick={() => { if (window.confirm('Promote release → PRODUCTION (vercel --prod + firebase)?')) { setDeployFor(null); deploy(() => deployProd({ taskId: t.id }), 'Promoting → production.'); } }}>
+                          Production
+                        </button>
+                        <button className="text-xs text-ink-soft underline disabled:opacity-60" disabled={busy} onClick={() => setDeployFor(null)}>cancel</button>
+                      </>
                     ) : (
-                      <span className="text-xs font-medium text-green-700">✓ on testing</span>
+                      <button className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                        disabled={busy}
+                        onClick={() => setDeployFor(t.id)}>
+                        Deploy
+                      </button>
                     )}
-                    {t.deployedTesting && (!t.deployedProd ? (
-                      <button className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
-                        disabled={busy}
-                        onClick={() => { if (window.confirm('Promote release → PRODUCTION (vercel --prod + firebase)?')) deploy(() => deployProd({ taskId: t.id }), 'Promoting → production.'); }}>
-                        Deploy to production
-                      </button>
-                    ) : (
-                      <span className="text-xs font-medium text-green-700">✓ live</span>
-                    ))}
+                    {t.deployedTesting && <span className="text-xs font-medium text-green-700">✓ on testing</span>}
+                    {t.deployedProd && <span className="text-xs font-medium text-green-700">✓ live</span>}
                   </div>
                 )}
               </li>

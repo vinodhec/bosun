@@ -210,10 +210,19 @@ function SessionCard({ session: s, onRevised }) {
 
   return (
     <div className="rounded-2xl border border-line bg-white p-5">
-      {s.problem && <p className="text-sm text-ink-soft">“{s.problem}”</p>}
+      {/* The original problem heads the card — except once complete, where the thread's
+          first entry already shows it (avoids repeating it twice). */}
+      {s.problem && !(s.status === 'complete' && s.rounds?.length > 0) && (
+        <p className="text-sm text-ink-soft">“{s.problem}”</p>
+      )}
       <h3 className="mt-1 font-semibold text-ink">
         {revising ? 'Applying your changes…' : STATUS[s.status] || 'Working on it…'}
       </h3>
+
+      {/* Echo the change request being applied, so the user can see it was received. */}
+      {revising && s.revisePrompt && (
+        <p className="mt-1 text-sm text-ink-soft">“{s.revisePrompt}”</p>
+      )}
 
       {working && (
         <p className="mt-1 text-sm text-ink-soft">Please wait a few minutes. You can leave this open.</p>
@@ -221,15 +230,44 @@ function SessionCard({ session: s, onRevised }) {
 
       {s.status === 'complete' && (
         <>
-          {s.summary && <p className="mt-1 text-ink-soft">{s.summary}</p>}
-          {s.changes?.length > 0 && (
-            <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-ink-soft">
-              {s.changes.map((c, i) => <li key={i}>{c}</li>)}
-            </ul>
+          {/* Iteration thread: the initial fix + every change request, each with its own
+              prompt, summary, and cost. Older fixes (made before threads existed) have no
+              `rounds`, so we fall back to the latest summary/changes. */}
+          {s.rounds?.length > 0 ? (
+            <ol className="mt-2 space-y-2">
+              {s.rounds.map((r, i) => (
+                <li key={i} className="rounded-xl border border-line bg-canvas p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                      {r.kind === 'initial' ? 'Initial fix' : 'Change request'}
+                    </span>
+                    {r.charge != null && (
+                      <span className="text-xs font-medium text-ink">{formatINR(r.charge)}</span>
+                    )}
+                  </div>
+                  {r.prompt && <p className="mt-1 text-sm text-ink-soft">“{r.prompt}”</p>}
+                  {r.summary && <p className="mt-1 text-sm text-ink">{r.summary}</p>}
+                  {r.changes?.length > 0 && (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink-soft">
+                      {r.changes.map((c, j) => <li key={j}>{c}</li>)}
+                    </ul>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <>
+              {s.summary && <p className="mt-1 text-ink-soft">{s.summary}</p>}
+              {s.changes?.length > 0 && (
+                <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm text-ink-soft">
+                  {s.changes.map((c, i) => <li key={i}>{c}</li>)}
+                </ul>
+              )}
+            </>
           )}
           {s.charge != null && (
-            <p className="mt-2 text-sm">
-              Cost charged: <span className="font-semibold">{formatINR(s.charge)}</span>
+            <p className="mt-3 text-sm">
+              Total charged: <span className="font-semibold">{formatINR(s.charge)}</span>
             </p>
           )}
 

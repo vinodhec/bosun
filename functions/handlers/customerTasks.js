@@ -34,6 +34,23 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
         previewUrl: t.previewUrl ?? null,
         buildingPreview: !!t.needsPreview,
         charge: t.finalCharge ?? null, // what they pay (cumulative across revisions)
+        // The change request currently being applied — echoed in the UI while it runs,
+        // before it lands in `rounds` (which is only written when the round is billed).
+        revisePrompt: t.revisePrompt ?? null,
+        // The iteration thread: initial fix + each revision, with per-round prompt,
+        // summary, plain-English changes, and the rupees charged for that round.
+        rounds: Array.isArray(t.rounds)
+          ? t.rounds.map((r) => ({
+              kind: r.kind === 'initial' ? 'initial' : 'revision',
+              prompt: String(r.prompt || ''),
+              summary: String(r.summary || ''),
+              changes: Array.isArray(r.changes)
+                ? r.changes.map((c) => String(c || '')).filter(Boolean).slice(0, 12)
+                : [],
+              charge: r.charge ?? null,
+              at: r.at ?? null,
+            }))
+          : [],
         canRevise: t.status === 'complete' && !merged,
         deployed: merged,
         createdAt: t.createdAt?.toMillis?.() ?? null,

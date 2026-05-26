@@ -31,6 +31,22 @@ export async function billTaskSuccess(taskId, { actualCostUsd, resultSummary, fi
     const cumulativeInr = computeCharge(totalUsd, { rate }).actualCostInr;
     const newFinalCharge = (Number(task.finalCharge) || 0) + roundCharge;
 
+    // Append THIS round to the task's thread (initial fix + each revision) so the UI can
+    // show prompt + summary + cost for every iteration, not just the latest. The revision
+    // text/summary are overwritten each round, so we snapshot them here. A serverTimestamp
+    // sentinel can't live inside an array element, so we store epoch millis.
+    const priorRounds = Array.isArray(task.rounds) ? task.rounds : [];
+    const roundEntry = {
+      kind, // 'initial' | 'unresolved' (a revision)
+      prompt: kind === 'initial' ? (task.prompt || '') : (task.revisePrompt || ''),
+      summary: resultSummary || '',
+      changes: Array.isArray(filesChanged)
+        ? filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
+        : [],
+      charge: roundCharge, // rupees billed for this round only
+      at: Date.now(),
+    };
+
     const orgRef = db.collection('organisations').doc(task.orgId);
     const orgSnap = await tx.get(orgRef);
     const balance = orgSnap.exists ? Number(orgSnap.data().balance ?? 0) : 0;
@@ -45,6 +61,7 @@ export async function billTaskSuccess(taskId, { actualCostUsd, resultSummary, fi
       actualCostInr: cumulativeInr,
       finalCharge: newFinalCharge, // cumulative across rounds
       lastRoundCharge: roundCharge,
+      rounds: [...priorRounds, roundEntry], // the iteration thread
       resultSummary: resultSummary || '',
       filesChanged: Array.isArray(filesChanged) ? filesChanged : [],
       prUrl: prUrl || null,
