@@ -165,6 +165,14 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
 
   const totals = { orgs: orgsSnap.size, tasksTotal: tasksSnap.size, balanceInr: 0, ...blank() };
 
+  // Time-based slices for revenue & profit. Run-rate divides lifetime totals by how long
+  // we've been live (earliest task → now). Trailing windows sum what was booked in the last
+  // 24h / 7d / 30d, attributed to when the job finished (completedAt, else createdAt).
+  const DAY_MS = 86400000;
+  const now = Date.now();
+  let firstCreatedMs = null;
+  const win = { d1: { rev: 0, cost: 0 }, d7: { rev: 0, cost: 0 }, d30: { rev: 0, cost: 0 } };
+
   for (const d of tasksSnap.docs) {
     const t = d.data();
     const paid = Number(t.finalCharge) || 0;
@@ -173,6 +181,16 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
 
     totals.revenueInr += paid; totals.costInr += costInr; totals.anthropicUsd += costUsd;
     bump(t.orgId, (s) => { s.revenueInr += paid; s.costInr += costInr; s.anthropicUsd += costUsd; });
+
+    const createdMs = t.createdAt?.toMillis?.() ?? null;
+    if (createdMs != null) firstCreatedMs = firstCreatedMs == null ? createdMs : Math.min(firstCreatedMs, createdMs);
+    const whenMs = t.completedAt?.toMillis?.() ?? createdMs;
+    if (whenMs != null) {
+      const age = now - whenMs;
+      if (age <= DAY_MS) { win.d1.rev += paid; win.d1.cost += costInr; }
+      if (age <= 7 * DAY_MS) { win.d7.rev += paid; win.d7.cost += costInr; }
+      if (age <= 30 * DAY_MS) { win.d30.rev += paid; win.d30.cost += costInr; }
+    }
 
     if (t.status === 'complete') { totals.fixesDone++; bump(t.orgId, (s) => s.fixesDone++); }
     else if (t.status === 'failed') { totals.failedRuns++; bump(t.orgId, (s) => s.failedRuns++); }
@@ -196,8 +214,25 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   totals.profitInr = totals.revenueInr - totals.costInr;
   totals.marginPct = totals.revenueInr > 0 ? Math.round((totals.profitInr / totals.revenueInr) * 100) : 0;
 
+  // Run-rate averages: lifetime totals spread evenly across the active span.
+  const MONTH_DAYS = 30.4375; // average calendar month
+  const spanDays = firstCreatedMs ? Math.max(1, (now - firstCreatedMs) / DAY_MS) : 1;
+  const avg = (total) => ({
+    daily: total / spanDays,
+    weekly: total / (spanDays / 7),
+    monthly: total / (spanDays / MONTH_DAYS),
+  });
+  const averages = { spanDays, revenue: avg(totals.revenueInr), profit: avg(totals.profitInr) };
+
+  // Trailing windows: actuals booked in each recent period.
+  const trailing = {
+    d1: { revenueInr: win.d1.rev, profitInr: win.d1.rev - win.d1.cost },
+    d7: { revenueInr: win.d7.rev, profitInr: win.d7.rev - win.d7.cost },
+    d30: { revenueInr: win.d30.rev, profitInr: win.d30.rev - win.d30.cost },
+  };
+
   const byOrg = [...orgStats.values()].sort((a, b) => b.revenueInr - a.revenueInr);
-  return { rate, totals, byOrg, generatedAt: Date.now() };
+  return { rate, totals, averages, trailing, byOrg, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {

@@ -48,6 +48,36 @@ function MetricCard({ label, value, sub, tone }) {
   );
 }
 
+// A small revenue/profit-by-period table (run-rate averages or trailing windows). Profit
+// cells are coloured by sign; revenue is neutral.
+function TrendTable({ title, cols, revenue, profit }) {
+  return (
+    <div className="rounded-xl border border-line bg-canvas/40 p-3">
+      <div className="text-xs font-medium text-ink-soft">{title}</div>
+      <table className="mt-2 w-full text-xs">
+        <thead>
+          <tr className="text-ink-soft">
+            <th className="text-left font-medium" />
+            {cols.map((c) => <th key={c} className="pl-3 text-right font-medium">{c}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className="py-1 text-left text-ink-soft">Revenue</td>
+            {revenue.map((v, i) => <td key={i} className="py-1 pl-3 text-right font-semibold text-ink">{formatINR(v)}</td>)}
+          </tr>
+          <tr>
+            <td className="py-1 text-left text-ink-soft">Profit</td>
+            {profit.map((v, i) => (
+              <td key={i} className={`py-1 pl-3 text-right font-semibold ${v >= 0 ? 'text-green-700' : 'text-rose-600'}`}>{formatINR(v)}</td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // Business overview: revenue, what we pay Anthropic, profit/margin, and delivery counts
 // (fixes / PRs / deploys), plus a per-org breakdown. Data from the adminMetrics callable.
 function Overview({ data, busy, onRefresh }) {
@@ -73,6 +103,21 @@ function Overview({ data, busy, onRefresh }) {
               sub={`${t.failedRuns} failed${t.inProgress ? ` · ${t.inProgress} running` : ''}`} />
             <MetricCard label="PRs opened" value={t.prsDelivered} />
             <MetricCard label="Deploys" value={`${t.deploysProd} live`} sub={`${t.deploysTesting} to testing`} />
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <TrendTable
+              title={`Run rate — average over ${Math.round(data.averages.spanDays)} day${Math.round(data.averages.spanDays) === 1 ? '' : 's'}`}
+              cols={['Daily', 'Weekly', 'Monthly']}
+              revenue={[data.averages.revenue.daily, data.averages.revenue.weekly, data.averages.revenue.monthly]}
+              profit={[data.averages.profit.daily, data.averages.profit.weekly, data.averages.profit.monthly]}
+            />
+            <TrendTable
+              title="Recent — booked in the last…"
+              cols={['24 hours', '7 days', '30 days']}
+              revenue={[data.trailing.d1.revenueInr, data.trailing.d7.revenueInr, data.trailing.d30.revenueInr]}
+              profit={[data.trailing.d1.profitInr, data.trailing.d7.profitInr, data.trailing.d30.profitInr]}
+            />
           </div>
 
           {data.byOrg.length > 0 && (
