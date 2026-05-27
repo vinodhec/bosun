@@ -85,6 +85,29 @@ export async function fetchPrPreviewUrl(repoFullName, prNumber, token) {
   return null;
 }
 
+// A compact map of the repo's source files, so the complexity classifier judges scope
+// against the REAL project (how many files a request really touches) instead of guessing
+// from the request text alone. Best-effort: returns null on any failure, so the caller
+// falls back to text-only classification. Filtered to source files and capped so the
+// token cost of the classification call stays small.
+const TREE_MAX_PATHS = 400;
+const TREE_SKIP_DIRS = /(^|\/)(node_modules|dist|build|out|coverage|\.next|\.git|vendor|__pycache__|\.venv)\//;
+const TREE_KEEP_EXT = /\.(jsx?|tsx?|vue|svelte|astro|css|scss|less|html?|json|py|rb|go|java|kt|php|cs|md)$/i;
+
+export async function fetchRepoTree(repoFullName, token) {
+  const repo = await ghGet(repoFullName, '', token);
+  const branch = repo?.default_branch;
+  if (!branch) return null;
+  const tree = await ghGet(repoFullName, `/git/trees/${encodeURIComponent(branch)}?recursive=1`, token);
+  const nodes = Array.isArray(tree?.tree) ? tree.tree : null;
+  if (!nodes) return null;
+  const files = nodes
+    .filter((n) => n.type === 'blob' && !TREE_SKIP_DIRS.test(n.path) && TREE_KEEP_EXT.test(n.path))
+    .map((n) => n.path);
+  if (files.length === 0) return null;
+  return { paths: files.slice(0, TREE_MAX_PATHS), total: files.length };
+}
+
 const GH_HEADERS = (token) => ({
   Authorization: `Bearer ${token}`,
   Accept: 'application/vnd.github+json',

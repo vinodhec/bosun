@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { tierFor, requiredBalanceFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
+import { fetchRepoTree } from '../utils/github.js';
 import { startFixSession } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -14,14 +15,6 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
 
   const prompt = String(request.data?.prompt ?? '').trim();
   if (!prompt) throw new HttpsError('invalid-argument', 'Please describe what is broken.');
-
-  // Complexity drives BOTH the model and the hard budget cap, so the spend cap always
-  // matches the tier we quoted. The estimate step (classifyTask) passes it; the quick-fix
-  // path (Dashboard) sends none, so we classify here — server-authoritative either way.
-  let complexity = String(request.data?.complexity ?? '').trim();
-  if (!['simple', 'medium', 'complex', 'large'].includes(complexity)) {
-    ({ complexity } = await classifyComplexity(prompt));
-  }
 
   // Optional screenshots the owner pasted in (base64). Validated + capped before we
   // forward them to the agent so a screenshot can show what words can't.
@@ -40,6 +33,23 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
 
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+
+  // The GitHub token (operator-provisioned) is backend-only — never exposed to clients. We
+  // need it both to mount the repo for the agent AND to read the file map for classification.
+  const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+  const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+  if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+
+  // Complexity drives BOTH the model and the hard budget cap, so the spend cap always
+  // matches the tier we quoted. An explicit valid value (estimate step) is trusted as-is;
+  // otherwise we classify here — code-aware, feeding the classifier the repo's real file
+  // map so it judges scope against the actual project instead of the request text alone.
+  // Server-authoritative either way; the repo read is best-effort (falls back to text-only).
+  let complexity = String(request.data?.complexity ?? '').trim();
+  if (!['simple', 'medium', 'complex', 'large'].includes(complexity)) {
+    const repoTree = await fetchRepoTree(gh.repoFullName, githubToken).catch(() => null);
+    ({ complexity } = await classifyComplexity(prompt, { repoTree }));
+  }
 
   // BIG JOBS: a 'large' task is bigger than our standard tiers — it has no fixed price. We
   // park it for the operator to quote (adminQuoteTask); nothing runs and nothing is charged
@@ -78,11 +88,6 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
 
   const balance = Number(org.balance ?? 0);
   if (balance < required) throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
-
-  // The GitHub token (operator-provisioned) is backend-only — never exposed to clients.
-  const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
-  const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
-  if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
   // Cost-aware routing: Sonnet handles all but `complex` fixes; Opus is reserved for those.
   const model = modelForComplexity(complexity);
