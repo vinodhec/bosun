@@ -17,6 +17,7 @@ export const customerDeployProd = httpsCallable(functions, 'customerDeployProd')
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
 export const adminAddCredits = httpsCallable(functions, 'adminAddCredits');
 export const adminListOrgs = httpsCallable(functions, 'adminListOrgs');
+export const adminMetrics = httpsCallable(functions, 'adminMetrics');
 export const adminSetUserOrg = httpsCallable(functions, 'adminSetUserOrg');
 export const adminSetOrgApproval = httpsCallable(functions, 'adminSetOrgApproval');
 export const adminSetOrgDeploy = httpsCallable(functions, 'adminSetOrgDeploy');

@@ -11,6 +11,7 @@ import {
   adminSetGithubRepo,
   adminRunFix,
   adminListTasks,
+  adminMetrics,
   confirmQuote,
   approveFix,
   declineQuote,
@@ -30,6 +31,132 @@ const TONE = { complete: 'bg-green-50 text-green-700', running: 'bg-blue-50 text
 // (which would make every fix look like 100% margin). formatINR stays 0dp for prices.
 const inrPrecise = (n) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(n) || 0);
+
+// What we actually pay Anthropic is denominated in USD, so show it natively.
+const fmtUSD = (n) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(n) || 0);
+
+// One headline number on the business overview. tone colours profit-like figures.
+function MetricCard({ label, value, sub, tone }) {
+  const valueCls = tone === 'good' ? 'text-green-700' : tone === 'bad' ? 'text-rose-600' : 'text-ink';
+  return (
+    <div className="rounded-xl border border-line bg-canvas/40 p-3">
+      <div className="text-xs font-medium text-ink-soft">{label}</div>
+      <div className={`mt-0.5 text-lg font-bold leading-tight ${valueCls}`}>{value}</div>
+      {sub && <div className="mt-0.5 text-xs text-ink-soft">{sub}</div>}
+    </div>
+  );
+}
+
+// A small revenue/profit-by-period table (run-rate averages or trailing windows). Profit
+// cells are coloured by sign; revenue is neutral.
+function TrendTable({ title, cols, revenue, profit }) {
+  return (
+    <div className="rounded-xl border border-line bg-canvas/40 p-3">
+      <div className="text-xs font-medium text-ink-soft">{title}</div>
+      <table className="mt-2 w-full text-xs">
+        <thead>
+          <tr className="text-ink-soft">
+            <th className="text-left font-medium" />
+            {cols.map((c) => <th key={c} className="pl-3 text-right font-medium">{c}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className="py-1 text-left text-ink-soft">Revenue</td>
+            {revenue.map((v, i) => <td key={i} className="py-1 pl-3 text-right font-semibold text-ink">{formatINR(v)}</td>)}
+          </tr>
+          <tr>
+            <td className="py-1 text-left text-ink-soft">Profit</td>
+            {profit.map((v, i) => (
+              <td key={i} className={`py-1 pl-3 text-right font-semibold ${v >= 0 ? 'text-green-700' : 'text-rose-600'}`}>{formatINR(v)}</td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Business overview: revenue, what we pay Anthropic, profit/margin, and delivery counts
+// (fixes / PRs / deploys), plus a per-org breakdown. Data from the adminMetrics callable.
+function Overview({ data, busy, onRefresh }) {
+  const t = data?.totals;
+  return (
+    <section className="rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-ink">Business overview</h2>
+        <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+          disabled={busy} onClick={onRefresh}>Refresh</button>
+      </div>
+      {!data ? (
+        <p className="mt-3 text-sm text-ink-soft">Loading numbers…</p>
+      ) : (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <MetricCard label="Revenue" value={formatINR(t.revenueInr)} sub="earned on fixes" tone="good" />
+            <MetricCard label="Paid to Anthropic" value={fmtUSD(t.anthropicUsd)} sub={`${inrPrecise(t.costInr)} cost`} />
+            <MetricCard label="Profit" value={formatINR(t.profitInr)} sub={`${t.marginPct}% margin`} tone={t.profitInr >= 0 ? 'good' : 'bad'} />
+            <MetricCard label="Cash collected" value={formatINR(t.creditsAddedInr)} sub={`${formatINR(t.balanceInr)} unspent`} />
+            <MetricCard label="Organisations" value={t.orgs} sub={`${t.tasksTotal} jobs total`} />
+            <MetricCard label="Fixes delivered" value={t.fixesDone}
+              sub={`${t.failedRuns} failed${t.inProgress ? ` · ${t.inProgress} running` : ''}`} />
+            <MetricCard label="PRs opened" value={t.prsDelivered} />
+            <MetricCard label="Deploys" value={`${t.deploysProd} live`} sub={`${t.deploysTesting} to testing`} />
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <TrendTable
+              title={`Run rate — average over ${Math.round(data.averages.spanDays)} day${Math.round(data.averages.spanDays) === 1 ? '' : 's'}`}
+              cols={['Daily', 'Weekly', 'Monthly']}
+              revenue={[data.averages.revenue.daily, data.averages.revenue.weekly, data.averages.revenue.monthly]}
+              profit={[data.averages.profit.daily, data.averages.profit.weekly, data.averages.profit.monthly]}
+            />
+            <TrendTable
+              title="Recent — booked in the last…"
+              cols={['24 hours', '7 days', '30 days']}
+              revenue={[data.trailing.d1.revenueInr, data.trailing.d7.revenueInr, data.trailing.d30.revenueInr]}
+              profit={[data.trailing.d1.profitInr, data.trailing.d7.profitInr, data.trailing.d30.profitInr]}
+            />
+          </div>
+
+          {data.byOrg.length > 0 && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-xs">
+                <thead>
+                  <tr className="border-b border-line text-ink-soft">
+                    <th className="py-1.5 pr-3 font-medium">Organisation</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Revenue</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Cost</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Profit</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Fixes</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">PRs</th>
+                    <th className="py-1.5 pr-3 text-right font-medium">Deploys</th>
+                    <th className="py-1.5 text-right font-medium">Balance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.byOrg.map((o) => (
+                    <tr key={o.orgId} className="border-b border-line/60">
+                      <td className="py-1.5 pr-3 font-medium text-ink">{o.name}</td>
+                      <td className="py-1.5 pr-3 text-right text-ink">{formatINR(o.revenueInr)}</td>
+                      <td className="py-1.5 pr-3 text-right text-ink-soft">{inrPrecise(o.costInr)}</td>
+                      <td className={`py-1.5 pr-3 text-right font-semibold ${o.profitInr >= 0 ? 'text-green-700' : 'text-rose-600'}`}>{inrPrecise(o.profitInr)}</td>
+                      <td className="py-1.5 pr-3 text-right text-ink">{o.fixesDone}{o.failedRuns ? <span className="text-rose-500"> /{o.failedRuns}✗</span> : ''}</td>
+                      <td className="py-1.5 pr-3 text-right text-ink">{o.prsDelivered}</td>
+                      <td className="py-1.5 pr-3 text-right text-ink-soft">{o.deploysProd}↑ · {o.deploysTesting}t</td>
+                      <td className="py-1.5 text-right text-ink">{formatINR(o.balanceInr)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
 
 // Per-fix P&L for the admin: what the customer PAID (finalCharge — ₹0 when never charged,
 // i.e. a failed/stopped run) vs what the run actually COST us (actualCostInr = raw COGS in
@@ -58,6 +185,8 @@ function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
 
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
+  const [metrics, setMetrics] = useState(null);
+  const [metricsBusy, setMetricsBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -87,7 +216,13 @@ export default function Admin() {
     try { const { data } = await adminListOrgs(); setOrgs(data.orgs || []); }
     catch { setErr('Not authorised (your email must be in ADMIN_EMAILS), or failed to load.'); }
   };
-  useEffect(() => { refresh(); }, []);
+  const loadMetrics = async () => {
+    setMetricsBusy(true);
+    try { const { data } = await adminMetrics(); setMetrics(data); }
+    catch { /* keep the last snapshot; the orgs error already surfaces auth issues */ }
+    finally { setMetricsBusy(false); }
+  };
+  useEffect(() => { refresh(); loadMetrics(); }, []);
   useEffect(() => {
     if (!taskId) return undefined;
     return onSnapshot(taskDocRef(taskId), (s) => setTask(s.exists() ? { id: s.id, ...s.data() } : null));
@@ -95,14 +230,14 @@ export default function Admin() {
 
   const run = async (fn, ok) => {
     setBusy(true); setErr(''); setMsg('');
-    try { await fn(); setMsg(ok); await refresh(); }
+    try { await fn(); setMsg(ok); await refresh(); loadMetrics(); }
     catch (e) { setErr(e?.message || 'Failed.'); }
     finally { setBusy(false); }
   };
 
   const deploy = async (fn, ok) => {
     setBusy(true); setErr(''); setMsg('');
-    try { await fn(); setMsg(ok); await loadSessions(sessOrg); }
+    try { await fn(); setMsg(ok); await loadSessions(sessOrg); loadMetrics(); }
     catch (e) { setErr(e?.message || 'Deploy failed.'); }
     finally { setBusy(false); }
   };
@@ -125,10 +260,12 @@ export default function Admin() {
   return (
     <div className="min-h-screen">
       <Navbar balance={null} />
-      <main className="mx-auto max-w-2xl space-y-5 px-4 py-6">
+      <main className="mx-auto max-w-3xl space-y-5 px-4 py-6">
         <h1 className="text-xl font-bold text-ink">Admin — organisations &amp; credits</h1>
         {msg && <p className="rounded-xl bg-green-50 px-4 py-2 text-sm text-green-700">{msg}</p>}
         {err && <p className="rounded-xl bg-rose-50 px-4 py-2 text-sm text-bad">{err}</p>}
+
+        <Overview data={metrics} busy={metricsBusy} onRefresh={loadMetrics} />
 
         <section className="rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Organisations</h2>

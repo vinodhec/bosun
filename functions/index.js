@@ -19,6 +19,7 @@ export {
   adminSetOrgApproval,
   adminSetOrgDeploy,
   adminQuoteTask,
+  adminMetrics,
 } from './handlers/admin.js';
 
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,
