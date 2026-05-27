@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { DEFAULT_USD_TO_INR } from '../utils/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (comma-separated).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -124,6 +125,79 @@ export const adminQuoteTask = onCall({ region: REGION }, async (request) => {
     quotedAt: FieldValue.serverTimestamp(),
   });
   return { taskId, quoteInr };
+});
+
+// Business dashboard: aggregate the whole book into one operator-facing snapshot —
+// revenue (what customers paid), what we paid Anthropic (raw COGS), profit/margin, and
+// delivery counts (fixes, PRs, deploys). Totals + a per-org breakdown. Read-only.
+//
+// Money model (per shared/billing.js):
+//   revenueInr  = Σ task.finalCharge   — what customers actually paid us
+//   costInr     = Σ task.actualCostInr — raw Anthropic COGS in INR (no markup)
+//   anthropicUsd= Σ task.actualCostUsd — the same COGS in USD (what we pay Anthropic)
+//   profitInr   = revenueInr − costInr  (a failed run is paid ₹0 but still cost us → a loss)
+//   creditsAddedInr = Σ credit transactions — cash collected via top-ups / manual credit
+//   balanceInr  = Σ org.balance         — unspent prepaid credit still owed to customers
+export const adminMetrics = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const db = getFirestore();
+  const rate = Number(process.env.USD_TO_INR) || DEFAULT_USD_TO_INR;
+
+  const [orgsSnap, tasksSnap, creditSnap] = await Promise.all([
+    db.collection('organisations').get(),
+    db.collection('tasks').get(),
+    db.collection('transactions').where('type', '==', 'credit').get(),
+  ]);
+
+  const blank = () => ({
+    revenueInr: 0, costInr: 0, anthropicUsd: 0, profitInr: 0,
+    fixesDone: 0, failedRuns: 0, inProgress: 0,
+    prsDelivered: 0, deploysTesting: 0, deploysProd: 0,
+    creditsAddedInr: 0,
+  });
+
+  const orgStats = new Map();
+  for (const d of orgsSnap.docs) {
+    const o = d.data();
+    orgStats.set(d.id, { orgId: d.id, name: o.name || '(unnamed)', balanceInr: Number(o.balance) || 0, ...blank() });
+  }
+  const bump = (orgId, fn) => { const s = orgStats.get(orgId); if (s) fn(s); };
+
+  const totals = { orgs: orgsSnap.size, tasksTotal: tasksSnap.size, balanceInr: 0, ...blank() };
+
+  for (const d of tasksSnap.docs) {
+    const t = d.data();
+    const paid = Number(t.finalCharge) || 0;
+    const costInr = Number(t.actualCostInr) || 0;
+    const costUsd = Number(t.actualCostUsd) || 0;
+
+    totals.revenueInr += paid; totals.costInr += costInr; totals.anthropicUsd += costUsd;
+    bump(t.orgId, (s) => { s.revenueInr += paid; s.costInr += costInr; s.anthropicUsd += costUsd; });
+
+    if (t.status === 'complete') { totals.fixesDone++; bump(t.orgId, (s) => s.fixesDone++); }
+    else if (t.status === 'failed') { totals.failedRuns++; bump(t.orgId, (s) => s.failedRuns++); }
+    else if (t.status === 'queued' || t.status === 'running') { totals.inProgress++; bump(t.orgId, (s) => s.inProgress++); }
+
+    if (t.prUrl) { totals.prsDelivered++; bump(t.orgId, (s) => s.prsDelivered++); }
+    if (t.deployedTesting === true) { totals.deploysTesting++; bump(t.orgId, (s) => s.deploysTesting++); }
+    if (t.deployedProd === true) { totals.deploysProd++; bump(t.orgId, (s) => s.deploysProd++); }
+  }
+
+  for (const d of creditSnap.docs) {
+    const amt = Number(d.data().amount) || 0;
+    totals.creditsAddedInr += amt;
+    bump(d.data().orgId, (s) => { s.creditsAddedInr += amt; });
+  }
+
+  for (const s of orgStats.values()) {
+    s.profitInr = s.revenueInr - s.costInr;
+    totals.balanceInr += s.balanceInr;
+  }
+  totals.profitInr = totals.revenueInr - totals.costInr;
+  totals.marginPct = totals.revenueInr > 0 ? Math.round((totals.profitInr / totals.revenueInr) * 100) : 0;
+
+  const byOrg = [...orgStats.values()].sort((a, b) => b.revenueInr - a.revenueInr);
+  return { rate, totals, byOrg, generatedAt: Date.now() };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
