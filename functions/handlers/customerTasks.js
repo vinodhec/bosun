@@ -3,6 +3,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { continueFixSession, startFixSession } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
+import { sanitizeImages } from '../utils/images.js';
 import { chargeApprovedFix } from '../utils/finalize.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -130,6 +131,9 @@ export const reviseSession = onCall(
     if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
     if (!changes) throw new HttpsError('invalid-argument', 'Please describe the changes you want.');
 
+    // Optional fresh screenshots attached to this change request (validated + capped).
+    const images = sanitizeImages(request.data?.images);
+
     const db = getFirestore();
     const taskRef = db.collection('tasks').doc(taskId);
     const snap = await taskRef.get();
@@ -167,7 +171,7 @@ export const reviseSession = onCall(
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
     try {
-      await continueFixSession({ sessionId: task.sessionId, changes });
+      await continueFixSession({ sessionId: task.sessionId, changes, images });
     } catch (e) {
       console.error('reviseSession:dispatch', taskId, e?.message || e);
       throw new HttpsError('internal', 'We could not start the changes. You were not charged.');
