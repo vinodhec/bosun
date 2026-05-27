@@ -109,7 +109,7 @@ export function priceForComplexity(complexity) {
  *   - `unresolved` (didn't work / not what I meant): FREE, up to MAX_FREE_REVISIONS rounds.
  *   - `new_scope`   (something new): adds another tier price to what's owed.
  */
-export const MAX_FREE_REVISIONS = 3;
+export const MAX_FREE_REVISIONS = 1;
 export const REVISION_REASONS = ['unresolved', 'new_scope'];
 
 /** Is this revision reason a free re-fix (our shortfall) vs new, chargeable scope? */
