@@ -72,16 +72,16 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * noise; the same percentage swing on a ₹700 fix would be a jarring ₹200, too
  * noticeable. Bands sit MOSTLY below the prior flat anchor, so the customer most
  * often sees a charge that compares favourably to it:
- *   simple  ₹110–₹170  (avg ~₹140, vs prior ₹149)
- *   medium  ₹320–₹400  (avg ~₹360, vs prior ₹375)
- *   complex ₹680–₹750  (avg ~₹715, vs prior ₹749)
+ *   simple  ₹120–₹160  (avg ~₹140, vs prior ₹149)
+ *   medium  ₹320–₹380  (avg ~₹350, vs prior ₹375)
+ *   complex ₹650–₹750  (avg ~₹700, vs prior ₹749)
  *
  * `maxBudgetUsd` is the hard spend cap enforced by the poller (Managed Agents have no
  * native cap). It is chosen so our COGS at the cap stays comfortably below the band's
  * floor — even on the lowest roll we still net a positive margin:
- *   simple : floor ₹110, cap $0.45 (~₹37 COGS)  → ~65%+ margin at the worst case
+ *   simple : floor ₹120, cap $0.45 (~₹37 COGS)  → ~69%+ margin at the worst case
  *   medium : floor ₹320, cap $1.50 (~₹125 COGS) → ~60%+ margin at the worst case
- *   complex: floor ₹680, cap $3.00 (~₹249 COGS) → ~63%+ margin at the worst case
+ *   complex: floor ₹650, cap $3.00 (~₹249 COGS) → ~62%+ margin at the worst case
  *
  * `maxSeconds` is a SECOND, independent cap: the max active runtime per round. It exists
  * because the dollar cap can't be trusted alone — Anthropic's `session.usage` can report
@@ -95,9 +95,9 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * final — tune them here and nowhere else.
  */
 export const COMPLEXITY_TIERS = {
-  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 110, maxInr: 170 },
-  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 320, maxInr: 400 },
-  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 680, maxInr: 750 },
+  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 120, maxInr: 160 },
+  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 320, maxInr: 380 },
+  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 650, maxInr: 750 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
