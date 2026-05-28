@@ -3,8 +3,10 @@ import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
 import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
+import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
+import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { formatINR } from '@shared/currency.js';
-import { MAX_IMAGES, MAX_IMAGE_BYTES, ACCEPTED_TYPES, readImageAttachment, imageFilesFrom } from '../utils/images.js';
+import { MAX_IMAGES } from '../utils/images.js';
 
 const STATUS = {
   queued: 'Starting…',
@@ -35,9 +37,7 @@ export default function Dashboard() {
   const { user } = useAuth();
   const org = useOrg(user);
   const [problem, setProblem] = useState('');
-  const [images, setImages] = useState([]); // pasted/dropped screenshots, max MAX_IMAGES
-  const [imgErr, setImgErr] = useState('');
-  const [dragging, setDragging] = useState(false);
+  const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
@@ -68,35 +68,6 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [user, refresh]);
 
-  // Add pasted/dropped screenshots, respecting the MAX_IMAGES cap and size/type limits.
-  const addFiles = useCallback(async (files) => {
-    if (!files?.length) return;
-    setImgErr('');
-    const slots = MAX_IMAGES - images.length;
-    if (slots <= 0) { setImgErr(`You can attach up to ${MAX_IMAGES} screenshots.`); return; }
-    const accepted = [];
-    for (const f of files.slice(0, slots)) {
-      if (!ACCEPTED_TYPES.includes(f.type)) { setImgErr('Only PNG, JPG, WEBP or GIF images.'); continue; }
-      if (f.size > MAX_IMAGE_BYTES) { setImgErr('Each screenshot must be under 10 MB.'); continue; }
-      try { accepted.push(await readImageAttachment(f)); }
-      catch { setImgErr('Could not read that image.'); }
-    }
-    if (files.length > slots) setImgErr(`You can attach up to ${MAX_IMAGES} screenshots.`);
-    if (accepted.length) setImages((prev) => [...prev, ...accepted].slice(0, MAX_IMAGES));
-  }, [images.length]);
-
-  const onPaste = useCallback((e) => {
-    const files = imageFilesFrom(e.clipboardData);
-    if (files.length) { e.preventDefault(); addFiles(files); }
-  }, [addFiles]);
-
-  const onDrop = useCallback((e) => {
-    e.preventDefault(); setDragging(false);
-    addFiles(imageFilesFrom(e.dataTransfer));
-  }, [addFiles]);
-
-  const removeImage = (id) => setImages((prev) => prev.filter((i) => i.id !== id));
-
   const onFix = async () => {
     if (!problem.trim()) return;
     setBusy(true); setErr('');
@@ -105,7 +76,7 @@ export default function Dashboard() {
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       });
-      setProblem(''); setImages([]); setImgErr('');
+      setProblem(''); resetImages();
       await refresh();
     } catch (e) {
       setErr(friendlyError(e));
@@ -131,42 +102,22 @@ export default function Dashboard() {
               Connected: <span className="font-medium text-ink">{org.github.repoFullName}</span>
             </p>
           )}
-          <div
-            onDrop={onDrop}
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            className={`mt-4 rounded-xl border ${dragging ? 'border-brand-500 ring-1 ring-brand-500' : 'border-line'}`}
-          >
-            <textarea
+          <div className="mt-4">
+            <ScreenshotComposer
               value={problem}
-              onChange={(e) => setProblem(e.target.value)}
-              onPaste={onPaste}
-              rows={3}
+              onChange={setProblem}
               placeholder="Example: My menu disappears on mobile phone"
-              className="w-full resize-none rounded-t-xl bg-transparent px-4 py-3 outline-none"
+              images={images}
+              imgErr={imgErr}
+              dragging={dragging}
+              setDragging={setDragging}
+              addFiles={addFiles}
+              removeImage={removeImage}
             />
-            {images.length > 0 && (
-              <div className="flex flex-wrap gap-2 px-4 pb-3">
-                {images.map((img) => (
-                  <div key={img.id} className="relative">
-                    <img src={img.dataUrl} alt="screenshot" className="h-16 w-16 rounded-lg border border-line object-cover" />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(img.id)}
-                      aria-label="Remove screenshot"
-                      className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-xs text-white shadow"
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
           <p className="mt-1.5 text-xs text-ink-soft">
-            📎 Paste a screenshot (Ctrl/⌘+V) or drag one in — up to {MAX_IMAGES}. It helps us see exactly what’s wrong.
+            📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what’s wrong.
           </p>
-          {imgErr && <p className="mt-1 text-sm text-bad">{imgErr}</p>}
           {err && <p className="mt-2 text-sm text-bad">{err}</p>}
           <button
             onClick={onFix}
@@ -209,6 +160,7 @@ function SessionCard({ session: s, onRevised }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('unresolved'); // 'unresolved' (free) | 'new_scope' (paid)
   const [changes, setChanges] = useState('');
+  const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [deployOpen, setDeployOpen] = useState(false); // expanded Testing|Production picker
@@ -232,8 +184,13 @@ function SessionCard({ session: s, onRevised }) {
     if (!changes.trim()) return;
     setBusy(true); setErr('');
     try {
-      await reviseSession({ taskId: s.id, changes: changes.trim(), reason });
-      setChanges(''); setOpen(false); setReason('unresolved');
+      await reviseSession({
+        taskId: s.id,
+        changes: changes.trim(),
+        reason,
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
+      setChanges(''); setOpen(false); setReason('unresolved'); resetImages();
       await onRevised();
     } catch (e) {
       setErr(friendlyError(e));
@@ -442,13 +399,22 @@ function SessionCard({ session: s, onRevised }) {
                       : `Free re-fix — ${s.freeRevisionsLeft} left.`)
                   : `A new change adds ${formatINR(s.priceInr || 0)}, charged when you approve.`}
               </p>
-              <textarea
-                value={changes}
-                onChange={(e) => setChanges(e.target.value)}
-                rows={3}
-                placeholder="What should change? Example: also make the buttons bigger on mobile"
-                className="mt-2 w-full resize-none rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
-              />
+              <div className="mt-2">
+                <ScreenshotComposer
+                  value={changes}
+                  onChange={setChanges}
+                  placeholder="What should change? Example: also make the buttons bigger on mobile"
+                  images={images}
+                  imgErr={imgErr}
+                  dragging={dragging}
+                  setDragging={setDragging}
+                  addFiles={addFiles}
+                  removeImage={removeImage}
+                />
+              </div>
+              <p className="mt-1 text-xs text-ink-soft">
+                📎 Attach, paste or drag in a screenshot to show what’s still off.
+              </p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex gap-2">
                 <button
@@ -458,7 +424,7 @@ function SessionCard({ session: s, onRevised }) {
                 >
                   {busy ? 'Sending…' : 'Send changes →'}
                 </button>
-                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); }} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); resetImages(); }} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
                   Cancel
                 </button>
               </div>

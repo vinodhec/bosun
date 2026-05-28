@@ -78,9 +78,15 @@ export function buildFixPrompt(problem, imageCount = 0) {
  * Follow-up instruction for a REVISION on the same session. The agent keeps the existing
  * branch + pull request (updates them) so the work stays in one PR / one session.
  */
-export function buildRevisePrompt(changes) {
+export function buildRevisePrompt(changes, imageCount = 0) {
+  const screenshotNote =
+    imageCount > 0
+      ? `They also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} — ` +
+        `look at the image${imageCount > 1 ? 's' : ''} to see exactly what they mean.\n\n`
+      : '';
   return (
     `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
+    screenshotNote +
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
     `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +

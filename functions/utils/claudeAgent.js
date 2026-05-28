@@ -63,14 +63,25 @@ export async function startFixSession({ prompt, images = [], repoUrl, githubToke
  * environment + GitHub auth, so the agent updates the SAME branch/PR. Usage accrues on
  * the same session, so the cost we read later is cumulative across rounds.
  */
-export async function continueFixSession({ sessionId, changes }) {
+export async function continueFixSession({ sessionId, changes, images = [] }) {
   if (!sessionId) throw new Error('missing sessionId');
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
     defaultHeaders: { 'anthropic-beta': BETA },
   });
+  // The owner may attach fresh screenshots with their change request — append them as image
+  // blocks after the text, same as the initial fix, so the agent sees what they're pointing at.
+  const imageBlocks = (images || []).map((img) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: img.mediaType, data: img.data },
+  }));
   await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text: buildRevisePrompt(changes) }] }],
+    events: [
+      {
+        type: 'user.message',
+        content: [{ type: 'text', text: buildRevisePrompt(changes, imageBlocks.length) }, ...imageBlocks],
+      },
+    ],
   });
   return { sessionId };
 }
