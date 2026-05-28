@@ -396,7 +396,7 @@ function SessionCard({ session: s, onRevised }) {
                   ? (noFreeLeft
                       ? 'No free re-fixes left — please approve what you have, or choose “something new”.'
                       : `Free re-fix — ${s.freeRevisionsLeft} left.`)
-                  : `A new change adds ${formatINR(s.priceInr || 0)}, charged when you approve.`}
+                  : 'A new change is priced based on the work needed — you’ll see the amount and approve before paying.'}
               </p>
               <div className="mt-2">
                 <ScreenshotComposer

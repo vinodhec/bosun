@@ -20,6 +20,55 @@ export const MIN_CHARGE_INR = 75;
 export const MARKUP_MULTIPLIER = 2.5;
 
 /**
+ * Bracketed cost-plus pricing — the production pricing rule.
+ *
+ * The customer pays a multiple of actual COGS, with the multiplier decreasing as cost rises
+ * (so tiny fixes don't feel rip-off-y and big fixes don't balloon):
+ *   - first ₹50 of COGS     → 5×
+ *   - next ₹50 (50–100)     → 4×
+ *   - everything above ₹100 → 3×
+ *
+ * Worked examples:
+ *   ₹10  → ₹50      (10×5)
+ *   ₹40  → ₹200     (40×5)
+ *   ₹75  → ₹250 + 25×4 = ₹350
+ *   ₹100 → ₹250 + 50×4 = ₹450
+ *   ₹200 → ₹450 + 100×3 = ₹750
+ *   ₹500 → ₹450 + 400×3 = ₹1650
+ *
+ * Output is rounded UP to whole rupees (favours business). No floor — small costs
+ * stay small. The hard COGS cap is enforced separately by the poller (maxBudgetUsd /
+ * maxSeconds), so runaway is bounded regardless of the bracket shape.
+ */
+export const PRICING_BRACKETS = [
+  { upToInr: 50,        multiplier: 5 },
+  { upToInr: 100,       multiplier: 4 },
+  { upToInr: Infinity,  multiplier: 3 },
+];
+
+/** Bracketed price from actual COGS (INR). Rounded UP to whole rupees. */
+export function priceFromCostInr(costInr) {
+  const c = Math.max(0, Number(costInr) || 0);
+  let price = 0;
+  let remaining = c;
+  let prevCap = 0;
+  for (const { upToInr, multiplier } of PRICING_BRACKETS) {
+    const slice = Math.min(remaining, upToInr - prevCap);
+    if (slice <= 0) break;
+    price += slice * multiplier;
+    remaining -= slice;
+    prevCap = upToInr;
+    if (remaining <= 0) break;
+  }
+  return Math.ceil(price);
+}
+
+/** Bracketed price from actual COGS (USD). Converts to INR first, then applies brackets. */
+export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
+  return priceFromCostInr(usdToInr(Number(costUsd) || 0, rate));
+}
+
+/**
  * Canonical charge for a completed task.
  * @param {number} actualCostUsd  cost reported by the agent run
  * @param {{rate?: number}} [opts]
@@ -119,10 +168,11 @@ export function isFreeRevision(reason) {
 
 /**
  * Minimum balance required to START a fix of this complexity — the true maximum
- * we could ever charge for it. Gate on this so we never run work we can't bill.
+ * we could ever charge for it under the bracketed cost-plus model. Gate on this so
+ * we never run work we can't bill.
  */
 export function requiredBalanceFor(complexity, opts) {
-  return maxChargeForBudget(tierFor(complexity).maxBudgetUsd, opts);
+  return priceFromCostUsd(tierFor(complexity).maxBudgetUsd, opts);
 }
 
 /**

@@ -1,18 +1,20 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { computeCharge } from './billing.js';
+import { computeCharge, priceFromCostUsd } from './billing.js';
 
-// Billing under the fixed-tier model, with a per-ORG approval toggle.
+// Billing under the bracketed cost-plus model, with a per-ORG approval toggle.
 //
 //   org.requireApproval = false (DEFAULT):
-//     agent finishes → markRoundReady() charges the flat tier price immediately (auto-charge).
+//     agent finishes → markRoundReady() computes this round's price from actual COGS via
+//     priceFromCostUsd() and debits it immediately (auto-charge).
 //   org.requireApproval = true:
-//     agent finishes → markRoundReady() marks the fix pendingReview; the customer's
-//     "Looks good" (approveFix → chargeApprovedFix) is what charges and unlocks going live.
+//     agent finishes → markRoundReady() computes the round price the same way, stashes it
+//     on `currentRoundCharge`, and waits for the customer's "Looks good"
+//     (approveFix → chargeApprovedFix) to actually move money.
 //
 //   agent failed → markRoundFailure(): status='failed'. Never charged.
 //
-// Price is the FIXED tier price (shared/billing.js), accrued on the task as
-// `currentRoundCharge`. Actual token COGS is recorded for instrumentation only.
+// Free re-fix policy is preserved: a round with kind='unresolved' is charged ₹0 (we eat the
+// COGS). Every other kind ('initial' | 'new_scope') is charged its bracketed cost.
 
 /** Structured line for Cloud Logging — concierge-phase analytics (failure rate, COGS/tier). */
 export function logBillingEvent(evt, data) {
@@ -39,10 +41,15 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const rate = Number(process.env.USD_TO_INR) || undefined;
     const totalUsd = Number(actualCostUsd) || 0;
     const prevSeenUsd = Number(task.reviewedCostUsd) || 0;
-    const roundUsd = Math.max(0, totalUsd - prevSeenUsd); // COGS of THIS round (analytics only)
+    const roundUsd = Math.max(0, totalUsd - prevSeenUsd); // COGS of THIS round
     const roundCostInr = computeCharge(roundUsd, { rate }).actualCostInr;
 
     const pr = task.pendingRound || { kind: task.kind || 'initial', reason: null, addedInr: 0, prompt: task.prompt || '' };
+    // Free re-fix (our shortfall) is the only round that doesn't get billed; every other
+    // round bills the bracketed price computed from this round's actual COGS.
+    const isFreeRound = pr.kind === 'unresolved';
+    const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate });
+
     const priorRounds = Array.isArray(task.rounds) ? task.rounds : [];
     const roundEntry = {
       kind: pr.kind,            // 'initial' | 'unresolved' | 'new_scope'
@@ -53,7 +60,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
         ? filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
         : [],
       idealDescription: String(idealDescription || ''),
-      addedInr: Number(pr.addedInr) || 0, // what this round adds to what's owed (0 = free re-fix)
+      addedInr: roundPriceInr,            // what this round adds to what's owed (0 = free re-fix)
       charged: false,
       actualCostUsd: roundUsd,            // internal analytics
       at: Date.now(),
@@ -75,22 +82,32 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       completedAt: FieldValue.serverTimestamp(),
     };
 
+    // Accrue this round's price on top of anything unapproved from prior rounds (which
+    // happens when the customer revises before approving the previous round).
+    const owedAfter = Math.max(0, Math.round((Number(task.currentRoundCharge) || 0) + roundPriceInr));
+
     const analytics = {
       taskId, orgId: task.orgId, complexity: task.complexity || null, model: task.model || null,
       kind: pr.kind, reason: pr.reason || null, round: priorRounds.length + 1,
-      roundCostUsd: roundUsd, roundCostInr, owedInr: Number(task.currentRoundCharge) || 0,
+      roundCostUsd: roundUsd, roundCostInr, roundPriceInr, owedInr: owedAfter,
       freeRevisionsUsed: Number(task.freeRevisionsUsed) || 0, requireApproval,
     };
 
     if (requireApproval) {
-      // Wait for the customer to approve — no money moves yet.
-      tx.update(taskRef, { ...baseUpdate, pendingReview: true, approved: false, rounds: [...priorRounds, roundEntry] });
+      // Wait for the customer to approve — no money moves yet, but record what'll be owed.
+      tx.update(taskRef, {
+        ...baseUpdate,
+        pendingReview: true,
+        approved: false,
+        currentRoundCharge: owedAfter,
+        rounds: [...priorRounds, roundEntry],
+      });
       logBillingEvent('round_ready', { ...analytics, outcome: 'pending_review' });
       return { ready: true, pending: true };
     }
 
-    // Default: auto-charge the owed tier price now.
-    const owed = Math.max(0, Math.round(Number(task.currentRoundCharge) || 0));
+    // Default: auto-charge the bracketed price now.
+    const owed = owedAfter;
     const newFinalCharge = (Number(task.finalCharge) || 0) + owed;
     const chargedRounds = [...priorRounds, roundEntry].map((r) => ({ ...r, charged: true }));
 

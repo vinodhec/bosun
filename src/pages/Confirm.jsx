@@ -3,7 +3,6 @@ import { useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth.js';
 import { useBalance } from '../hooks/useBalance.js';
 import { createTask } from '../firebase/functions.js';
-import { formatINR } from '@shared/currency.js';
 
 export default function Confirm() {
   const { state } = useLocation();
@@ -16,7 +15,7 @@ export default function Confirm() {
   // Arrived here without a classified request → back to start.
   if (!state?.prompt) return <Navigate to="/dashboard" replace />;
 
-  const { prompt, complexity = 'medium', estimatedMinInr, estimatedMaxInr, reason } = state;
+  const { prompt, complexity = 'medium', reason } = state;
 
   const confirm = async () => {
     setBusy(true); setErr('');
@@ -38,20 +37,14 @@ export default function Confirm() {
 
         <dl className="mt-5 space-y-2 text-sm">
           <div className="flex items-center justify-between">
-            <dt className="text-ink-soft">Estimated cost</dt>
-            <dd className="font-semibold text-ink">
-              {formatINR(estimatedMinInr ?? 75)} – {formatINR(estimatedMaxInr ?? 150)}
-            </dd>
-          </div>
-          <div className="flex items-center justify-between">
             <dt className="text-ink-soft">Time needed</dt>
             <dd className="font-semibold text-ink">3–5 minutes</dd>
           </div>
         </dl>
 
         <p className="mt-4 rounded-xl bg-brand-50 p-3 text-xs text-ink-soft">
-          Final cost may vary slightly based on the work needed. You will never be
-          charged more than the maximum shown.
+          You&rsquo;ll see the exact price once the fix is ready — and you&rsquo;re only
+          charged when you approve it.
         </p>
 
         {err && <p className="mt-4 text-sm text-bad">{err}</p>}

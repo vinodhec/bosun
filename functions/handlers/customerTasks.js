@@ -157,10 +157,6 @@ export const reviseSession = onCall(
       throw new HttpsError('failed-precondition', 'TOO_MANY_FREE_REVISIONS');
     }
 
-    const priceInr = Number(task.priceInr) || 0;
-    const addedInr = free ? 0 : priceInr;
-    const owedAfter = (Number(task.currentRoundCharge) || 0) + addedInr;
-
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
     try {
@@ -170,6 +166,8 @@ export const reviseSession = onCall(
       throw new HttpsError('internal', 'We could not start the changes. You were not charged.');
     }
 
+    // Price is computed in markRoundReady from this round's actual COGS — `currentRoundCharge`
+    // already holds any unapproved amount from the prior round, which markRoundReady adds to.
     await taskRef.update({
       status: 'running',
       pendingReview: false,
@@ -177,16 +175,15 @@ export const reviseSession = onCall(
       kind: reason,
       round: (Number(task.round) || 0) + 1,
       revisePrompt: changes,
-      currentRoundCharge: owedAfter,
       freeRevisionsUsed: free ? freeUsed + 1 : freeUsed,
-      pendingRound: { kind: reason, reason, addedInr, prompt: changes },
+      pendingRound: { kind: reason, reason, addedInr: 0, prompt: changes },
       previewUrl: null,
       needsPreview: false,
       previewTries: 0,
       revisedAt: FieldValue.serverTimestamp(),
     });
 
-    return { ok: true, free, addedInr, owedInr: owedAfter };
+    return { ok: true, free };
   }
 );
 

@@ -68,13 +68,13 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   }
 
   // Bind the agent's hard budget cap to the tier (NOT a flat global cap), so a "simple"
-  // run can never spend the "complex" budget. The customer pays the FIXED tier price on
-  // approval. Balance is NOT gated — orgs are allowed to go negative; the operator
-  // reconciles via top-ups or manual deductions.
+  // run can never spend the "complex" budget. Price is bracketed cost-plus — computed
+  // from actual COGS in markRoundReady once the run finishes; nothing is quoted upfront.
+  // Balance is NOT gated — orgs are allowed to go negative; the operator reconciles via
+  // top-ups or manual deductions.
   const tier = tierFor(complexity);
   const maxBudgetUsd = tier.maxBudgetUsd;
   const maxSeconds = tier.maxSeconds; // tier runtime cap — second guard alongside the $ cap
-  const priceInr = tier.priceInr;
 
   // The GitHub token (operator-provisioned) is backend-only — never exposed to clients.
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
@@ -99,12 +99,11 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
     pendingReview: false,
     maxBudgetUsd,
     maxSeconds,
-    priceInr, // the fixed price this fix will cost on approval
-    currentRoundCharge: priceInr, // owed for the current (initial) cycle; charged on approval
+    currentRoundCharge: 0, // bracketed price is computed in markRoundReady from actual COGS
     finalCharge: 0,
     freeRevisionsUsed: 0,
     // Metadata the poller folds into the round thread when the agent finishes.
-    pendingRound: { kind: 'initial', reason: null, addedInr: priceInr, prompt },
+    pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt },
     imageCount: images.length, // we don't persist the screenshots, only that there were some
     createdAt: FieldValue.serverTimestamp(),
   });

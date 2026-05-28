@@ -121,9 +121,9 @@ export const adminRunFix = onCall(
         userId: uid, orgId, prompt, repoFullName: gh.repoFullName,
         kind: 'initial', complexity, model, status: 'queued',
         billed: false, approved: false, pendingReview: false,
-        maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds, priceInr: tier.priceInr,
-        currentRoundCharge: tier.priceInr, finalCharge: 0, freeRevisionsUsed: 0,
-        pendingRound: { kind: 'initial', reason: null, addedInr: tier.priceInr, prompt },
+        maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds,
+        currentRoundCharge: 0, finalCharge: 0, freeRevisionsUsed: 0,
+        pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt },
         adminRun: true, asCustomer: true, imageCount: 0,
         createdAt: FieldValue.serverTimestamp(),
       });
