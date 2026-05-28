@@ -280,6 +280,16 @@ function SessionCard({ session: s, onRevised }) {
                       {r.changes.map((c, j) => <li key={j}>{c}</li>)}
                     </ul>
                   )}
+                  {r.idealDescription && (
+                    <div className="mt-2 rounded-lg border border-brand-100 bg-brand-50 p-2.5">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
+                        Tip for next time
+                      </p>
+                      <p className="mt-1 text-sm italic text-ink-soft">
+                        “{r.idealDescription}”
+                      </p>
+                    </div>
+                  )}
                 </li>
               ))}
             </ol>
