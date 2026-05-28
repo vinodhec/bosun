@@ -33,6 +33,26 @@ export const pollSessions = onSchedule(
         try {
           const session = await client.beta.sessions.retrieve(task.sessionId);
           const costUsd = sessionCostUsd(session); // cumulative across rounds
+          const activeSec = Number(session?.stats?.active_seconds) || 0;
+          const status = String(session?.status || '');
+
+          // Terminal status first. The runtime/budget caps below are mid-flight guards that
+          // stop a runaway session — they MUST NOT override a session that already finished
+          // (status=completed, PR pushed). Otherwise a run that finishes a hair over budget
+          // gets marked failed even though the work is real and the customer has a PR.
+          if (DONE.has(status)) {
+            // Round done → ready for the customer to review. We do NOT charge here; the
+            // charge happens when they approve the fix (approveFix).
+            const { resultSummary, filesChanged, prUrl } = await extractResult(client, task.sessionId);
+            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl });
+            continue;
+          }
+          if (FAILED.has(status)) {
+            await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
+            continue;
+          }
+
+          // Still in-flight. Enforce the per-round caps so a runaway session can't bleed us.
           const cap = task.maxBudgetUsd || Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
           // Cap the CURRENT round's spend, so a revised session isn't killed by earlier rounds.
           const roundUsd = costUsd - (Number(task.reviewedCostUsd) || 0);
@@ -43,7 +63,6 @@ export const pollSessions = onSchedule(
           // always reported, so we cap it per TIER. Per-round (subtract runtime already
           // reviewed) so a revision isn't killed by earlier rounds. Falls back to the global
           // MAX_SESSION_SECONDS for runs with no tier cap (operator infra tests, big-job quotes).
-          const activeSec = Number(session?.stats?.active_seconds) || 0;
           const roundSec = activeSec - (Number(task.reviewedSeconds) || 0);
           const maxSec = Number(task.maxSeconds) || Number(process.env.MAX_SESSION_SECONDS) || 1800;
           if (roundSec > maxSec) {
@@ -56,16 +75,6 @@ export const pollSessions = onSchedule(
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
             await markRoundFailure(docSnap.id, { error: 'over_budget', actualCostUsd: costUsd });
             continue;
-          }
-
-          const status = String(session?.status || '');
-          if (DONE.has(status)) {
-            // Round done → ready for the customer to review. We do NOT charge here; the
-            // charge happens when they approve the fix (approveFix).
-            const { resultSummary, filesChanged, prUrl } = await extractResult(client, task.sessionId);
-            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl });
-          } else if (FAILED.has(status)) {
-            await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
           }
         } catch (e) {
           console.error('pollSessions:run', docSnap.id, e?.message || e);
