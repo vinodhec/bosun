@@ -4,7 +4,6 @@ import { useAuth } from '../hooks/useAuth.js';
 import { useBalance } from '../hooks/useBalance.js';
 import { createTask } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
-import { requiredBalanceFor } from '@shared/billing.js';
 
 export default function Confirm() {
   const { state } = useLocation();
@@ -18,8 +17,6 @@ export default function Confirm() {
   if (!state?.prompt) return <Navigate to="/dashboard" replace />;
 
   const { prompt, complexity = 'medium', estimatedMinInr, estimatedMaxInr, reason } = state;
-  const required = requiredBalanceFor(complexity);
-  const shortBy = balance != null && balance < required;
 
   const confirm = async () => {
     setBusy(true); setErr('');
@@ -27,10 +24,6 @@ export default function Confirm() {
       const { data } = await createTask({ prompt, complexity });
       navigate(`/running/${data.taskId}`, { replace: true });
     } catch (e) {
-      if (String(e?.message || '').includes('INSUFFICIENT_BALANCE')) {
-        navigate('/topup', { state: { message: `You need at least ${formatINR(required)} for this fix.` } });
-        return;
-      }
       setErr('We couldn’t start the fix. You were not charged. Please try again.');
       setBusy(false);
     }
@@ -61,11 +54,6 @@ export default function Confirm() {
           charged more than the maximum shown.
         </p>
 
-        {shortBy && (
-          <p className="mt-4 text-sm text-bad">
-            You need at least {formatINR(required)} for this fix.
-          </p>
-        )}
         {err && <p className="mt-4 text-sm text-bad">{err}</p>}
 
         <div className="mt-5 flex gap-3">
@@ -75,22 +63,13 @@ export default function Confirm() {
           >
             Cancel
           </button>
-          {shortBy ? (
-            <button
-              onClick={() => navigate('/topup')}
-              className="flex-1 rounded-xl bg-brand-600 px-4 py-3 font-semibold text-white transition hover:bg-brand-700"
-            >
-              Top Up
-            </button>
-          ) : (
-            <button
-              onClick={confirm}
-              disabled={busy || balance == null}
-              className="flex-1 rounded-xl bg-brand-600 px-4 py-3 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
-            >
-              {busy ? 'Starting…' : 'Yes, Fix It!'}
-            </button>
-          )}
+          <button
+            onClick={confirm}
+            disabled={busy || balance == null}
+            className="flex-1 rounded-xl bg-brand-600 px-4 py-3 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+          >
+            {busy ? 'Starting…' : 'Yes, Fix It!'}
+          </button>
         </div>
       </div>
     </div>

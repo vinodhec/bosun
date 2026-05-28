@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { tierFor, requiredBalanceFor } from '../utils/billing.js';
+import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { startFixSession } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
@@ -69,16 +69,12 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
 
   // Bind the agent's hard budget cap to the tier (NOT a flat global cap), so a "simple"
   // run can never spend the "complex" budget. The customer pays the FIXED tier price on
-  // approval; `required` is that price — gate on it so we never run work we can't bill.
-  const rate = Number(process.env.USD_TO_INR) || undefined;
+  // approval. Balance is NOT gated — orgs are allowed to go negative; the operator
+  // reconciles via top-ups or manual deductions.
   const tier = tierFor(complexity);
   const maxBudgetUsd = tier.maxBudgetUsd;
   const maxSeconds = tier.maxSeconds; // tier runtime cap — second guard alongside the $ cap
   const priceInr = tier.priceInr;
-  const required = requiredBalanceFor(complexity, { rate });
-
-  const balance = Number(org.balance ?? 0);
-  if (balance < required) throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
 
   // The GitHub token (operator-provisioned) is backend-only — never exposed to clients.
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();

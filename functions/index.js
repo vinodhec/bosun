@@ -14,6 +14,7 @@ export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote }
 export {
   adminCreateOrg,
   adminAddCredits,
+  adminDeductCredits,
   adminListOrgs,
   adminSetUserOrg,
   adminSetOrgApproval,

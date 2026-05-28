@@ -151,7 +151,7 @@ export function canAfford(balanceInr) {
 }
 
 /** Low-balance threshold (INR) for the dashboard warning banner. */
-export const LOW_BALANCE_INR = 200;
+export const LOW_BALANCE_INR = 500;
 export function isLowBalance(balanceInr) {
   return (Number(balanceInr) || 0) < LOW_BALANCE_INR;
 }

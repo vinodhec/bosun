@@ -104,7 +104,6 @@ export const approveFix = onCall({ region: 'asia-south1' }, async (request) => {
     return { ok: true, charged, finalCharge };
   } catch (e) {
     const m = String(e?.message || '');
-    if (m.startsWith('INSUFFICIENT_BALANCE')) throw new HttpsError('failed-precondition', m);
     if (m === 'not_owner') throw new HttpsError('permission-denied', 'Not your fix.');
     if (m === 'not_pending_review') throw new HttpsError('failed-precondition', 'NOT_PENDING');
     if (m === 'task_not_found') throw new HttpsError('not-found', 'Fix not found.');
@@ -160,14 +159,6 @@ export const reviseSession = onCall(
     const addedInr = free ? 0 : priceInr;
     const owedAfter = (Number(task.currentRoundCharge) || 0) + addedInr;
 
-    // Ensure the org can cover what will be owed at approval before we spend the work.
-    if (owedAfter > 0) {
-      const orgSnap = await db.collection('organisations').doc(task.orgId).get();
-      if (Number(orgSnap.data()?.balance ?? 0) < owedAfter) {
-        throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${owedAfter}`);
-      }
-    }
-
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
     try {
@@ -216,11 +207,7 @@ export const confirmQuote = onCall(
     if (task.userId !== uid) throw new HttpsError('permission-denied', 'Not your quote.');
     if (task.status !== 'quoted') throw new HttpsError('failed-precondition', 'NOT_QUOTED');
 
-    const quoteInr = Number(task.priceInr) || 0;
     const orgSnap = await db.collection('organisations').doc(task.orgId).get();
-    if (Number(orgSnap.data()?.balance ?? 0) < quoteInr) {
-      throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${quoteInr}`);
-    }
     const gh = orgSnap.data()?.github;
     if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
     const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();

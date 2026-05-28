@@ -16,6 +16,7 @@ export const customerDeployProd = httpsCallable(functions, 'customerDeployProd')
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
 export const adminAddCredits = httpsCallable(functions, 'adminAddCredits');
+export const adminDeductCredits = httpsCallable(functions, 'adminDeductCredits');
 export const adminListOrgs = httpsCallable(functions, 'adminListOrgs');
 export const adminMetrics = httpsCallable(functions, 'adminMetrics');
 export const adminSetUserOrg = httpsCallable(functions, 'adminSetUserOrg');

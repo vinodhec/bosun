@@ -3,6 +3,7 @@ import {
   adminListOrgs,
   adminCreateOrg,
   adminAddCredits,
+  adminDeductCredits,
   adminSetUserOrg,
   adminSetOrgApproval,
   adminSetOrgDeploy,
@@ -192,6 +193,7 @@ export default function Admin() {
   const [busy, setBusy] = useState(false);
   const [newOrg, setNewOrg] = useState('');
   const [credit, setCredit] = useState({ orgId: '', amount: '' });
+  const [deduct, setDeduct] = useState({ orgId: '', amount: '', description: '' });
   const [assign, setAssign] = useState({ email: '', orgId: '' });
   const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '' });
   const [test, setTest] = useState({ orgId: '', prompt: '', asCustomer: true });
@@ -250,7 +252,6 @@ export default function Admin() {
     } catch (e) {
       const m = String(e?.message || '');
       setErr(m.includes('NO_REPO_CONNECTED') ? 'That org has no repo connected.'
-        : m.includes('INSUFFICIENT_BALANCE') ? 'That org doesn’t have enough credits.'
         : 'Could not start the fix.');
     } finally { setBusy(false); }
   };
@@ -324,6 +325,28 @@ export default function Admin() {
           <input className={field} value={credit.orgId} onChange={(e) => setCredit({ ...credit, orgId: e.target.value })} placeholder="orgId" />
           <input className={field} type="number" value={credit.amount} onChange={(e) => setCredit({ ...credit, amount: e.target.value })} placeholder="amount (₹)" />
           <button className={btn} disabled={busy || !credit.orgId || !credit.amount} onClick={() => run(() => adminAddCredits({ orgId: credit.orgId.trim(), amount: Number(credit.amount) }), 'Credits added.')}>Add credits</button>
+        </section>
+
+        <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+          <h2 className="font-semibold text-ink">Deduct credits</h2>
+          <p className="text-xs text-ink-soft">Balance is allowed to go negative. Use this for refunds-in-reverse, fee corrections, or adjustments.</p>
+          <input className={field} value={deduct.orgId} onChange={(e) => setDeduct({ ...deduct, orgId: e.target.value })} placeholder="orgId" />
+          <input className={field} type="number" value={deduct.amount} onChange={(e) => setDeduct({ ...deduct, amount: e.target.value })} placeholder="amount (₹)" />
+          <input className={field} value={deduct.description} onChange={(e) => setDeduct({ ...deduct, description: e.target.value })} placeholder="reason (recorded in ledger)" />
+          <button
+            className={btn}
+            disabled={busy || !deduct.orgId || !deduct.amount || !deduct.description.trim()}
+            onClick={() => run(
+              () => adminDeductCredits({
+                orgId: deduct.orgId.trim(),
+                amount: Number(deduct.amount),
+                description: deduct.description.trim(),
+              }).then(() => setDeduct({ orgId: '', amount: '', description: '' })),
+              'Credits deducted.'
+            )}
+          >
+            Deduct credits
+          </button>
         </section>
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">

@@ -4,7 +4,7 @@ import { ensureOrgGithubVault } from '../utils/vault.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession } from '../utils/claudeAgent.js';
-import { maxChargeForBudget, tierFor, requiredBalanceFor } from '../utils/billing.js';
+import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
@@ -85,8 +85,6 @@ export const adminRunFix = onCall(
     const gh = org.github;
     if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
-    const rate = Number(process.env.USD_TO_INR) || undefined;
-
     // "Run as customer" exercises the REAL customer pipeline (classify → fixed-tier price →
     // large→quote), so the operator can test pricing end-to-end. Default (false) is the old
     // plain infra test: flat cap, no classification, no charge.
@@ -113,10 +111,6 @@ export const adminRunFix = onCall(
       }
 
       const tier = tierFor(complexity);
-      const required = requiredBalanceFor(complexity, { rate });
-      if (Number(org.balance ?? 0) < required) {
-        throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
-      }
       const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
       const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
       if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
@@ -148,10 +142,6 @@ export const adminRunFix = onCall(
 
     // Plain infra test (operator only): flat cap, no classification, no charge.
     const maxBudgetUsd = Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
-    const required = maxChargeForBudget(maxBudgetUsd, { rate });
-    if (Number(org.balance ?? 0) < required) {
-      throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
-    }
 
     const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
     const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;

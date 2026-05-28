@@ -52,6 +52,35 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
   return { orgId, balance };
 });
 
+// Operator-only manual deduction. Used for refunds-in-reverse, fee corrections, or settling
+// a negative balance the other way. The `description` is required so every deduction has a
+// human reason in the ledger. Balance is allowed to go negative.
+export const adminDeductCredits = onCall({ region: REGION }, async (request) => {
+  const by = requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '');
+  const amount = Math.round(Number(request.data?.amount));
+  const description = String(request.data?.description ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new HttpsError('invalid-argument', 'amount must be a positive number.');
+  }
+  if (!description) throw new HttpsError('invalid-argument', 'description required.');
+  const db = getFirestore();
+  const orgRef = db.collection('organisations').doc(orgId);
+  const balance = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(orgRef);
+    if (!snap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const next = Number(snap.data().balance ?? 0) - amount;
+    tx.update(orgRef, { balance: next });
+    tx.set(db.collection('transactions').doc(), {
+      orgId, type: 'debit', amount, by, description,
+      kind: 'admin_adjustment', createdAt: FieldValue.serverTimestamp(),
+    });
+    return next;
+  });
+  return { orgId, balance };
+});
+
 export const adminListOrgs = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
   const db = getFirestore();

@@ -23,7 +23,6 @@ const isLive = (s) => isWorking(s) || s === 'needs_quote' || s === 'quoted';
 
 function friendlyError(e) {
   const m = String(e?.message || '');
-  if (m.includes('INSUFFICIENT_BALANCE')) return 'Not enough credits — the Bosun team will top you up.';
   if (m.includes('NO_REPO_CONNECTED')) return 'Your website isn’t connected yet.';
   if (m.includes('NO_ORG')) return 'Your account isn’t set up yet — the Bosun team will sort it.';
   if (m.includes('ALREADY_DEPLOYED')) return 'This fix is already live — start a new fix for further changes.';

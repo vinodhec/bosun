@@ -94,7 +94,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
 
     if (owed > 0) {
       const balance = orgSnap.exists ? Number(orgSnap.data().balance ?? 0) : 0;
-      tx.update(orgRef, { balance: Math.max(0, balance - owed) });
+      tx.update(orgRef, { balance: balance - owed });
       tx.set(db.collection('transactions').doc(), {
         orgId: task.orgId, userId: task.userId, type: 'debit', amount: owed,
         taskId, kind: pr.kind, createdAt: FieldValue.serverTimestamp(),
@@ -136,8 +136,7 @@ export async function chargeApprovedFix(taskId, uid) {
       const orgRef = db.collection('organisations').doc(task.orgId);
       const orgSnap = await tx.get(orgRef);
       const balance = orgSnap.exists ? Number(orgSnap.data().balance ?? 0) : 0;
-      if (balance < owed) throw new Error(`INSUFFICIENT_BALANCE:${owed}`);
-      tx.update(orgRef, { balance: Math.max(0, balance - owed) });
+      tx.update(orgRef, { balance: balance - owed });
       tx.set(db.collection('transactions').doc(), {
         orgId: task.orgId, userId: task.userId, type: 'debit', amount: owed,
         taskId, kind: task.pendingRound?.kind || 'initial', createdAt: FieldValue.serverTimestamp(),
