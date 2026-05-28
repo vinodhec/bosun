@@ -26,7 +26,13 @@ export async function classifyComplexity(prompt) {
             `- simple  = one small change, e.g. something not showing or a styling issue\n` +
             `- medium  = a whole page or several parts affected\n` +
             `- complex = something stops working / many parts affected\n` +
-            `- large   = a major job: multiple features, a redesign, or several pages of new work (too big for one quick fix)`,
+            `- large   = a major job: multiple features, a redesign, or several pages of new work (too big for one quick fix)\n\n` +
+            `Lean toward 'complex' when the request implies plumbing that might not exist yet — e.g. ` +
+            `"show / display / save / track / persist <some data>" where that data may need a new ` +
+            `field, a new save step, or a new admin/permission boundary. Also lean 'complex' if the ` +
+            `request mentions role-gated visibility (admin/super-admin only), auth-dependent rendering, ` +
+            `or anything that crosses both a write flow (where data is created) and a read flow ` +
+            `(where it's displayed). When uncertain between two tiers, pick the higher one.`,
         },
       ],
     });
