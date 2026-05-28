@@ -36,6 +36,23 @@ const inrPrecise = (n) =>
 const fmtUSD = (n) =>
   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(n) || 0);
 
+// Active runtime for a session. Sub-minute resolution is meaningful (a 12s run is
+// suspicious; a 27-min run is near the cap), so format mm:ss not h:mm.
+const fmtDuration = (sec) => {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}m ${String(r).padStart(2, '0')}s`;
+};
+
+// "Triggered by" label. Prefers displayName, falls back to email, then a uid stub. Operator
+// test runs go through adminRunFix; surface that distinctly so the admin doesn't confuse a
+// dry-run with a paying customer's request.
+const triggeredByLabel = (t) => {
+  if (t.adminRun) return t.asCustomer ? 'Operator (test as customer)' : 'Operator (test)';
+  return t.userDisplayName || t.userEmail || (t.userId ? `uid:${String(t.userId).slice(0, 6)}` : 'Unknown');
+};
+
 // One headline number on the business overview. tone colours profit-like figures.
 function MetricCard({ label, value, sub, tone }) {
   const valueCls = tone === 'good' ? 'text-green-700' : tone === 'bad' ? 'text-rose-600' : 'text-ink';
@@ -432,8 +449,32 @@ export default function Admin() {
                   </span>
                 </div>
                 <div className="mt-1 text-ink-soft">
+                  <span title={t.userId || ''}>by <span className="font-medium text-ink">{triggeredByLabel(t)}</span></span>
+                  {t.userEmail && t.userDisplayName ? <span className="ml-1 text-ink-soft">({t.userEmail})</span> : null}
+                  {t.adminRun && (
+                    <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                      {t.asCustomer ? 'op · as customer' : 'op test'}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1 text-ink-soft">
                   {t.createdAt ? new Date(t.createdAt).toLocaleString('en-IN') : ''}
                   {t.model ? ` · ${t.model}` : ''}
+                  {t.complexity ? ` · ${t.complexity}` : ''}
+                  {t.kind && t.kind !== 'initial' ? ` · ${t.kind === 'unresolved' ? 'free re-fix' : t.kind}` : ''}
+                </div>
+                <div className="mt-0.5 text-[11px] text-ink-soft">
+                  {t.repoFullName && (
+                    <a href={`https://github.com/${t.repoFullName}`} target="_blank" rel="noreferrer" className="hover:underline">
+                      {t.repoFullName}
+                    </a>
+                  )}
+                  {t.reviewedSeconds ? <span className="ml-2">⏱ {fmtDuration(t.reviewedSeconds)}{t.maxSeconds ? ` / ${fmtDuration(t.maxSeconds)}` : ''}</span> : null}
+                  {t.maxBudgetUsd ? <span className="ml-2">cap {fmtUSD(t.maxBudgetUsd)}{t.actualCostUsd ? ` · spent ${fmtUSD(t.actualCostUsd)}` : ''}</span> : null}
+                  {t.imageCount ? <span className="ml-2">📎 {t.imageCount} image{t.imageCount > 1 ? 's' : ''}</span> : null}
+                  {t.freeRevisionsUsed ? <span className="ml-2">free retries: {t.freeRevisionsUsed}</span> : null}
+                  {t.sessionId && <span className="ml-2" title={t.sessionId}>sess …{String(t.sessionId).slice(-6)}</span>}
+                  <span className="ml-2" title={t.id}>task …{String(t.id).slice(-6)}</span>
                 </div>
                 <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
                 {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
