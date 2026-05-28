@@ -44,6 +44,7 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
         complexity: t.complexity ?? null,
         quoteInr: t.status === 'quoted' ? (Number(t.priceInr) || 0) : null,
         summary: t.resultSummary ?? null,
+        idealDescription: t.idealDescription || '',
         changes: Array.isArray(t.filesChanged)
           ? t.filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
           : [],
@@ -69,6 +70,7 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
               changes: Array.isArray(r.changes)
                 ? r.changes.map((c) => String(c || '')).filter(Boolean).slice(0, 12)
                 : [],
+              idealDescription: String(r.idealDescription || ''),
               addedInr: Number(r.addedInr) || 0,
               free: r.kind !== 'initial' && (Number(r.addedInr) || 0) === 0,
               charged: !!r.charged,

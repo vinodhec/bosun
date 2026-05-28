@@ -23,7 +23,7 @@ export function logBillingEvent(evt, data) {
 // the org does NOT require approval (default) we charge the owed tier price right away;
 // otherwise we leave it pendingReview for the customer to approve. Idempotent: only acts on
 // the running→complete transition.
-export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl }) {
+export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription }) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
   return db.runTransaction(async (tx) => {
@@ -52,6 +52,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       changes: Array.isArray(filesChanged)
         ? filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
         : [],
+      idealDescription: String(idealDescription || ''),
       addedInr: Number(pr.addedInr) || 0, // what this round adds to what's owed (0 = free re-fix)
       charged: false,
       actualCostUsd: roundUsd,            // internal analytics
@@ -66,6 +67,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       actualCostInr: computeCharge(totalUsd, { rate }).actualCostInr,
       resultSummary: resultSummary || '',
       filesChanged: Array.isArray(filesChanged) ? filesChanged : [],
+      idealDescription: String(idealDescription || ''),
       prUrl: prUrl || null,
       downloadUrl: downloadUrl || null,
       needsPreview: !!prUrl,

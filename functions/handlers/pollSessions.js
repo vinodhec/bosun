@@ -43,8 +43,8 @@ export const pollSessions = onSchedule(
           if (DONE.has(status)) {
             // Round done → ready for the customer to review. We do NOT charge here; the
             // charge happens when they approve the fix (approveFix).
-            const { resultSummary, filesChanged, prUrl } = await extractResult(client, task.sessionId);
-            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl });
+            const { resultSummary, filesChanged, prUrl, idealDescription } = await extractResult(client, task.sessionId);
+            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl, idealDescription });
             continue;
           }
           if (FAILED.has(status)) {

@@ -70,7 +70,7 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `Commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>"}`
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","idealDescription":"<one short plain-English sentence — how the owner could have described this problem so we'd have known exactly what to fix; write it as the owner speaking in their own non-technical words, no jargon>"}`
   );
 }
 
@@ -92,7 +92,7 @@ export function buildRevisePrompt(changes, imageCount = 0) {
     `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>"}`
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","idealDescription":"<one short plain-English sentence — how the owner could have described the full ask (initial + this revision) so we'd have known exactly what to fix; write it as the owner speaking in their own non-technical words, no jargon>"}`
   );
 }
 
@@ -108,6 +108,7 @@ export async function extractResult(client, sessionId) {
   let resultSummary = '';
   let filesChanged = [];
   let prUrl = null;
+  let idealDescription = '';
   try {
     const res = await client.beta.sessions.events.list(sessionId);
     const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
@@ -128,11 +129,12 @@ export async function extractResult(client, sessionId) {
       resultSummary = String(j.summary || '').slice(0, 600);
       filesChanged = Array.isArray(j.filesChanged) ? j.filesChanged.slice(0, 50) : [];
       prUrl = j.prUrl || null;
+      idealDescription = String(j.idealDescription || '').slice(0, 400);
     } else {
       resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
     }
   } catch {
     /* best-effort — leave defaults */
   }
-  return { resultSummary, filesChanged, prUrl };
+  return { resultSummary, filesChanged, prUrl, idealDescription };
 }
