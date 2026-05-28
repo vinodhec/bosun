@@ -204,32 +204,63 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
   let q = db.collection('tasks');
   if (orgId) q = q.where('orgId', '==', orgId);
   const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+
+  // Resolve the "triggered by" identity per task — batched lookup of the unique userIds so we
+  // don't fan out N reads when the same person ran every fix. Admin-only, so we expose the
+  // email / displayName the user record carries.
+  const userIds = [...new Set(snap.docs.map((d) => d.data().userId).filter(Boolean))];
+  const userById = new Map();
+  if (userIds.length) {
+    const userRefs = userIds.map((id) => db.collection('users').doc(id));
+    const userSnaps = await db.getAll(...userRefs);
+    for (const u of userSnaps) {
+      if (u.exists) userById.set(u.id, u.data());
+    }
+  }
+
   return {
     tasks: snap.docs.map((d) => {
       const t = d.data();
+      const u = t.userId ? userById.get(t.userId) : null;
       return {
         id: d.id,
         prompt: t.prompt ?? '',
         status: t.status ?? null,
         complexity: t.complexity ?? null,
+        kind: t.kind ?? null,
+        parentTaskId: t.parentTaskId ?? null,
         quotedInr: t.quotedInr ?? null,
         priceInr: t.priceInr ?? null,
         currentRoundCharge: t.currentRoundCharge ?? null,
         pendingReview: t.pendingReview ?? false,
         approved: t.approved ?? false,
+        billed: t.billed ?? false,
         adminRun: t.adminRun ?? false,
         asCustomer: t.asCustomer ?? false,
         model: t.model ?? null,
         finalCharge: t.finalCharge ?? null,
         actualCostInr: t.actualCostInr ?? null,
+        actualCostUsd: t.actualCostUsd ?? null,
+        maxBudgetUsd: t.maxBudgetUsd ?? null,
+        reviewedSeconds: t.reviewedSeconds ?? null,
+        maxSeconds: t.maxSeconds ?? null,
+        freeRevisionsUsed: t.freeRevisionsUsed ?? 0,
+        imageCount: t.imageCount ?? 0,
         prUrl: t.prUrl ?? null,
         previewUrl: t.previewUrl ?? null,
         resultSummary: t.resultSummary ?? null,
         error: t.error ?? null,
         repoFullName: t.repoFullName ?? null,
+        sessionId: t.sessionId ?? null,
         deployedTesting: t.deployedTesting ?? false,
         deployedProd: t.deployedProd ?? false,
         createdAt: t.createdAt?.toMillis?.() ?? null,
+        completedAt: t.completedAt?.toMillis?.() ?? null,
+        // Triggered-by identity (admin-only view). Falls back to the raw uid if the user
+        // record is missing (rare — older accounts predate `ensureUser`).
+        userId: t.userId ?? null,
+        userEmail: u?.email ?? null,
+        userDisplayName: u?.displayName ?? null,
       };
     }),
   };
