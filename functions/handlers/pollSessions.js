@@ -1,5 +1,5 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
-import { getFirestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { sessionCostUsd, extractResult } from '../utils/agentResult.js';
@@ -52,7 +52,16 @@ export const pollSessions = onSchedule(
             continue;
           }
 
-          // Still in-flight. Enforce the per-round caps so a runaway session can't bleed us.
+          // Still in-flight. Stamp a live snapshot for the admin UI's progress meter
+          // (cost so far + active seconds + when we last polled). Customer-facing reads
+          // strip these; admin reads expose them via adminListTasks.
+          await docSnap.ref.update({
+            liveCostUsd: costUsd,
+            liveActiveSeconds: activeSec,
+            liveUpdatedAt: FieldValue.serverTimestamp(),
+          });
+
+          // Enforce the per-round caps so a runaway session can't bleed us.
           const cap = task.maxBudgetUsd || Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
           // Cap the CURRENT round's spend, so a revised session isn't killed by earlier rounds.
           const roundUsd = costUsd - (Number(task.reviewedCostUsd) || 0);

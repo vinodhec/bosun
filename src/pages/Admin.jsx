@@ -21,6 +21,8 @@ import {
 } from '../firebase/functions.js';
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
+import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
+import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { formatINR } from '@shared/currency.js';
 
 const field = 'w-full rounded-lg border border-line px-3 py-2 outline-none focus:border-brand-500';
@@ -215,6 +217,63 @@ function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
   );
 }
 
+// Admin-only progress meter for in-flight runs. The poller stamps liveCostUsd /
+// liveActiveSeconds on the task every ~minute; we render elapsed time, USD spent,
+// and how close each is to its cap. Customer UI never sees this.
+function RunProgress({ task }) {
+  if (task.status !== 'running' && task.status !== 'queued') return null;
+  const elapsedSec = Math.max(0, Math.round(Number(task.liveActiveSeconds) || 0));
+  const cost = Number(task.liveCostUsd) || 0;
+  const maxSec = Number(task.maxSeconds) || 0;
+  const maxUsd = Number(task.maxBudgetUsd) || 0;
+  const fmtTime = (s) => {
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m > 0 ? `${m}m ${r}s` : `${r}s`;
+  };
+  const updated = task.liveUpdatedAt ? new Date(task.liveUpdatedAt) : null;
+  const noData = !task.liveUpdatedAt;
+  const timePct = maxSec > 0 ? Math.min(100, Math.round((elapsedSec / maxSec) * 100)) : 0;
+  const costPct = maxUsd > 0 ? Math.min(100, Math.round((cost / maxUsd) * 100)) : 0;
+  const hot = (p) => (p >= 90 ? 'bg-rose-500' : p >= 60 ? 'bg-amber-500' : 'bg-brand-500');
+  return (
+    <div className="mt-2 rounded-lg border border-line bg-canvas/50 p-2 text-xs">
+      <div className="flex items-center justify-between text-ink-soft">
+        <span className="font-semibold text-ink">Run progress</span>
+        <span>{noData ? 'waiting for first poll…' : updated ? `updated ${updated.toLocaleTimeString('en-IN')}` : ''}</span>
+      </div>
+      <div className="mt-1.5 space-y-1.5">
+        <div>
+          <div className="flex justify-between text-ink-soft">
+            <span>Time</span>
+            <span className="font-medium text-ink">
+              {fmtTime(elapsedSec)}{maxSec > 0 ? ` / ${fmtTime(maxSec)}` : ''}
+            </span>
+          </div>
+          {maxSec > 0 && (
+            <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-line">
+              <div className={`h-full ${hot(timePct)}`} style={{ width: `${timePct}%` }} />
+            </div>
+          )}
+        </div>
+        <div>
+          <div className="flex justify-between text-ink-soft">
+            <span>Anthropic spend</span>
+            <span className="font-medium text-ink">
+              ${cost.toFixed(2)}{maxUsd > 0 ? ` / $${maxUsd.toFixed(2)}` : ''}
+            </span>
+          </div>
+          {maxUsd > 0 && (
+            <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-line">
+              <div className={`h-full ${hot(costPct)}`} style={{ width: `${costPct}%` }} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -236,6 +295,8 @@ export default function Admin() {
   const [quoteFor, setQuoteFor] = useState(null);
   const [quoteAmt, setQuoteAmt] = useState('');
   const [quoteBudget, setQuoteBudget] = useState('');
+  const { images: testImages, imgErr: testImgErr, dragging: testDragging, setDragging: setTestDragging,
+    addFiles: addTestFiles, removeImage: removeTestImage, reset: resetTestImages } = useImageAttachments();
 
   const loadSessions = async (id) => {
     setSessOrg(id);
@@ -261,6 +322,22 @@ export default function Admin() {
     return onSnapshot(taskDocRef(taskId), (s) => setTask(s.exists() ? { id: s.id, ...s.data() } : null));
   }, [taskId]);
 
+  // Auto-refresh the sessions list every 30s while any row is in-flight, so the
+  // RunProgress meter picks up the poller's per-minute snapshots without the admin
+  // having to re-select the org.
+  useEffect(() => {
+    if (!sessOrg) return undefined;
+    const inFlight = sessions.some((t) => t.status === 'running' || t.status === 'queued');
+    if (!inFlight) return undefined;
+    const id = setInterval(async () => {
+      try {
+        const { data } = await adminListTasks({ orgId: sessOrg });
+        setSessions(data.tasks || []);
+      } catch { /* silent — manual refresh still works */ }
+    }, 30000);
+    return () => clearInterval(id);
+  }, [sessOrg, sessions]);
+
   const run = async (fn, ok) => {
     setBusy(true); setErr(''); setMsg('');
     try { await fn(); setMsg(ok); await refresh(); loadMetrics(); }
@@ -278,8 +355,14 @@ export default function Admin() {
   const onRun = async () => {
     setBusy(true); setErr(''); setTaskId(null); setTask(null);
     try {
-      const { data } = await adminRunFix({ orgId: test.orgId, prompt: test.prompt.trim(), asCustomer: test.asCustomer });
+      const { data } = await adminRunFix({
+        orgId: test.orgId,
+        prompt: test.prompt.trim(),
+        asCustomer: test.asCustomer,
+        images: testImages.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
       setTaskId(data.taskId);
+      resetTestImages();
     } catch (e) {
       const m = String(e?.message || '');
       setErr(m.includes('NO_REPO_CONNECTED') ? 'That org has no repo connected.'
@@ -406,7 +489,17 @@ export default function Admin() {
             <option value="">Select organisation…</option>
             {connectedOrgs.map((o) => <option key={o.id} value={o.id}>{o.name} — {o.repo}</option>)}
           </select>
-          <textarea className={field} rows={3} value={test.prompt} onChange={(e) => setTest({ ...test, prompt: e.target.value })} placeholder="Describe the issue, e.g. The menu disappears on mobile phone" />
+          <ScreenshotComposer
+            value={test.prompt}
+            onChange={(v) => setTest({ ...test, prompt: v })}
+            placeholder="Describe the issue, e.g. The menu disappears on mobile phone"
+            images={testImages}
+            imgErr={testImgErr}
+            dragging={testDragging}
+            setDragging={setTestDragging}
+            addFiles={addTestFiles}
+            removeImage={removeTestImage}
+          />
           <label className="flex items-center gap-2 text-xs text-ink-soft">
             <input type="checkbox" checked={test.asCustomer} onChange={(e) => setTest({ ...test, asCustomer: e.target.checked })} />
             Run as customer (real classification, fixed-tier pricing, big-job quote flow)
@@ -459,6 +552,7 @@ export default function Admin() {
                   {t.model ? ` · ${t.model}` : ''}
                 </div>
                 <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
+                <RunProgress task={t} />
                 {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
                 {t.error && <p className="mt-1 text-bad">error: {t.error}</p>}
 

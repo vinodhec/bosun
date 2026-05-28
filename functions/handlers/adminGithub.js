@@ -10,6 +10,7 @@ import { markRoundFailure } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { mergePullRequest, promoteBranch } from '../utils/github.js';
+import { sanitizeImages } from '../utils/images.js';
 
 const BETA = 'managed-agents-2026-04-01';
 
@@ -77,6 +78,7 @@ export const adminRunFix = onCall(
     const orgId = String(request.data?.orgId ?? '').trim();
     const prompt = String(request.data?.prompt ?? '').trim();
     if (!orgId || !prompt) throw new HttpsError('invalid-argument', 'orgId and prompt are required.');
+    const images = sanitizeImages(request.data?.images);
 
     const db = getFirestore();
     const orgSnap = await db.collection('organisations').doc(orgId).get();
@@ -104,7 +106,7 @@ export const adminRunFix = onCall(
           kind: 'initial', complexity: 'large', status: 'needs_quote',
           billed: false, approved: false, pendingReview: false,
           finalCharge: 0, currentRoundCharge: 0, freeRevisionsUsed: 0,
-          adminRun: true, asCustomer: true, imageCount: 0,
+          adminRun: true, asCustomer: true, imageCount: images.length,
           createdAt: FieldValue.serverTimestamp(),
         });
         return { taskId: quoteRef.id, needsQuote: true };
@@ -129,7 +131,7 @@ export const adminRunFix = onCall(
       });
       try {
         const { sessionId } = await startFixSession({
-          prompt, repoUrl: `https://github.com/${gh.repoFullName}`,
+          prompt, images, repoUrl: `https://github.com/${gh.repoFullName}`,
           githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model),
         });
         await taskRef.update({ status: 'running', sessionId });
@@ -164,12 +166,14 @@ export const adminRunFix = onCall(
       billed: false,
       adminRun: true,
       maxBudgetUsd,
+      imageCount: images.length,
       createdAt: FieldValue.serverTimestamp(),
     });
 
     try {
       const { sessionId } = await startFixSession({
         prompt,
+        images,
         repoUrl: `https://github.com/${gh.repoFullName}`,
         githubToken,
         vaultId: gh.vaultId,
@@ -217,6 +221,13 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         repoFullName: t.repoFullName ?? null,
         deployedTesting: t.deployedTesting ?? false,
         deployedProd: t.deployedProd ?? false,
+        // Live progress fields (only meaningful while status === 'running'; the
+        // poller refreshes them ~every minute, admin UI uses them for a progress meter).
+        liveCostUsd: t.liveCostUsd ?? null,
+        liveActiveSeconds: t.liveActiveSeconds ?? null,
+        liveUpdatedAt: t.liveUpdatedAt?.toMillis?.() ?? null,
+        maxBudgetUsd: t.maxBudgetUsd ?? null,
+        maxSeconds: t.maxSeconds ?? null,
         createdAt: t.createdAt?.toMillis?.() ?? null,
       };
     }),
