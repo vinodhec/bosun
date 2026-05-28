@@ -196,8 +196,21 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
   let q = db.collection('tasks');
   if (orgId) q = q.where('orgId', '==', orgId);
   const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+  const docs = snap.docs;
+
+  // Resolve trigger emails from /users in one batched fetch so the admin can see
+  // who kicked off each run without paying N round-trips per page render.
+  const uids = [...new Set(docs.map((d) => d.data().userId).filter(Boolean))];
+  const emailByUid = {};
+  if (uids.length) {
+    const userSnaps = await db.getAll(...uids.map((u) => db.collection('users').doc(u)));
+    for (const us of userSnaps) {
+      if (us.exists) emailByUid[us.id] = us.data().email ?? null;
+    }
+  }
+
   return {
-    tasks: snap.docs.map((d) => {
+    tasks: docs.map((d) => {
       const t = d.data();
       return {
         id: d.id,
@@ -229,6 +242,7 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         maxBudgetUsd: t.maxBudgetUsd ?? null,
         maxSeconds: t.maxSeconds ?? null,
         createdAt: t.createdAt?.toMillis?.() ?? null,
+        userEmail: t.userId ? (emailByUid[t.userId] ?? null) : null,
       };
     }),
   };

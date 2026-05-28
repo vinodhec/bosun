@@ -550,6 +550,7 @@ export default function Admin() {
                 <div className="mt-1 text-ink-soft">
                   {t.createdAt ? new Date(t.createdAt).toLocaleString('en-IN') : ''}
                   {t.model ? ` · ${t.model}` : ''}
+                  {t.userEmail ? ` · ${t.userEmail}` : ''}
                 </div>
                 <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
                 <RunProgress task={t} />
