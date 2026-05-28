@@ -1,0 +1,82 @@
+# Build the Vite SPA and deploy hosting + functions + firestore rules/indexes
+# to the bosun-76bba Firebase project.
+#
+# Required GitHub repo secrets:
+#   FIREBASE_SERVICE_ACCOUNT       — JSON key for a service account with roles:
+#                                    Firebase Admin, Cloud Functions Admin,
+#                                    Service Account User, Artifact Registry Writer.
+#   VITE_FIREBASE_API_KEY
+#   VITE_FIREBASE_AUTH_DOMAIN
+#   VITE_FIREBASE_PROJECT_ID
+#   VITE_FIREBASE_STORAGE_BUCKET
+#   VITE_FIREBASE_MESSAGING_SENDER_ID
+#   VITE_FIREBASE_APP_ID
+#   VITE_RAZORPAY_KEY_ID
+#   VITE_GITHUB_APP_SLUG
+#
+# Optional repo variable:
+#   FIREBASE_PROJECT_ID            — overrides the project id (defaults to bosun-76bba).
+name: Deploy to Firebase
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: firebase-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'bosun-76bba' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            functions/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Build SPA
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_RAZORPAY_KEY_ID: ${{ secrets.VITE_RAZORPAY_KEY_ID }}
+          VITE_GITHUB_APP_SLUG: ${{ secrets.VITE_GITHUB_APP_SLUG }}
+          VITE_FUNCTIONS_REGION: asia-south1
+        run: npm run build
+
+      - name: Install functions dependencies
+        run: npm ci --prefix functions
+
+      - name: Sync shared/ into functions/shared
+        run: bash scripts/sync-shared.sh
+
+      - name: Write service account credentials
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-sa.json" >> "$GITHUB_ENV"
+
+      - name: Deploy to Firebase
+        run: |
+          npx --yes firebase-tools@latest deploy \
+            --only hosting,functions,firestore:rules,firestore:indexes \
+            --project "$FIREBASE_PROJECT_ID" \
+            --non-interactive \
+            --force
