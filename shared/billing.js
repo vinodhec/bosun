@@ -67,22 +67,21 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * task, so successive fixes land at different numbers (₹118, ₹163, ₹189…) instead of
  * an obvious flat product fee.
  *
- * Bands are LEFT-SKEWED relative to the prior fixed price (₹149 / ₹375 / ₹749): the
- * minimum sits well below it, the maximum only a little above. The customer mostly
- * sees a charge UNDER what they'd have paid as a flat fee, occasionally a touch
- * over — feels like a deal more often than not. Variance also INVERTS with cost
- * (cheap tiers swing widest; on a ₹749 fix the same percent swing would be a jarring
- * ₹200 — too noticeable):
- *   simple  anchor ₹149 → roll ₹101–₹175  (~ −32% / +17%, avg ~₹138)
- *   medium  anchor ₹375 → roll ₹319–₹393  (~ −15% /  +5%, avg ~₹356)
- *   complex anchor ₹749 → roll ₹689–₹763  (~  −8% /  +2%, avg ~₹726)
+ * The bands replace the prior flat per-tier prices (₹149 / ₹375 / ₹749). Variance
+ * narrows as the tier price climbs — a wobble on a ₹140 fix reads as natural usage
+ * noise; the same percentage swing on a ₹700 fix would be a jarring ₹200, too
+ * noticeable. Bands sit MOSTLY below the prior flat anchor, so the customer most
+ * often sees a charge that compares favourably to it:
+ *   simple  ₹110–₹170  (avg ~₹140, vs prior ₹149)
+ *   medium  ₹320–₹400  (avg ~₹360, vs prior ₹375)
+ *   complex ₹600–₹700  (avg ~₹650, vs prior ₹749)
  *
  * `maxBudgetUsd` is the hard spend cap enforced by the poller (Managed Agents have no
  * native cap). It is chosen so our COGS at the cap stays comfortably below the band's
  * floor — even on the lowest roll we still net a positive margin:
- *   simple : floor ₹101, cap $0.45 (~₹37 COGS)  → ~60%+ margin at the worst case
- *   medium : floor ₹319, cap $1.50 (~₹125 COGS) → ~60%+ margin at the worst case
- *   complex: floor ₹689, cap $3.00 (~₹249 COGS) → ~60%+ margin at the worst case
+ *   simple : floor ₹110, cap $0.45 (~₹37 COGS)  → ~65%+ margin at the worst case
+ *   medium : floor ₹320, cap $1.50 (~₹125 COGS) → ~60%+ margin at the worst case
+ *   complex: floor ₹600, cap $3.00 (~₹249 COGS) → ~58%+ margin at the worst case
  *
  * `maxSeconds` is a SECOND, independent cap: the max active runtime per round. It exists
  * because the dollar cap can't be trusted alone — Anthropic's `session.usage` can report
@@ -96,9 +95,9 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * final — tune them here and nowhere else.
  */
 export const COMPLEXITY_TIERS = {
-  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 101, maxInr: 175 },
-  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 319, maxInr: 393 },
-  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 689, maxInr: 763 },
+  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 110, maxInr: 170 },
+  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 320, maxInr: 400 },
+  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 600, maxInr: 700 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
