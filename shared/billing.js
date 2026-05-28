@@ -74,14 +74,14 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * often sees a charge that compares favourably to it:
  *   simple  ₹110–₹170  (avg ~₹140, vs prior ₹149)
  *   medium  ₹320–₹400  (avg ~₹360, vs prior ₹375)
- *   complex ₹600–₹700  (avg ~₹650, vs prior ₹749)
+ *   complex ₹630–₹750  (avg ~₹690, vs prior ₹749)
  *
  * `maxBudgetUsd` is the hard spend cap enforced by the poller (Managed Agents have no
  * native cap). It is chosen so our COGS at the cap stays comfortably below the band's
  * floor — even on the lowest roll we still net a positive margin:
  *   simple : floor ₹110, cap $0.45 (~₹37 COGS)  → ~65%+ margin at the worst case
  *   medium : floor ₹320, cap $1.50 (~₹125 COGS) → ~60%+ margin at the worst case
- *   complex: floor ₹600, cap $3.00 (~₹249 COGS) → ~58%+ margin at the worst case
+ *   complex: floor ₹630, cap $3.00 (~₹249 COGS) → ~60%+ margin at the worst case
  *
  * `maxSeconds` is a SECOND, independent cap: the max active runtime per round. It exists
  * because the dollar cap can't be trusted alone — Anthropic's `session.usage` can report
@@ -97,7 +97,7 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
 export const COMPLEXITY_TIERS = {
   simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 110, maxInr: 170 },
   medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 320, maxInr: 400 },
-  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 600, maxInr: 700 },
+  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 630, maxInr: 750 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
