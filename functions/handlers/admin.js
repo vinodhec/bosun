@@ -202,6 +202,17 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let firstCreatedMs = null;
   const win = { d1: { rev: 0, cost: 0 }, d7: { rev: 0, cost: 0 }, d30: { rev: 0, cost: 0 } };
 
+  // "Today" = IST calendar day (India-first SaaS). Distinct from the rolling d1 window —
+  // operator wants today-since-midnight, not the last 24 hours.
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const nowIst = new Date(now + IST_OFFSET_MS);
+  const todayStartMs = Date.UTC(nowIst.getUTCFullYear(), nowIst.getUTCMonth(), nowIst.getUTCDate()) - IST_OFFSET_MS;
+  const today = {
+    revenueInr: 0, costInr: 0, profitInr: 0,
+    failedRuns: 0, failedCostInr: 0, freeRetriesGiven: 0,
+    startMs: todayStartMs,
+  };
+
   for (const d of tasksSnap.docs) {
     const t = d.data();
     const paid = Number(t.finalCharge) || 0;
@@ -219,6 +230,22 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       if (age <= DAY_MS) { win.d1.rev += paid; win.d1.cost += costInr; }
       if (age <= 7 * DAY_MS) { win.d7.rev += paid; win.d7.cost += costInr; }
       if (age <= 30 * DAY_MS) { win.d30.rev += paid; win.d30.cost += costInr; }
+      if (whenMs >= todayStartMs) {
+        today.revenueInr += paid;
+        today.costInr += costInr;
+        if (t.status === 'failed') {
+          today.failedRuns++;
+          today.failedCostInr += costInr;
+        }
+      }
+    }
+
+    // Free retries we gave today: a revision sets kind='unresolved' and bumps
+    // freeRevisionsUsed (capped at MAX_FREE_REVISIONS=1). revisedAt is when it happened.
+    const revisedMs = t.revisedAt?.toMillis?.() ?? null;
+    if (revisedMs != null && revisedMs >= todayStartMs
+        && t.kind === 'unresolved' && (Number(t.freeRevisionsUsed) || 0) > 0) {
+      today.freeRetriesGiven++;
     }
 
     if (t.status === 'complete') { totals.fixesDone++; bump(t.orgId, (s) => s.fixesDone++); }
@@ -229,6 +256,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     if (t.deployedTesting === true) { totals.deploysTesting++; bump(t.orgId, (s) => s.deploysTesting++); }
     if (t.deployedProd === true) { totals.deploysProd++; bump(t.orgId, (s) => s.deploysProd++); }
   }
+
+  today.profitInr = today.revenueInr - today.costInr;
 
   for (const d of creditSnap.docs) {
     const amt = Number(d.data().amount) || 0;
@@ -261,7 +290,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   };
 
   const byOrg = [...orgStats.values()].sort((a, b) => b.revenueInr - a.revenueInr);
-  return { rate, totals, averages, trailing, byOrg, generatedAt: now };
+  return { rate, totals, today, averages, trailing, byOrg, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {

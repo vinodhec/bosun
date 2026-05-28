@@ -79,6 +79,36 @@ function TrendTable({ title, cols, revenue, profit }) {
   );
 }
 
+// Today (IST calendar day) snapshot — what happened since midnight India time. Distinct
+// from the rolling 24h trailing window. Loss-of-failures is the COGS we ate on runs that
+// were never charged; free retries are the 'unresolved' re-runs we absorbed.
+function TodayCard({ today }) {
+  if (!today) return null;
+  const pnlTone = today.profitInr >= 0 ? 'good' : 'bad';
+  const dateLabel = new Date(today.startMs).toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata', weekday: 'short', day: 'numeric', month: 'short',
+  });
+  return (
+    <div className="mt-3 rounded-xl border border-brand-500/40 bg-brand-50/30 p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold uppercase tracking-wide text-brand-700">Today · {dateLabel}</div>
+        <div className="text-[10px] text-ink-soft">since 00:00 IST</div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-3">
+        <MetricCard label="Revenue today" value={formatINR(today.revenueInr)} tone="good" />
+        <MetricCard label="Cost today" value={inrPrecise(today.costInr)} sub="raw COGS" />
+        <MetricCard label="P&L today" value={inrPrecise(today.profitInr)}
+          sub={today.profitInr >= 0 ? 'profit' : 'loss'} tone={pnlTone} />
+        <MetricCard label="Failed today" value={today.failedRuns}
+          sub={`${inrPrecise(today.failedCostInr)} lost to failures`}
+          tone={today.failedRuns > 0 ? 'bad' : undefined} />
+        <MetricCard label="Free retries given" value={today.freeRetriesGiven}
+          sub="unresolved re-runs we ate" />
+      </div>
+    </div>
+  );
+}
+
 // Business overview: revenue, what we pay Anthropic, profit/margin, and delivery counts
 // (fixes / PRs / deploys), plus a per-org breakdown. Data from the adminMetrics callable.
 function Overview({ data, busy, onRefresh }) {
@@ -94,6 +124,7 @@ function Overview({ data, busy, onRefresh }) {
         <p className="mt-3 text-sm text-ink-soft">Loading numbers…</p>
       ) : (
         <>
+          <TodayCard today={data.today} />
           <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <MetricCard label="Revenue" value={formatINR(t.revenueInr)} sub="earned on fixes" tone="good" />
             <MetricCard label="Paid to Anthropic" value={fmtUSD(t.anthropicUsd)} sub={`${inrPrecise(t.costInr)} cost`} />
