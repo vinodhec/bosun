@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { tierFor, requiredBalanceFor } from '../utils/billing.js';
+import { tierFor, randomPriceInr, requiredBalanceFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { startFixSession } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
@@ -68,14 +68,16 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   }
 
   // Bind the agent's hard budget cap to the tier (NOT a flat global cap), so a "simple"
-  // run can never spend the "complex" budget. The customer pays the FIXED tier price on
-  // approval; `required` is that price — gate on it so we never run work we can't bill.
-  const rate = Number(process.env.USD_TO_INR) || undefined;
+  // run can never spend the "complex" budget. The customer pays a price ROLLED within
+  // the tier's band on approval; `required` is the band's ceiling — gate on it so we
+  // never run work we can't bill, even on the worst roll.
   const tier = tierFor(complexity);
   const maxBudgetUsd = tier.maxBudgetUsd;
   const maxSeconds = tier.maxSeconds; // tier runtime cap — second guard alongside the $ cap
-  const priceInr = tier.priceInr;
-  const required = requiredBalanceFor(complexity, { rate });
+  // Roll once and persist on the task. Every later round (and the actual debit) reads this
+  // same number, so what the customer sees through the lifecycle is consistent.
+  const priceInr = randomPriceInr(complexity);
+  const required = requiredBalanceFor(complexity);
 
   const balance = Number(org.balance ?? 0);
   if (balance < required) throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);

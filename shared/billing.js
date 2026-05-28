@@ -62,16 +62,26 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
 /**
  * Complexity tiers — SINGLE SOURCE OF TRUTH for pricing.
  *
- * `priceInr` is the FIXED price the customer pays for a fix of this tier — charged once,
- * on approval, regardless of the run's actual token cost. We (not the buyer) absorb token
- * volatility, spread across volume and re-priced here when needed. A non-technical owner
- * gets one quotable number, not a figure that wiggles with cache hits.
+ * Each tier has a price BAND (`minInr`–`maxInr`). The concrete price for one fix is
+ * rolled (uniform integer) within that band at task-creation time and persisted on the
+ * task, so successive fixes land at different numbers (₹118, ₹163, ₹189…) instead of
+ * an obvious flat product fee.
+ *
+ * The bands replace the prior flat per-tier prices (₹149 / ₹375 / ₹749). Variance
+ * narrows as the tier price climbs — a wobble on a ₹140 fix reads as natural usage
+ * noise; the same percentage swing on a ₹700 fix would be a jarring ₹200, too
+ * noticeable. Bands sit MOSTLY below the prior flat anchor, so the customer most
+ * often sees a charge that compares favourably to it:
+ *   simple  ₹120–₹160  (avg ~₹140, vs prior ₹149)
+ *   medium  ₹320–₹380  (avg ~₹350, vs prior ₹375)
+ *   complex ₹650–₹750  (avg ~₹700, vs prior ₹749)
  *
  * `maxBudgetUsd` is the hard spend cap enforced by the poller (Managed Agents have no
- * native cap). It is chosen so our COGS at the cap stays comfortably below `priceInr`:
- *   simple : price ₹149, cap $0.45 (~₹37 COGS)  → ~75% margin at the cap
- *   medium : price ₹375, cap $1.50 (~₹125 COGS) → ~67% margin at the cap
- *   complex: price ₹749, cap $3.00 (~₹249 COGS) → ~67% margin at the cap
+ * native cap). It is chosen so our COGS at the cap stays comfortably below the band's
+ * floor — even on the lowest roll we still net a positive margin:
+ *   simple : floor ₹120, cap $0.45 (~₹37 COGS)  → ~69%+ margin at the worst case
+ *   medium : floor ₹320, cap $1.50 (~₹125 COGS) → ~60%+ margin at the worst case
+ *   complex: floor ₹650, cap $3.00 (~₹249 COGS) → ~62%+ margin at the worst case
  *
  * `maxSeconds` is a SECOND, independent cap: the max active runtime per round. It exists
  * because the dollar cap can't be trusted alone — Anthropic's `session.usage` can report
@@ -80,16 +90,14 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * runtime is always reported, so a tight per-tier time cap reliably bounds the worst case.
  * Set with headroom over real completion times (simple ~2m, medium ~4m, complex ~11m seen):
  *   simple : 300s (5m)   medium : 480s (8m)   complex : 900s (15m)
- * `minInr`/`maxInr` are retained for the legacy estimate UI; with fixed pricing the
- * estimate IS `priceInr`.
  *
- * NOTE: these prices are starting hypotheses to validate in the concierge phase, not
+ * NOTE: these bands are starting hypotheses to validate in the concierge phase, not
  * final — tune them here and nowhere else.
  */
 export const COMPLEXITY_TIERS = {
-  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, priceInr: 149, minInr: 149, maxInr: 149 },
-  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, priceInr: 375, minInr: 375, maxInr: 375 },
-  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, priceInr: 749, minInr: 749, maxInr: 749 },
+  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, minInr: 120, maxInr: 160 },
+  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, minInr: 320, maxInr: 380 },
+  complex: { maxBudgetUsd: 3.00, maxSeconds: 900, minInr: 650, maxInr: 750 },
 };
 
 /** Resolve a complexity label to its tier, defaulting to `medium` if unknown. */
@@ -97,9 +105,26 @@ export function tierFor(complexity) {
   return COMPLEXITY_TIERS[complexity] || COMPLEXITY_TIERS.medium;
 }
 
-/** The fixed price (INR) a completed fix of this complexity costs the customer. */
+/**
+ * Roll a concrete price (INR, whole rupees) within the tier's band — uniform integer
+ * in [minInr, maxInr] inclusive. Call ONCE per task at creation and persist the result
+ * on the task; never call this twice for the same fix or the displayed and charged
+ * amounts will drift.
+ */
+export function randomPriceInr(complexity) {
+  const tier = tierFor(complexity);
+  const min = Math.round(Number(tier.minInr) || 0);
+  const max = Math.round(Number(tier.maxInr) || min);
+  if (max <= min) return min;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/**
+ * Back-compat alias for callers that just want a price for a complexity. Returns a
+ * fresh random roll — prefer `randomPriceInr` at call sites for clarity.
+ */
 export function priceForComplexity(complexity) {
-  return tierFor(complexity).priceInr;
+  return randomPriceInr(complexity);
 }
 
 /**
@@ -120,9 +145,10 @@ export function isFreeRevision(reason) {
 /**
  * Minimum balance required to START a fix of this complexity — the true maximum
  * we could ever charge for it. Gate on this so we never run work we can't bill.
+ * Under banded pricing this is `tier.maxInr` (the worst case the dice can roll).
  */
-export function requiredBalanceFor(complexity, opts) {
-  return maxChargeForBudget(tierFor(complexity).maxBudgetUsd, opts);
+export function requiredBalanceFor(complexity) {
+  return Math.round(Number(tierFor(complexity).maxInr) || MIN_CHARGE_INR);
 }
 
 /**

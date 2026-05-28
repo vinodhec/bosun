@@ -4,7 +4,7 @@ import { ensureOrgGithubVault } from '../utils/vault.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession } from '../utils/claudeAgent.js';
-import { maxChargeForBudget, tierFor, requiredBalanceFor } from '../utils/billing.js';
+import { maxChargeForBudget, tierFor, randomPriceInr, requiredBalanceFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
@@ -113,7 +113,7 @@ export const adminRunFix = onCall(
       }
 
       const tier = tierFor(complexity);
-      const required = requiredBalanceFor(complexity, { rate });
+      const required = requiredBalanceFor(complexity);
       if (Number(org.balance ?? 0) < required) {
         throw new HttpsError('failed-precondition', `INSUFFICIENT_BALANCE:${required}`);
       }
@@ -122,14 +122,16 @@ export const adminRunFix = onCall(
       if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
       const model = modelForComplexity(complexity);
+      // Roll the per-task price once; the rest of the lifecycle reads it back.
+      const priceInr = randomPriceInr(complexity);
       const taskRef = db.collection('tasks').doc();
       await taskRef.set({
         userId: uid, orgId, prompt, repoFullName: gh.repoFullName,
         kind: 'initial', complexity, model, status: 'queued',
         billed: false, approved: false, pendingReview: false,
-        maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds, priceInr: tier.priceInr,
-        currentRoundCharge: tier.priceInr, finalCharge: 0, freeRevisionsUsed: 0,
-        pendingRound: { kind: 'initial', reason: null, addedInr: tier.priceInr, prompt },
+        maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds, priceInr,
+        currentRoundCharge: priceInr, finalCharge: 0, freeRevisionsUsed: 0,
+        pendingRound: { kind: 'initial', reason: null, addedInr: priceInr, prompt },
         adminRun: true, asCustomer: true, imageCount: 0,
         createdAt: FieldValue.serverTimestamp(),
       });
