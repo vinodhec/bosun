@@ -19,8 +19,16 @@ const PRICE = {
 };
 const sessionHourUsd = () => Number(process.env.SESSION_HOUR_USD) || 0.08;
 
-/** Actual USD cost of a session = token cost + runtime cost. */
-export function sessionCostUsd(session) {
+/**
+ * Decompose a session's usage into token counts, per-component USD, and cost — the single
+ * source of truth for "what did this session burn". `sessionCostUsd` and the per-round
+ * AGENT_USAGE log both read from here so the cost and the observability can never drift.
+ *
+ * `cacheHitRatio` is the optimisation signal: of the input context the agent processed this
+ * session, what fraction was served from cache (billed at ~10%) rather than fresh input. Low
+ * ratio on revisions = the runtime isn't reusing the conversation, which is where money leaks.
+ */
+export function usageBreakdown(session) {
   // Guard against a misconfigured deploy: with token prices unset, cost would be computed
   // from runtime alone and every charge would be silently too low. Warn loudly instead.
   if (inputP() <= 0 || PRICE.output() <= 0) {
@@ -46,7 +54,23 @@ export function sessionCostUsd(session) {
   const runtimeSec = Number(session?.stats?.active_seconds) || 0;
   const runtimeUsd = (runtimeSec / 3600) * sessionHourUsd();
 
-  return tokenUsd + runtimeUsd;
+  // Fraction of processed input context that came from cache (fresh input + cache reads is
+  // the denominator; cache writes are the one-time cost of seeding it, output is separate).
+  const inputBase = input + cacheRead;
+  const cacheHitRatio = inputBase > 0 ? cacheRead / inputBase : 0;
+
+  return {
+    input, output, cacheRead, cacheWrite5m, cacheWrite1h,
+    cacheHitRatio: Math.round(cacheHitRatio * 1000) / 1000,
+    runtimeSec,
+    tokenUsd, runtimeUsd,
+    totalUsd: tokenUsd + runtimeUsd,
+  };
+}
+
+/** Actual USD cost of a session = token cost + runtime cost. */
+export function sessionCostUsd(session) {
+  return usageBreakdown(session).totalUsd;
 }
 
 /**
@@ -64,6 +88,10 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
     `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
+    `If a file named AGENTS.md exists at the repo root, READ IT FIRST: it's a maintainer-written ` +
+    `map of where things live and which file to edit for common requests — use it to go straight ` +
+    `to the right file instead of searching the whole project. If the owner names a page or pastes ` +
+    `a link, match it against the URL-to-file route map in AGENTS.md to locate that page's source file. ` +
     `Focus only on the project's own source files — do NOT open, read, or scan generated or ` +
     `dependency folders (node_modules, vendor, dist, build, .next, out, coverage) or lock files; ` +
     `they are noise and reading them only wastes effort. ` +
