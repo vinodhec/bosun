@@ -69,8 +69,8 @@ export const pollSessions = onSchedule(
             // Round done → ready for the customer to review. We do NOT charge here; the
             // charge happens when they approve the fix (approveFix).
             logAgentUsage('done', docSnap.id, task, bd, roundUsd, roundSec);
-            const { resultSummary, filesChanged, prUrl, idealDescription } = await extractResult(client, task.sessionId);
-            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl, idealDescription });
+            const { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords } = await extractResult(client, task.sessionId);
+            await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl, idealDescription, idealKeywords });
             continue;
           }
           if (FAILED.has(status)) {

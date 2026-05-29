@@ -25,7 +25,7 @@ export function logBillingEvent(evt, data) {
 // the org does NOT require approval (default) we charge the owed tier price right away;
 // otherwise we leave it pendingReview for the customer to approve. Idempotent: only acts on
 // the running→complete transition.
-export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription }) {
+export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords }) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
   return db.runTransaction(async (tx) => {
@@ -50,6 +50,16 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const isFreeRound = pr.kind === 'unresolved';
     const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate });
 
+    const safeKeywords = Array.isArray(idealKeywords)
+      ? idealKeywords
+          .map((k) => ({
+            phrase: String(k?.phrase || '').slice(0, 120),
+            why: String(k?.why || '').slice(0, 100),
+          }))
+          .filter((k) => k.phrase && k.why)
+          .slice(0, 5)
+      : [];
+
     const priorRounds = Array.isArray(task.rounds) ? task.rounds : [];
     const roundEntry = {
       kind: pr.kind,            // 'initial' | 'unresolved' | 'new_scope'
@@ -60,6 +70,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
         ? filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
         : [],
       idealDescription: String(idealDescription || ''),
+      idealKeywords: safeKeywords,
       addedInr: roundPriceInr,            // what this round adds to what's owed (0 = free re-fix)
       charged: false,
       actualCostUsd: roundUsd,            // internal analytics
@@ -75,6 +86,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       resultSummary: resultSummary || '',
       filesChanged: Array.isArray(filesChanged) ? filesChanged : [],
       idealDescription: String(idealDescription || ''),
+      idealKeywords: safeKeywords,
       prUrl: prUrl || null,
       downloadUrl: downloadUrl || null,
       needsPreview: !!prUrl,
