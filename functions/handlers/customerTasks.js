@@ -45,6 +45,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
         quoteInr: t.status === 'quoted' ? (Number(t.priceInr) || 0) : null,
         summary: t.resultSummary ?? null,
         idealDescription: t.idealDescription || '',
+        idealKeywords: Array.isArray(t.idealKeywords)
+          ? t.idealKeywords
+              .map((k) => ({ phrase: String(k?.phrase || ''), why: String(k?.why || '') }))
+              .filter((k) => k.phrase && k.why)
+              .slice(0, 5)
+          : [],
         changes: Array.isArray(t.filesChanged)
           ? t.filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
           : [],
@@ -71,6 +77,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
                 ? r.changes.map((c) => String(c || '')).filter(Boolean).slice(0, 12)
                 : [],
               idealDescription: String(r.idealDescription || ''),
+              idealKeywords: Array.isArray(r.idealKeywords)
+                ? r.idealKeywords
+                    .map((k) => ({ phrase: String(k?.phrase || ''), why: String(k?.why || '') }))
+                    .filter((k) => k.phrase && k.why)
+                    .slice(0, 5)
+                : [],
               addedInr: Number(r.addedInr) || 0,
               free: r.kind !== 'initial' && (Number(r.addedInr) || 0) === 0,
               charged: !!r.charged,

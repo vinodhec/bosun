@@ -4,6 +4,7 @@ import { useOrg } from '../hooks/useOrg.js';
 import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
+import IdealPromptTip from '../components/IdealPromptTip.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { formatINR } from '@shared/currency.js';
 import { MAX_IMAGES } from '../utils/images.js';
@@ -280,16 +281,8 @@ function SessionCard({ session: s, onRevised }) {
                       {r.changes.map((c, j) => <li key={j}>{c}</li>)}
                     </ul>
                   )}
-                  {r.idealDescription && (
-                    <div className="mt-2 rounded-lg border border-brand-100 bg-brand-50 p-2.5">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-                        Tip for next time
-                      </p>
-                      <p className="mt-1 text-sm italic text-ink-soft">
-                        “{r.idealDescription}”
-                      </p>
-                    </div>
-                  )}
+                  <IdealPromptTip text={r.idealDescription} keywords={r.idealKeywords} compact />
+
                 </li>
               ))}
             </ol>
