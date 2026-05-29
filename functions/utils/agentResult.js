@@ -88,6 +88,9 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
     `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
+    `If a file named AGENTS.md exists at the repo root, READ IT FIRST: it's a maintainer-written ` +
+    `map of where things live and which file to edit for common requests — use it to go straight ` +
+    `to the right file instead of searching the whole project. ` +
     `Focus only on the project's own source files — do NOT open, read, or scan generated or ` +
     `dependency folders (node_modules, vendor, dist, build, .next, out, coverage) or lock files; ` +
     `they are noise and reading them only wastes effort. ` +
