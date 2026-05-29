@@ -2,7 +2,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
-import { sessionCostUsd, extractResult } from '../utils/agentResult.js';
+import { sessionCostUsd, cacheStats, extractResult } from '../utils/agentResult.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -43,6 +43,10 @@ export const pollSessions = onSchedule(
           if (DONE.has(status)) {
             // Round done → ready for the customer to review. We do NOT charge here; the
             // charge happens when they approve the fix (approveFix).
+            // Emit cache effectiveness for this finished run (final cumulative usage) so we can
+            // see in Cloud Logging whether the agent loop is reusing cached context — the
+            // biggest token lever. Instrumentation only; does not affect billing.
+            console.log(`CACHE_STATS ${JSON.stringify({ taskId: docSnap.id, model: task.model || null, complexity: task.complexity || null, ...cacheStats(session) })}`);
             const { resultSummary, filesChanged, prUrl, idealDescription } = await extractResult(client, task.sessionId);
             await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl, idealDescription });
             continue;

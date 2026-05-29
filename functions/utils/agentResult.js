@@ -50,6 +50,28 @@ export function sessionCostUsd(session) {
 }
 
 /**
+ * Cache effectiveness for a session — INSTRUMENTATION ONLY (does not affect billing). Lets us
+ * see in Cloud Logging whether the managed-agent loop is actually reusing cached context. In an
+ * agentic coding loop the (large) context is re-sent every turn; cache reads bill at ~10% of
+ * input, so a healthy `cacheHitRate` is the single biggest token lever. A rate near 0 means the
+ * context is being paid for at full input price and prompt caching isn't engaging — a signal to
+ * investigate before changing anything.
+ */
+export function cacheStats(session) {
+  const u = session?.usage || {};
+  const cc = u.cache_creation || {};
+  const input = Number(u.input_tokens) || 0;
+  const output = Number(u.output_tokens) || 0;
+  const cacheRead = Number(u.cache_read_input_tokens) || 0;
+  const cacheWrite = (Number(cc.ephemeral_5m_input_tokens) || 0) + (Number(cc.ephemeral_1h_input_tokens) || 0);
+  // Of all input that COULD have been served from cache (fresh input + cache reads), how much
+  // actually was. 0 = nothing cached; ~0.9 = healthy reuse on a multi-turn agent loop.
+  const cacheable = input + cacheRead;
+  const cacheHitRate = cacheable > 0 ? Math.round((cacheRead / cacheable) * 1000) / 1000 : 0;
+  return { input, output, cacheRead, cacheWrite, cacheHitRate };
+}
+
+/**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
