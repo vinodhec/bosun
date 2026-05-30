@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Actual cost per run (from real token usage × Opus 4.7 prices) vs our calculator.
-//   cd functions && ANTHROPIC_API_KEY=... SESSION_IDS=sesn_a,sesn_b PRICE_*=... node scripts/cost-report.mjs
+// Actual cost per run (from real token usage × the PER-MODEL price table, by the model each
+// session ran) vs our calculator.
+//   cd functions && ANTHROPIC_API_KEY=... SESSION_IDS=sesn_a,sesn_b node scripts/cost-report.mjs
 import Anthropic from '@anthropic-ai/sdk';
 import { usageBreakdown } from '../utils/agentResult.js';
 import { chargeForRound } from '../utils/billing.js';

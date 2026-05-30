@@ -135,9 +135,14 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * NOTE: these prices are starting hypotheses to validate in the concierge phase, not
  * final — tune them here and nowhere else.
  */
+// TEMP (2026-05-30): simple/medium `maxBudgetUsd` DOUBLED (0.45→0.90, 1.50→3.00) as interim
+// headroom — after the per-model price fix a real simple Sonnet fix (~$0.63) was already above
+// the old $0.45 cap. `maxSeconds` is unchanged (it's the real runaway governor; the $ cap fires
+// late due to lazy usage reporting). RECALIBRATE all caps from observed P95 in the AGENT_USAGE
+// logs in ~2 days, then drop this note. Complex left as-is.
 export const COMPLEXITY_TIERS = {
-  simple:  { maxBudgetUsd: 0.45, maxSeconds: 300, priceInr: 149, minInr: 149, maxInr: 149 },
-  medium:  { maxBudgetUsd: 1.50, maxSeconds: 480, priceInr: 375, minInr: 375, maxInr: 375 },
+  simple:  { maxBudgetUsd: 0.90, maxSeconds: 300, priceInr: 149, minInr: 149, maxInr: 149 },
+  medium:  { maxBudgetUsd: 3.00, maxSeconds: 480, priceInr: 375, minInr: 375, maxInr: 375 },
   complex: { maxBudgetUsd: 3.00, maxSeconds: 900, priceInr: 749, minInr: 749, maxInr: 749 },
 };
 

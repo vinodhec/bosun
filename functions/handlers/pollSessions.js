@@ -21,6 +21,7 @@ function logAgentUsage(reason, taskId, task, bd, roundUsd, roundSec) {
     console.log(`AGENT_USAGE ${JSON.stringify({
       reason, taskId, sessionId: task.sessionId,
       complexity: task.complexity || null, model: task.model || null,
+      modelRan: bd.model || null, priceFamily: bd.family || null,
       kind: task.pendingRound?.kind || task.kind || 'initial',
       round: (Array.isArray(task.rounds) ? task.rounds.length : 0) + 1,
       input: bd.input, output: bd.output, cacheRead: bd.cacheRead,

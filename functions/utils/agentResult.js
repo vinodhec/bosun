@@ -6,17 +6,28 @@
 // The billing MATH (×2, floors) is unit-verified separately; this file only sources
 // the `actualCostUsd` input.
 
-// Token prices (USD per 1M tokens) for the agent's model — set from current Anthropic
-// pricing. Cache read/write rates default to standard multiples of the input price if
-// not set explicitly. Read lazily so Secret-Manager/env values bind at runtime.
-const inputP = () => Number(process.env.PRICE_INPUT_PER_MTOK) || 0;
-const PRICE = {
-  input: () => inputP(),
-  output: () => Number(process.env.PRICE_OUTPUT_PER_MTOK) || 0,
-  cacheRead: () => Number(process.env.PRICE_CACHE_READ_PER_MTOK) || inputP() * 0.1,
-  cacheWrite5m: () => Number(process.env.PRICE_CACHE_WRITE_5M_PER_MTOK) || inputP() * 1.25,
-  cacheWrite1h: () => Number(process.env.PRICE_CACHE_WRITE_1H_PER_MTOK) || inputP() * 2,
+// Token prices (USD per 1M tokens), PER MODEL FAMILY. A managed-agent session is single-model
+// (the model is fixed at creation and reported on the session as `session.agent.model.id`), so
+// we price every session by the model that ACTUALLY ran — never one blended rate. A flat table
+// over-bills Sonnet (~1.7×) and, worse, UNDER-bills Opus (~3×), silently eroding margin on
+// `complex` fixes. Source: Anthropic public pricing (2026-05). Within a family the ratios are
+// uniform: cache-read = 0.1× input, 5m cache-write = 1.25× input, 1h cache-write = 2× input.
+// Keyed by family so dated snapshots (claude-sonnet-4-6, claude-opus-4-7, …) all resolve here.
+export const MODEL_PRICES = {
+  opus:   { input: 15, output: 75, cacheRead: 1.5, cacheWrite5m: 18.75, cacheWrite1h: 30 },
+  sonnet: { input: 3,  output: 15, cacheRead: 0.3, cacheWrite5m: 3.75,  cacheWrite1h: 6  },
+  haiku:  { input: 1,  output: 5,  cacheRead: 0.1, cacheWrite5m: 1.25,  cacheWrite1h: 2  },
 };
+
+/** Map a managed-agent model id to a price family ('opus'|'sonnet'|'haiku'), or null if unknown. */
+export function modelFamily(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (id.includes('opus')) return 'opus';
+  if (id.includes('sonnet')) return 'sonnet';
+  if (id.includes('haiku')) return 'haiku';
+  return null;
+}
+
 const sessionHourUsd = () => Number(process.env.SESSION_HOUR_USD) || 0.08;
 
 /**
@@ -29,11 +40,21 @@ const sessionHourUsd = () => Number(process.env.SESSION_HOUR_USD) || 0.08;
  * ratio on revisions = the runtime isn't reusing the conversation, which is where money leaks.
  */
 export function usageBreakdown(session) {
-  // Guard against a misconfigured deploy: with token prices unset, cost would be computed
-  // from runtime alone and every charge would be silently too low. Warn loudly instead.
-  if (inputP() <= 0 || PRICE.output() <= 0) {
-    console.error('billing:price_config — PRICE_INPUT/OUTPUT_PER_MTOK is 0 or unset; token cost is undercounted.');
+  // Price by the model the session ACTUALLY ran (reported on the session itself). Unknown/
+  // unrecognised ids fall back to OPUS (the most expensive) with a loud warning, so a mispriced
+  // model can never silently UNDER-count COGS. 'fast' speed is premium-priced upstream but we
+  // bill at standard rates — warn so any under-count is visible rather than hidden.
+  const modelId = session?.agent?.model?.id || null;
+  const speed = session?.agent?.model?.speed || 'standard';
+  const family = modelFamily(modelId);
+  if (!family) {
+    console.error(`billing:model_unknown — session model "${modelId}" unrecognised; pricing at OPUS rates to avoid under-billing.`);
   }
+  if (speed === 'fast') {
+    console.warn(`billing:fast_speed — session ${session?.id} ran at 'fast' (premium) speed; standard rates applied, COGS may be under-counted.`);
+  }
+  const price = MODEL_PRICES[family || 'opus'];
+
   const u = session?.usage || {};
   const cc = u.cache_creation || {};
   const input = Number(u.input_tokens) || 0;
@@ -43,11 +64,11 @@ export function usageBreakdown(session) {
   const cacheWrite1h = Number(cc.ephemeral_1h_input_tokens) || 0;
 
   const tokenUsd =
-    (input * PRICE.input() +
-      output * PRICE.output() +
-      cacheRead * PRICE.cacheRead() +
-      cacheWrite5m * PRICE.cacheWrite5m() +
-      cacheWrite1h * PRICE.cacheWrite1h()) /
+    (input * price.input +
+      output * price.output +
+      cacheRead * price.cacheRead +
+      cacheWrite5m * price.cacheWrite5m +
+      cacheWrite1h * price.cacheWrite1h) /
     1e6;
 
   // $0.08/session-hour accrues only while running; `active_seconds` is that running time.
@@ -60,6 +81,7 @@ export function usageBreakdown(session) {
   const cacheHitRatio = inputBase > 0 ? cacheRead / inputBase : 0;
 
   return {
+    model: modelId, family: family || 'opus', speed,
     input, output, cacheRead, cacheWrite5m, cacheWrite1h,
     cacheHitRatio: Math.round(cacheHitRatio * 1000) / 1000,
     runtimeSec,
