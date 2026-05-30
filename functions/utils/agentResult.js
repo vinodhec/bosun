@@ -120,7 +120,8 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `Commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","idealDescription":"<one short plain-English sentence — how the owner could have described this problem so we'd have known exactly what to fix; write it as the owner speaking in their own non-technical words, no jargon>"}`
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +
+    `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
 
@@ -142,7 +143,8 @@ export function buildRevisePrompt(changes, imageCount = 0) {
     `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","idealDescription":"<one short plain-English sentence — how the owner could have described the full ask (initial + this revision) so we'd have known exactly what to fix; write it as the owner speaking in their own non-technical words, no jargon>"}`
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
+    `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
 
@@ -159,6 +161,7 @@ export async function extractResult(client, sessionId) {
   let filesChanged = [];
   let prUrl = null;
   let idealDescription = '';
+  let idealKeywords = [];
   try {
     const res = await client.beta.sessions.events.list(sessionId);
     const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
@@ -180,11 +183,23 @@ export async function extractResult(client, sessionId) {
       filesChanged = Array.isArray(j.filesChanged) ? j.filesChanged.slice(0, 50) : [];
       prUrl = j.prUrl || null;
       idealDescription = String(j.idealDescription || '').slice(0, 400);
+      // Keep only keywords whose phrase actually appears in idealDescription — guards against
+      // the model inventing a "highlight" that doesn't match anything in the tip text.
+      if (Array.isArray(j.idealKeywords) && idealDescription) {
+        const haystack = idealDescription.toLowerCase();
+        idealKeywords = j.idealKeywords
+          .map((k) => ({
+            phrase: String(k?.phrase || '').slice(0, 120).trim(),
+            why: String(k?.why || '').slice(0, 100).trim(),
+          }))
+          .filter((k) => k.phrase && k.why && haystack.includes(k.phrase.toLowerCase()))
+          .slice(0, 5);
+      }
     } else {
       resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
     }
   } catch {
     /* best-effort — leave defaults */
   }
-  return { resultSummary, filesChanged, prUrl, idealDescription };
+  return { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords };
 }

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import { useAuth } from '../hooks/useAuth.js';
 import { useBalance } from '../hooks/useBalance.js';
+import IdealPromptTip from '../components/IdealPromptTip.jsx';
 import { formatINR } from '@shared/currency.js';
 import { isLowBalance } from '@shared/billing.js';
 
@@ -91,19 +92,7 @@ export default function Result() {
           </div>
         )}
 
-        {task.idealDescription && (
-          <div className="mt-4 rounded-xl border border-brand-100 bg-brand-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-brand-700">
-              Tip for next time
-            </p>
-            <p className="mt-1 text-sm text-ink">
-              You could describe it like this:
-            </p>
-            <p className="mt-2 rounded-lg bg-white p-3 text-sm italic text-ink-soft">
-              “{task.idealDescription}”
-            </p>
-          </div>
-        )}
+        <IdealPromptTip text={task.idealDescription} keywords={task.idealKeywords} />
 
         <div className="mt-5 space-y-3">
           {task.prUrl && (
