@@ -16,6 +16,12 @@ import { usdToInr, DEFAULT_USD_TO_INR } from './currency.js';
 
 /** Minimum charge for any completed fix (INR). */
 export const MIN_CHARGE_INR = 75;
+/**
+ * Hard ceiling on what a single fix can cost the customer (INR). The bracketed cost-plus
+ * price is clamped to this no matter how high COGS runs, so the customer is never surprised
+ * by a four-figure bill. Tune here and nowhere else.
+ */
+export const MAX_CHARGE_INR = 690;
 /** Markup multiplier applied to actual API cost. (2× base + 25% = 2.5×) */
 export const MARKUP_MULTIPLIER = 2.5;
 
@@ -34,11 +40,11 @@ export const MARKUP_MULTIPLIER = 2.5;
  *   ₹75  → ₹225 + 25×3.5 = ₹313
  *   ₹100 → ₹225 + 50×3.5 = ₹400
  *   ₹200 → ₹400 + 100×2.5 = ₹650
- *   ₹500 → ₹400 + 400×2.5 = ₹1400
+ *   ₹500 → ₹400 + 400×2.5 = ₹1400 → clamped to MAX_CHARGE_INR
  *
- * Output is rounded UP to whole rupees (favours business). No floor — small costs
- * stay small. The hard COGS cap is enforced separately by the poller (maxBudgetUsd /
- * maxSeconds), so runaway is bounded regardless of the bracket shape.
+ * Output is rounded UP to whole rupees (favours business) and clamped to MAX_CHARGE_INR so
+ * the customer never sees a runaway bill. No floor — small costs stay small. The hard COGS
+ * cap is also enforced separately by the poller (maxBudgetUsd / maxSeconds).
  */
 export const PRICING_BRACKETS = [
   { upToInr: 50,        multiplier: 4.5 },
@@ -60,7 +66,7 @@ export function priceFromCostInr(costInr) {
     prevCap = upToInr;
     if (remaining <= 0) break;
   }
-  return Math.ceil(price);
+  return Math.min(Math.ceil(price), MAX_CHARGE_INR);
 }
 
 /** Bracketed price from actual COGS (USD). Converts to INR first, then applies brackets. */
