@@ -21,14 +21,25 @@ const agent = await client.beta.agents.create({
     'change that resolves the reported problem, commit to a new branch, push it, and ' +
     'open a pull request. Keep any user-facing text plain and friendly, with no ' +
     'technical jargon.',
-  mcp_servers: [{ type: 'url', name: 'github', url: 'https://api.githubcopilot.com/mcp/' }],
+  mcp_servers: [
+    { type: 'url', name: 'github', url: 'https://api.githubcopilot.com/mcp/' },
+    // Jam lets the agent read a customer-shared jam.dev recording (console errors, failed
+    // requests, repro steps). Authed by a Jam PAT stored as a static_bearer vault credential
+    // (see utils/vault.js); the session's vault_ids carry it in.
+    { type: 'url', name: 'jam', url: 'https://mcp.jam.dev/mcp' },
+  ],
   tools: [
     { type: 'agent_toolset_20260401' },
-    // always_allow so GitHub tool calls run headlessly (default is always_ask, which
+    // always_allow so MCP tool calls run headlessly (default is always_ask, which
     // stalls waiting for human approval — fatal for an unattended fix).
     {
       type: 'mcp_toolset',
       mcp_server_name: 'github',
+      default_config: { enabled: true, permission_policy: { type: 'always_allow' } },
+    },
+    {
+      type: 'mcp_toolset',
+      mcp_server_name: 'jam',
       default_config: { enabled: true, permission_policy: { type: 'always_allow' } },
     },
   ],

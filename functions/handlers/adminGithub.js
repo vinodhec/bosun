@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { ensureOrgGithubVault } from '../utils/vault.js';
-import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js';
+import { ANTHROPIC_API_KEY, JAM_PAT } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession } from '../utils/claudeAgent.js';
 import { tierFor } from '../utils/billing.js';
@@ -30,7 +30,7 @@ function requireAdmin(request) {
 // org doc (non-secret), the token in orgSecrets/{orgId} (backend-only), and sets up the
 // org's vault credential for the GitHub MCP so the agent can open PRs.
 export const adminSetGithubRepo = onCall(
-  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
+  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY, JAM_PAT] },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -54,6 +54,14 @@ export const adminSetGithubRepo = onCall(
 
     const existingVaultId = orgSnap.data().github?.vaultId;
     const vaultId = await ensureOrgGithubVault({ orgId, vaultId: existingVaultId, token });
+
+    // Also seed the shared Jam PAT so the agent can read a customer-shared jam.dev recording.
+    // Best-effort + idempotent: a missing/invalid PAT must never block connecting the repo.
+    try {
+      await ensureOrgJamCredential({ vaultId, token: process.env.JAM_PAT });
+    } catch (e) {
+      console.warn('adminSetGithubRepo:jam_credential', orgId, e?.message || e);
+    }
 
     await orgRef.set(
       { github: { repoFullName, vaultId, connectedAt: FieldValue.serverTimestamp() } },
