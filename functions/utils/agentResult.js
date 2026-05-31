@@ -95,12 +95,59 @@ export function sessionCostUsd(session) {
   return usageBreakdown(session).totalUsd;
 }
 
+// A jam.dev share link the owner pasted into their problem text. Jam captures the bug with the
+// console errors, failed network requests, and exact repro steps already attached — far richer
+// than prose — so when one is present we point the agent at it via the jam MCP tools.
+const JAM_URL_RE = /https?:\/\/(?:www\.)?jam\.dev\/[^\s)>\]"']+/i;
+
+/** Return the first jam.dev recording URL found in free text, or null. */
+export function extractJamUrl(text) {
+  const m = String(text || '').match(JAM_URL_RE);
+  return m ? m[0] : null;
+}
+
+// Tells the agent to mine a jam.dev recording before touching code — the console/network/repro
+// data usually pinpoints the cause faster than the owner's words can. The recording URL is the
+// `jamId` argument every jam tool takes.
+function jamNote(text) {
+  const url = extractJamUrl(text);
+  if (!url) return '';
+  return (
+    `The owner shared a screen recording of the problem: ${url}\n` +
+    `Use the jam tools FIRST to inspect it before editing — read its console errors ` +
+    `(getConsoleLogs), failed network requests (getNetworkRequests), and the exact steps the ` +
+    `owner took (getUserEvents) to pinpoint the cause. Pass the recording URL as the jamId ` +
+    `argument. This is a recording, NOT a page of the site — do not treat it as a route to fix.\n\n`
+  );
+}
+
+// Describes the read-only Firebase service-account keys we mount into the session (see
+// startFixSession). Lets the agent inspect the LIVE database to diagnose a bug — but it is
+// hard-bounded to reads: never write/update/delete, default to testing, prod only if the
+// problem is explicitly about production data. `mounts` is [{ env, projectId, mountPath }].
+function firebaseNote(mounts) {
+  if (!mounts?.length) return '';
+  const lines = mounts
+    .map((m) => `  - ${m.env}: project "${m.projectId}", key file at ${m.mountPath}`)
+    .join('\n');
+  return (
+    `This site is backed by Firebase. Read-only service-account keys are mounted for you:\n${lines}\n` +
+    `When it helps you diagnose the problem, set GOOGLE_APPLICATION_CREDENTIALS to the key for the ` +
+    `relevant environment and use the firebase CLI or the "firebase-admin" package to READ data ` +
+    `(list collections, read documents, check Auth). Default to the TESTING environment; only read ` +
+    `PRODUCTION if the problem is explicitly about production data.\n` +
+    `STRICTLY READ-ONLY: you must NEVER write, update, delete, run, deploy, or perform ANY mutating ` +
+    `Firebase/Firestore/Auth operation in ANY environment. Use this access only to understand the ` +
+    `data behind the bug; fix the problem by changing the repo's code and opening a PR as usual.\n\n`
+  );
+}
+
 /**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
  */
-export function buildFixPrompt(problem, imageCount = 0) {
+export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
   const screenshotNote =
     imageCount > 0
       ? `The owner also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} showing the problem — ` +
@@ -109,6 +156,8 @@ export function buildFixPrompt(problem, imageCount = 0) {
   return (
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
+    jamNote(problem) +
+    firebaseNote(firebaseMounts) +
     `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
     `If a file named AGENTS.md exists at the repo root, READ IT FIRST: it's a maintainer-written ` +
     `map of where things live and which file to edit for common requests — use it to go straight ` +
@@ -138,6 +187,7 @@ export function buildRevisePrompt(changes, imageCount = 0) {
   return (
     `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
     screenshotNote +
+    jamNote(changes) +
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
     `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +

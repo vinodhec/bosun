@@ -1,9 +1,9 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { ensureOrgGithubVault } from '../utils/vault.js';
-import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js';
+import { ANTHROPIC_API_KEY, JAM_PAT } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { startFixSession } from '../utils/claudeAgent.js';
+import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
@@ -30,7 +30,7 @@ function requireAdmin(request) {
 // org doc (non-secret), the token in orgSecrets/{orgId} (backend-only), and sets up the
 // org's vault credential for the GitHub MCP so the agent can open PRs.
 export const adminSetGithubRepo = onCall(
-  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] },
+  { region: 'asia-south1', secrets: [ANTHROPIC_API_KEY, JAM_PAT] },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -54,6 +54,14 @@ export const adminSetGithubRepo = onCall(
 
     const existingVaultId = orgSnap.data().github?.vaultId;
     const vaultId = await ensureOrgGithubVault({ orgId, vaultId: existingVaultId, token });
+
+    // Also seed the shared Jam PAT so the agent can read a customer-shared jam.dev recording.
+    // Best-effort + idempotent: a missing/invalid PAT must never block connecting the repo.
+    try {
+      await ensureOrgJamCredential({ vaultId, token: process.env.JAM_PAT });
+    } catch (e) {
+      console.warn('adminSetGithubRepo:jam_credential', orgId, e?.message || e);
+    }
 
     await orgRef.set(
       { github: { repoFullName, vaultId, connectedAt: FieldValue.serverTimestamp() } },
@@ -114,8 +122,10 @@ export const adminRunFix = onCall(
 
       const tier = tierFor(complexity);
       const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
-      const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+      const secretData = secretSnap.exists ? secretSnap.data() : {};
+      const githubToken = secretData.githubToken;
       if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+      const firebaseSAs = firebaseSAsFromSecret(secretData);
 
       const model = modelForComplexity(complexity);
       const taskRef = db.collection('tasks').doc();
@@ -130,11 +140,11 @@ export const adminRunFix = onCall(
         createdAt: FieldValue.serverTimestamp(),
       });
       try {
-        const { sessionId } = await startFixSession({
+        const { sessionId, firebaseFileIds } = await startFixSession({
           prompt, images, repoUrl: `https://github.com/${gh.repoFullName}`,
-          githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model),
+          githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs,
         });
-        await taskRef.update({ status: 'running', sessionId });
+        await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
       } catch {
         await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
         throw new HttpsError('internal', 'Could not start the fix.');
@@ -146,8 +156,10 @@ export const adminRunFix = onCall(
     const maxBudgetUsd = Number(process.env.AGENT_MAX_BUDGET_USD) || 3;
 
     const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
-    const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+    const secretData = secretSnap.exists ? secretSnap.data() : {};
+    const githubToken = secretData.githubToken;
     if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+    const firebaseSAs = firebaseSAsFromSecret(secretData);
 
     // Operator may force a model for testing; otherwise derive it from an optional
     // complexity hint (defaults to Sonnet, matching the customer path).
@@ -171,15 +183,16 @@ export const adminRunFix = onCall(
     });
 
     try {
-      const { sessionId } = await startFixSession({
+      const { sessionId, firebaseFileIds } = await startFixSession({
         prompt,
         images,
         repoUrl: `https://github.com/${gh.repoFullName}`,
         githubToken,
         vaultId: gh.vaultId,
         agentId: agentIdForModel(model),
+        firebaseSAs,
       });
-      await taskRef.update({ status: 'running', sessionId });
+      await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
     } catch {
       await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
       throw new HttpsError('internal', 'Could not start the fix.');
