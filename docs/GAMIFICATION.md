@@ -132,16 +132,14 @@ the more likely a first-try fix. Headline signals, strongest first:
 | Names the exact page/section ("the checkout page") | narrows scope | agent's semantic read |
 | Expected vs actual ("button does nothing when tapped") | states the bug, not just "it's broken" | agent's semantic read |
 
-So `briefScore` is best as a **hybrid**: a free deterministic component (URL present? screenshot
-present?) plus the agent's semantic judgement of clarity. The deterministic part is hard to fake
-*usefully* — a real link genuinely helps, and the bonus only pays out when paired with an efficient
-outcome (below), so pasting a junk URL earns nothing.
-
-**The semantic half is nearly free, because the agent already produces it.** Every result already
-carries `idealDescription` and `idealKeywords` (the gap between what the customer wrote and the
-ideal brief). The same agent output that emits the *tip for next time* emits the semantic
-`briefScore` component — "same agent can give this as well." Cheap fallback if we skip the new
-field entirely: small/empty `idealKeywords` ⇒ the brief was already clear ⇒ high score.
+**The score comes from the agent — the same pass that's already reading the description.** Every
+result already carries `idealDescription` and `idealKeywords` (the gap between what the customer
+wrote and the ideal brief). The agent that consumed the description to do the fix emits the
+`briefScore` in that **same output** — "same agent can give this as well" — scoring on the rubric
+above (link? screenshot? named page? expected-vs-actual?). No extra model call, no separate scoring
+step. Cheap fallback if the field is ever missing: small/empty `idealKeywords` ⇒ the brief was
+already clear ⇒ high score. The efficiency gate (first-try + under budget) means a junk link can't
+buy the bonus.
 
 **The coaching loop closes itself.** We already show the customer their tip ("next time, mention
 …"). Tie it to the score and a badge, and: clear brief → bonus + cheaper for us → tip nudges the
@@ -153,32 +151,22 @@ it: "Nice — the link made this quick.")
 > The score is advisory for points and coaching only. It **never** gates whether a fix runs, never
 > changes price, and a low score is never penalised — only a high one is rewarded.
 
-### 3.2 Show the rating *right next to the description*
+### 3.2 Show the rating next to the description (after the fix)
 
-The rating belongs where the behaviour happens — beside the description itself — in two moments:
+The rating is shown **after the fix is built**, beside the description that earned it — no live,
+as-they-type meter. The fix thread already shows each round's description as a `"…"` quote
+(`Dashboard.jsx` → `SessionCard`, with `IdealPromptTip` under it). We add the agent's `briefScore`
+as a small badge **on that same line**:
 
-**(a) Live, as they type — a "clarity" meter in the fix box.** Before they ever submit, a small
-meter under the description reacts to what they've written and nudges them to make it clearer. This
-is the real coaching lever: it improves the brief *before* the expensive work runs, which is what
-lowers COGS and lifts first-try success.
+```
+"My menu disappears on mobile"            · Clarity 4/5 ⭐
+   ↳ Tip: next time, paste the link to the page — we'll fix it even faster.
+```
 
-- It's **free and instant** — a pure client-side read of the same §3.1 signals: is there a link?
-  is a screenshot attached (`images.length`)? does it name a page / say what's wrong vs what's
-  expected? No model call.
-- Plain-language, encouraging, never blocking: `Clarity ●●○○○ — add the link to the page and we'll
-  fix it faster`. As they paste a URL or drop a screenshot, the meter fills and the tip updates.
-  Filling the meter is itself a tiny game that makes good briefs feel rewarding.
-- Lives in `ScreenshotComposer` (the shared compose box), so it shows for the **first description
-  and every change request** alike.
-
-**(b) The final score, beside the saved description.** In the fix thread each round already shows
-the description as a `"…"` quote (`Dashboard.jsx` → `SessionCard`, with `IdealPromptTip` under it).
-We add the authoritative agent `briefScore` as a small badge **on that same line** — e.g.
-`"My menu disappears on mobile"  · Clarity 4/5 ⭐` — so the rating is literally next to their words,
-and the existing tip explains how to score higher next time.
-
-The live meter (client estimate) and the final badge (agent score) use the **same rubric**, so the
-number a customer chases while typing matches the one they're rewarded on.
+So the rating sits literally next to their words, and the existing tip (from the *same* agent pass,
+§3.1) explains how to score higher next time. Seeing "4/5 ⭐" beside a clear description — and a
+lower score beside a vague one, next to a tip — is what teaches better briefs over time, without
+nagging anyone while they type.
 
 All constants live next to the billing constants conceptually but in their own module
 (`shared/gamification.js`) so tuning them never risks touching money math.
@@ -294,14 +282,10 @@ The whole feature rides machinery that already exists; nothing here touches mone
    a toggle between **This Week** (`weekPoints`) and **All Time** (`points`), plus per-axis mini-boards
    (most shipped, best briefs, longest streak) per §2.1. The signed-in employee's own row is
    highlighted, with their level, streak, and next badge shown beside it.
-7. **Live clarity meter (§3.2a)** — a small `<ClarityMeter value={problem} images={images}>` rendered
-   inside `ScreenshotComposer`, scoring client-side from the §3.1 signals (link? screenshot? named
-   page?). Pure function `estimateClarity(text, imageCount)` in `shared/gamification.js`, reused by
-   both the meter and (as a fallback) the server. Shows for the first description and every change
-   request, since both use the same compose box.
-8. **Score beside the saved description (§3.2b)** — in `SessionCard`, render the agent `briefScore`
-   as a small badge on the same line as each round's `"…"` quote, above the existing `IdealPromptTip`.
-9. **Celebrations** — a small flourish when a fix ships or a badge unlocks.
+7. **Score beside the saved description (§3.2)** — in `SessionCard`, render the agent `briefScore`
+   as a small "Clarity n/5 ⭐" badge on the same line as each round's `"…"` quote, above the existing
+   `IdealPromptTip`. (Shown after the fix is built; no live/as-you-type meter.)
+8. **Celebrations** — a small flourish when a fix ships or a badge unlocks.
 
 ### 6.1 v1 focus: seat activation
 
