@@ -229,6 +229,9 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         actualCostInr: t.actualCostInr ?? null,
         prUrl: t.prUrl ?? null,
         previewUrl: t.previewUrl ?? null,
+        // Anthropic-hosted Managed Agent session id — lets the operator open the
+        // raw session transcript on platform.claude.com. Operator-only, never customer-facing.
+        sessionId: t.sessionId ?? null,
         resultSummary: t.resultSummary ?? null,
         error: t.error ?? null,
         repoFullName: t.repoFullName ?? null,

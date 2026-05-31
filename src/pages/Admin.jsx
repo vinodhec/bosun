@@ -627,6 +627,7 @@ export default function Admin() {
                 <div className="mt-1 flex gap-3">
                   {t.prUrl && <a href={t.prUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
                   {t.previewUrl && <a href={t.previewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
+                  {t.sessionId && <a href={`https://platform.claude.com/workspaces/default/sessions/${t.sessionId}`} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Session →</a>}
                 </div>
                 {t.status === 'complete' && t.prUrl && (
                   <div className="mt-2 flex flex-wrap items-center gap-2">
