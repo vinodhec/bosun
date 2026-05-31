@@ -89,16 +89,34 @@ hold:
 - the fix was efficient — first-try (`freeRevisionsUsed === 0`) and comfortably under the tier's
   `maxBudgetUsd` (`actualCostUsd < efficiencyFraction × maxBudgetUsd`).
 
-**The score is nearly free, because the agent already produces the signal.** Every result already
+**What lifts the score (the specificity rubric).** Concrete, checkable signals that remove ambiguity
+about *what* and *where* — because the less the agent has to guess, the fewer tokens it burns and
+the more likely a first-try fix. Headline signals, strongest first:
+
+| Signal | Why it helps | How we detect it |
+|---|---|---|
+| **Page URL of the broken page** | pinpoints *where* — agent doesn't crawl the site hunting | regex for a link in the `prompt` (deterministic, free) |
+| **Screenshot attached** | shows the symptom exactly | `imageCount > 0` (already tracked) |
+| Names the exact page/section ("the checkout page") | narrows scope | agent's semantic read |
+| Expected vs actual ("button does nothing when tapped") | states the bug, not just "it's broken" | agent's semantic read |
+
+So `briefScore` is best as a **hybrid**: a free deterministic component (URL present? screenshot
+present?) plus the agent's semantic judgement of clarity. The deterministic part is hard to fake
+*usefully* — a real link genuinely helps, and the bonus only pays out when paired with an efficient
+outcome (below), so pasting a junk URL earns nothing.
+
+**The semantic half is nearly free, because the agent already produces it.** Every result already
 carries `idealDescription` and `idealKeywords` (the gap between what the customer wrote and the
-ideal brief). The same agent output that emits the *tip for next time* emits a `briefScore` (0–100)
-— "same agent can give this as well." A cheap proxy if we don't want a new field: small/empty
-`idealKeywords` ⇒ the brief was already clear ⇒ high score.
+ideal brief). The same agent output that emits the *tip for next time* emits the semantic
+`briefScore` component — "same agent can give this as well." Cheap fallback if we skip the new
+field entirely: small/empty `idealKeywords` ⇒ the brief was already clear ⇒ high score.
 
 **The coaching loop closes itself.** We already show the customer their tip ("next time, mention
 …"). Tie it to the score and a badge, and: clear brief → bonus + cheaper for us → tip nudges the
-*next* brief higher → compounding. Plain-language only: "Great description — that helped us fix it
-first time. ✨ Next time, mentioning *the page it's on* makes it even faster."
+*next* brief higher → compounding. The single most actionable nudge is asking for the link:
+"Great description — that helped us fix it first time. ✨ Tip: next time, paste the link to the page
+that's broken and we'll be even faster." (And when they *do* include a URL, the card acknowledges
+it: "Nice — the link made this quick.")
 
 > The score is advisory for points and coaching only. It **never** gates whether a fix runs, never
 > changes price, and a low score is never penalised — only a high one is rewarded.
