@@ -23,6 +23,7 @@ export const adminSetUserOrg = httpsCallable(functions, 'adminSetUserOrg');
 export const adminSetOrgApproval = httpsCallable(functions, 'adminSetOrgApproval');
 export const adminSetOrgDeploy = httpsCallable(functions, 'adminSetOrgDeploy');
 export const adminQuoteTask = httpsCallable(functions, 'adminQuoteTask');
+export const adminBackfillGamification = httpsCallable(functions, 'adminBackfillGamification');
 export const adminSetGithubRepo = httpsCallable(functions, 'adminSetGithubRepo');
 export const adminRunFix = httpsCallable(functions, 'adminRunFix');
 export const adminListTasks = httpsCallable(functions, 'adminListTasks');

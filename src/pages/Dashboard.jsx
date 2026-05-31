@@ -5,8 +5,11 @@ import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, de
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
+import Leaderboard from '../components/Leaderboard.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import { useOrgStats } from '../hooks/useOrgStats.js';
 import { formatINR } from '@shared/currency.js';
+import { clarityStars } from '@shared/gamification.js';
 import { MAX_IMAGES } from '../utils/images.js';
 
 const STATUS = {
@@ -36,6 +39,7 @@ function friendlyError(e) {
 export default function Dashboard() {
   const { user } = useAuth();
   const org = useOrg(user);
+  const { members, meId } = useOrgStats(user);
   const [problem, setProblem] = useState('');
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const [busy, setBusy] = useState(false);
@@ -88,7 +92,21 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen">
       <Navbar balance={balance} />
-      <main className="mx-auto max-w-2xl space-y-6 px-4 py-6">
+      {/* Two columns on large screens: a sticky left rail holds the team board (always in
+          view to drive activation); the main column keeps the existing fix flow unchanged.
+          On small screens the board collapses to a compact strip above the fix box. */}
+      <main className="mx-auto w-full max-w-6xl px-4 py-6 lg:grid lg:grid-cols-[18rem_minmax(0,42rem)] lg:gap-6 lg:justify-center">
+        <aside className="hidden lg:block">
+          <div className="lg:sticky lg:top-20">
+            <Leaderboard members={members} meId={meId} />
+          </div>
+        </aside>
+
+        <div className="space-y-6">
+        <div className="lg:hidden">
+          <Leaderboard members={members} meId={meId} compact />
+        </div>
+
         {org === null && (
           <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200">
             Your account isn’t set up yet — the Bosun team will connect your website and add credits.
@@ -139,6 +157,7 @@ export default function Dashboard() {
             ))}
           </section>
         )}
+        </div>
       </main>
     </div>
   );
@@ -274,7 +293,19 @@ function SessionCard({ session: s, onRevised }) {
                       <span className="text-xs font-medium text-ink">{roundCost(r)}</span>
                     )}
                   </div>
-                  {r.prompt && <p className="mt-1 text-sm text-ink-soft">“{r.prompt}”</p>}
+                  {r.prompt && (
+                    <div className="mt-1 flex items-start justify-between gap-2">
+                      <p className="text-sm text-ink-soft">“{r.prompt}”</p>
+                      {clarityStars(r.briefScore) > 0 && (
+                        <span
+                          title="How clear your description was — clearer descriptions mean faster, first-try fixes."
+                          className="mt-0.5 shrink-0 whitespace-nowrap rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200"
+                        >
+                          Clarity {clarityStars(r.briefScore)}/5 ⭐
+                        </span>
+                      )}
+                    </div>
+                  )}
                   {r.summary && <p className="mt-1 text-sm text-ink">{r.summary}</p>}
                   {r.changes?.length > 0 && (
                     <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-ink-soft">

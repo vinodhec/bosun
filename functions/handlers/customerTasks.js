@@ -83,6 +83,7 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
                     .filter((k) => k.phrase && k.why)
                     .slice(0, 5)
                 : [],
+              briefScore: Number(r.briefScore) || 0, // clarity rating shown beside the description
               addedInr: Number(r.addedInr) || 0,
               free: r.kind !== 'initial' && (Number(r.addedInr) || 0) === 0,
               charged: !!r.charged,

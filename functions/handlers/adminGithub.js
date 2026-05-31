@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession } from '../utils/claudeAgent.js';
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
-import { markRoundFailure } from '../utils/finalize.js';
+import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { mergePullRequest, promoteBranch } from '../utils/github.js';
@@ -303,6 +303,9 @@ async function deployTaskToTesting(db, taskId) {
 
   await mergePullRequest(t.repoFullName, prNum, token);
   await ref.update({ deployedTesting: true, deployedTestingAt: FieldValue.serverTimestamp() });
+  // Credit the "went live for review" milestone to the employee (best-effort; never blocks
+  // the deploy). Idempotent — guarded by the task's shipPointsAwarded flag.
+  try { await awardShipPoints(taskId); } catch (e) { console.error('awardShipPoints', taskId, e?.message || e); }
   return { ok: true };
 }
 

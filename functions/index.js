@@ -21,6 +21,7 @@ export {
   adminSetOrgDeploy,
   adminQuoteTask,
   adminMetrics,
+  adminBackfillGamification,
 } from './handlers/admin.js';
 
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,

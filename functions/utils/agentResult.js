@@ -120,7 +120,7 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `Commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's ORIGINAL description was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the description only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +
     `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
@@ -143,7 +143,7 @@ export function buildRevisePrompt(changes, imageCount = 0) {
     `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's change request was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the request only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
     `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
@@ -162,6 +162,7 @@ export async function extractResult(client, sessionId) {
   let prUrl = null;
   let idealDescription = '';
   let idealKeywords = [];
+  let briefScore = 0;
   try {
     const res = await client.beta.sessions.events.list(sessionId);
     const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
@@ -195,11 +196,20 @@ export async function extractResult(client, sessionId) {
           .filter((k) => k.phrase && k.why && haystack.includes(k.phrase.toLowerCase()))
           .slice(0, 5);
       }
+      // Clarity rating for points + coaching (advisory only — never gates or prices a fix).
+      // Trust the agent's score when it's a sane number; otherwise fall back to how sparse
+      // idealKeywords is (few missing details ⇒ the brief was already clear ⇒ high score).
+      const raw = Number(j.briefScore);
+      if (Number.isFinite(raw) && raw >= 0) {
+        briefScore = Math.min(100, Math.round(raw));
+      } else {
+        briefScore = idealKeywords.length === 0 ? 80 : Math.max(20, 80 - idealKeywords.length * 15);
+      }
     } else {
       resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
     }
   } catch {
     /* best-effort — leave defaults */
   }
-  return { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords };
+  return { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore };
 }

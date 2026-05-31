@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { DEFAULT_USD_TO_INR } from '../utils/billing.js';
+import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (comma-separated).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -303,14 +304,128 @@ export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
     throw new HttpsError('not-found', 'Organisation not found.');
   }
   // Resolve the email to a Firebase Auth uid (the user must have signed in at least once).
-  let uid;
+  let uid, userRecord;
   try {
-    ({ uid } = await getAuth().getUserByEmail(email));
+    userRecord = await getAuth().getUserByEmail(email);
+    uid = userRecord.uid;
   } catch {
     throw new HttpsError('not-found', 'No user with that email (have they signed in yet?).');
   }
   await db.collection('users').doc(uid).set({ orgId }, { merge: true });
   // Custom claim lets security rules + the app scope reads to the user's org.
   await getAuth().setCustomUserClaims(uid, { orgId });
+  // Seed an empty leaderboard row so this teammate shows up on the board from day one
+  // (the activation nudge — see docs/GAMIFICATION.md §6.1), never overwriting existing stats.
+  const name = email || userRecord.displayName; // email is the board label (unique)
+  const orgSnap = await db.collection('organisations').doc(orgId).get();
+  if (!orgSnap.data()?.orgStats?.members?.[uid]) {
+    await db.collection('organisations').doc(orgId).set(
+      { orgStats: { members: { [uid]: emptyMember(name) } } },
+      { merge: true },
+    );
+  }
   return { uid, email, orgId };
+});
+
+// --- Gamification backfill (operator-only) -------------------------------------------------
+//
+// Rebuilds the leaderboard (orgStats.members) for one org, or every org, from existing fix
+// history — so the board isn't empty after launch. A FULL RECOMPUTE: it replays the same
+// pure award functions the live billing path uses, in chronological order, then writes the
+// authoritative member map. Idempotent — safe to re-run; it overwrites the map each time and
+// stamps each counted task (rounds[].pointsAwarded / shipPointsAwarded) so the FORWARD path
+// can never double-count what the backfill already credited.
+
+async function backfillOrgGamification(db, orgId) {
+  // Roster: every assigned employee gets a row (even dormant ones — activation, §6.1).
+  const members = {};
+  const userSnap = await db.collection('users').where('orgId', '==', orgId).get();
+  for (const u of userSnap.docs) {
+    const d = u.data();
+    members[u.id] = emptyMember(d.email || d.displayName || ''); // email is the board label
+  }
+
+  // All completed fixes for the org, oldest first (streak math is chronological).
+  const taskSnap = await db.collection('tasks').where('orgId', '==', orgId).where('status', '==', 'complete').get();
+  const tasks = taskSnap.docs
+    .map((t) => ({ id: t.id, ref: t.ref, data: t.data() }))
+    .sort((a, b) => (a.data.createdAt?.toMillis?.() || 0) - (b.data.createdAt?.toMillis?.() || 0));
+
+  const ensure = (uid, name) => { if (!members[uid]) members[uid] = emptyMember(name); return members[uid]; };
+  const batch = db.batch();
+  let counted = 0;
+
+  for (const t of tasks) {
+    const task = t.data;
+    const uid = task.userId;
+    if (!uid) continue;
+    const createdMs = task.createdAt?.toMillis?.() || 0;
+    const name = members[uid]?.name || '';
+
+    // Each charged, chargeable round earns fix-points (free re-fixes earn none). Legacy tasks
+    // (pre-threads) have no rounds[]; synthesize a single initial round from the task fields.
+    const rounds = Array.isArray(task.rounds) && task.rounds.length
+      ? task.rounds
+      : (task.billed || task.approved)
+        ? [{ kind: 'initial', charged: true, actualCostUsd: Number(task.actualCostUsd) || 0, briefScore: 0, at: createdMs }]
+        : [];
+
+    let touched = false;
+    // Full recompute: count EVERY charged, chargeable round regardless of `pointsAwarded`
+    // (that flag only stops the LIVE billing path from re-adding what's already counted).
+    // We still STAMP the flag below so the live path won't double-count after this rebuild.
+    const stamped = rounds.map((r) => {
+      if (r.charged && r.kind !== 'unresolved') {
+        const { member } = applyFixAward(ensure(uid, name), {
+          name,
+          complexity: task.complexity,
+          freeRevisionsUsed: Number(r.freeRevisionsUsed) || 0,
+          briefScore: Number(r.briefScore) || 0,
+          actualCostUsd: Number(r.actualCostUsd) || 0,
+          maxBudgetUsd: Number(task.maxBudgetUsd) || 0,
+        }, Number(r.at) || createdMs);
+        members[uid] = member;
+        counted++;
+        touched = true;
+        return { ...r, pointsAwarded: true };
+      }
+      return r;
+    });
+
+    const taskUpdate = {};
+    // Only stamp real, persisted rounds (skip synthesized legacy rounds — nothing to write).
+    if (touched && Array.isArray(task.rounds) && task.rounds.length) taskUpdate.rounds = stamped;
+
+    // The "went live for review" milestone (+ First Fix badge), once per task. Counted on
+    // every recompute (the flag only gates the live path); stamped so the live path won't re-add.
+    if (task.deployedTesting) {
+      const shipMs = task.deployedTestingAt?.toMillis?.() || createdMs;
+      const { member } = applyShipAward(ensure(uid, name), { name }, shipMs);
+      members[uid] = member;
+      taskUpdate.shipPointsAwarded = true;
+      touched = true;
+    }
+    if (Object.keys(taskUpdate).length) batch.update(t.ref, taskUpdate);
+  }
+
+  await batch.commit();
+  await db.collection('organisations').doc(orgId).update({ 'orgStats.members': members });
+  return { orgId, members: Object.keys(members).length, roundsCounted: counted, tasks: tasks.length };
+}
+
+export const adminBackfillGamification = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const db = getFirestore();
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (orgId) {
+    if (!(await db.collection('organisations').doc(orgId).get()).exists) {
+      throw new HttpsError('not-found', 'Organisation not found.');
+    }
+    return { ok: true, results: [await backfillOrgGamification(db, orgId)] };
+  }
+  // No orgId → backfill every org.
+  const orgs = await db.collection('organisations').get();
+  const results = [];
+  for (const o of orgs.docs) results.push(await backfillOrgGamification(db, o.id));
+  return { ok: true, results };
 });
