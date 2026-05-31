@@ -153,6 +153,33 @@ it: "Nice — the link made this quick.")
 > The score is advisory for points and coaching only. It **never** gates whether a fix runs, never
 > changes price, and a low score is never penalised — only a high one is rewarded.
 
+### 3.2 Show the rating *right next to the description*
+
+The rating belongs where the behaviour happens — beside the description itself — in two moments:
+
+**(a) Live, as they type — a "clarity" meter in the fix box.** Before they ever submit, a small
+meter under the description reacts to what they've written and nudges them to make it clearer. This
+is the real coaching lever: it improves the brief *before* the expensive work runs, which is what
+lowers COGS and lifts first-try success.
+
+- It's **free and instant** — a pure client-side read of the same §3.1 signals: is there a link?
+  is a screenshot attached (`images.length`)? does it name a page / say what's wrong vs what's
+  expected? No model call.
+- Plain-language, encouraging, never blocking: `Clarity ●●○○○ — add the link to the page and we'll
+  fix it faster`. As they paste a URL or drop a screenshot, the meter fills and the tip updates.
+  Filling the meter is itself a tiny game that makes good briefs feel rewarding.
+- Lives in `ScreenshotComposer` (the shared compose box), so it shows for the **first description
+  and every change request** alike.
+
+**(b) The final score, beside the saved description.** In the fix thread each round already shows
+the description as a `"…"` quote (`Dashboard.jsx` → `SessionCard`, with `IdealPromptTip` under it).
+We add the authoritative agent `briefScore` as a small badge **on that same line** — e.g.
+`"My menu disappears on mobile"  · Clarity 4/5 ⭐` — so the rating is literally next to their words,
+and the existing tip explains how to score higher next time.
+
+The live meter (client estimate) and the final badge (agent score) use the **same rubric**, so the
+number a customer chases while typing matches the one they're rewarded on.
+
 All constants live next to the billing constants conceptually but in their own module
 (`shared/gamification.js`) so tuning them never risks touching money math.
 
@@ -267,9 +294,14 @@ The whole feature rides machinery that already exists; nothing here touches mone
    a toggle between **This Week** (`weekPoints`) and **All Time** (`points`), plus per-axis mini-boards
    (most shipped, best briefs, longest streak) per §2.1. The signed-in employee's own row is
    highlighted, with their level, streak, and next badge shown beside it.
-7. **Result view** — surface the brief tip + score ("Great description — that helped us fix it first
-   time ✨ Tip: next time, paste the link…"), and a small celebration when a fix ships or a badge
-   unlocks.
+7. **Live clarity meter (§3.2a)** — a small `<ClarityMeter value={problem} images={images}>` rendered
+   inside `ScreenshotComposer`, scoring client-side from the §3.1 signals (link? screenshot? named
+   page?). Pure function `estimateClarity(text, imageCount)` in `shared/gamification.js`, reused by
+   both the meter and (as a fallback) the server. Shows for the first description and every change
+   request, since both use the same compose box.
+8. **Score beside the saved description (§3.2b)** — in `SessionCard`, render the agent `briefScore`
+   as a small badge on the same line as each round's `"…"` quote, above the existing `IdealPromptTip`.
+9. **Celebrations** — a small flourish when a fix ships or a badge unlocks.
 
 ### 6.1 v1 focus: seat activation
 
