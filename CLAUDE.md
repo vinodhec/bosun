@@ -126,3 +126,26 @@ repository, CSS, etc. Use plain phrasing: "What's broken", "Fix is ready", "What
   `ADMIN_EMAILS` — do not assume Firebase Auth role claims.
 - Firebase project id: `bosun-76bba` (`.firebaserc`).
 - Default Functions region: `asia-south1`. Keep new callables on the same region.
+
+## MCP servers & environment switching
+
+The repo declares two MCP servers in `.mcp.json` (auto-enabled via `.claude/settings.json`):
+**firebase** (official `firebase-tools experimental:mcp`) and **jam** (`https://mcp.jam.dev/mcp`,
+per-user OAuth — call `mcp__jam__authenticate` once to sign in).
+
+`.firebaserc` defines three project aliases: `default`/`testing`/`production`. The Firebase MCP has
+no `--project` flag — switch the active project at runtime with the MCP tool
+`firebase_update_environment(active_project: "testing" | "production")`. Rules:
+
+- **Default to `testing` (`maadiveedu-6b8ce`).** Before any Firebase MCP read/write, check the
+  active project with `firebase_get_environment`; if it isn't the intended env, switch it.
+- **Use `production` (`maadiveeduvas`) only when a production URL/domain or the word "production" is
+  explicitly given.** Otherwise stay on testing.
+- **Switch back to `testing` after a production task** (active project is sticky per project dir),
+  and **confirm before any production write** (data/auth/config changes).
+- **Deploy guard:** these aliases are for MCP project *context* only. NEVER `firebase deploy`
+  against `testing`/`production` from this repo — `firebase.json` here is Bosun's app, and those
+  projects are deployed from the `maadiveedu-unified-platform` repo. Bosun deploys only ever target
+  `default` (`bosun-76bba`).
+- **Jam** has no environment dimension — use it to inspect a shared Jam recording (console/network/
+  repro) whenever a jam.dev link is referenced.
