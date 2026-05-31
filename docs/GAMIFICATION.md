@@ -15,26 +15,33 @@ Decisions locked in for v1:
 
 ---
 
-## 1. Why outcomes, not spend
+## 1. The goal is revenue — here's the math that gets there
 
-Bosun charges real money per fix (₹149–749) and the customer is a non-technical small-business
-owner. A system that rewards *spending* nudges anxious owners to manufacture problems and pay for
-fixes they don't need — a dark pattern that works for a quarter, then collapses trust and churns
-the customer (and poisons word-of-mouth, the cheapest channel in this segment).
+The point of this feature is to **grow revenue**. Revenue ≈
+**active employees × fixes per employee × price × how long they stay**. A board can push every term,
+but the terms differ wildly in value and risk:
 
-So points reward the things that are good for the customer *and* for us:
+| Mechanic | Revenue lever | Risk |
+|---|---|---|
+| **Employee board** (rank the org's users) | **Seat activation** — pulls the employees who *aren't* raising fixes yet into using it. Same org, same wallet, more usage. Biggest near-term win. | Low |
+| **Streaks + weekly board** | **Frequency** — turns "fix it when I remember" into a habit; more genuine problems get fixed. | Low |
+| **First-try + clear briefs (§3.1)** | **Retention + margin** — better experience keeps them paying (retention dominates LTV); clear briefs cut COGS so each rupee earned is worth more. | Low |
+| **"Site health" nudges** (surface *real* issues) | **Expansion** — legitimately more fixes. | Medium — only if issues are real, never invented |
+| ~~Direct spend nudges~~ ("₹500 to reach next level") | One-time ARPU bump | **High — net-negative** |
 
-- A problem fixed that **stayed fixed** (no immediate revision).
-- The fix actually **shipped to testing** (delivered, not rotting in a PR).
-- A **clear brief** that let us fix it first time (cheaper for us, §3.1).
-- **Coming back** when something genuinely breaks (habit, not bingeing).
+Why we **don't** reward spend directly: Bosun's customers are price-sensitive, non-technical SMBs in
+India where word-of-mouth *is* the funnel. A spend-nudge produces a one-time ARPU bump that **decays**,
+followed by churn, refunds, and reputational damage. Frequency + retention instead **compound** —
+each activated, retained seat keeps paying. So the revenue-maximizing move and the trust-preserving
+move are the **same** move here; this design optimizes the levers that compound.
 
-Behaviourally this leans on *competence* and *progress* (durable motivators) rather than
-loss-chasing (a short-lived one). It is also the lower-churn business choice.
+Concretely, points reward: a problem **fixed that stayed fixed**, a fix that **shipped to testing**,
+a **clear brief** that let us fix it first time, and **coming back** when something genuinely breaks.
 
 > **Money rule unaffected.** Points are not currency, never convert to balance, and never alter a
 > charge. The canonical billing math in `shared/billing.js` is untouched. Points are a read-only
-> motivational layer on top of outcomes that already happened.
+> motivational layer on top of outcomes that already happened — the revenue comes from *more real
+> usage by more seats*, not from inflating any single charge.
 
 ---
 
