@@ -10,6 +10,15 @@ const BETA = 'managed-agents-2026-04-01';
 // CONFIRM these status values against the sessions API reference.
 const DONE = new Set(['completed', 'ended', 'idle', 'succeeded']);
 const FAILED = new Set(['failed', 'error', 'cancelled', 'canceled']);
+
+// Best-effort: delete the read-only Firebase SA key files we uploaded for this session once it
+// ends, so service-account keys don't accumulate in Files storage. Safe on a terminal round — the
+// agent has finished; a later revision simply re-reads from code if it needs Firebase again.
+async function deleteSessionFiles(client, task) {
+  for (const fid of task.firebaseFileIds || []) {
+    try { await client.beta.files.delete(fid); } catch { /* best-effort */ }
+  }
+}
 const MAX_PREVIEW_TRIES = 12; // ~12 min before we give up waiting for the Vercel preview
 
 // Structured per-round usage line for Cloud Logging. The optimisation dashboard: token
@@ -77,6 +86,7 @@ export const pollSessions = onSchedule(
           if (FAILED.has(status)) {
             logAgentUsage('failed', docSnap.id, task, bd, roundUsd, roundSec);
             await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
+            await deleteSessionFiles(client, task);
             continue;
           }
 
@@ -103,6 +113,7 @@ export const pollSessions = onSchedule(
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
             logAgentUsage('timeout', docSnap.id, task, bd, roundUsd, roundSec);
             await markRoundFailure(docSnap.id, { error: 'timeout', actualCostUsd: costUsd });
+            await deleteSessionFiles(client, task);
             continue;
           }
 
@@ -110,6 +121,7 @@ export const pollSessions = onSchedule(
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
             logAgentUsage('over_budget', docSnap.id, task, bd, roundUsd, roundSec);
             await markRoundFailure(docSnap.id, { error: 'over_budget', actualCostUsd: costUsd });
+            await deleteSessionFiles(client, task);
             continue;
           }
         } catch (e) {

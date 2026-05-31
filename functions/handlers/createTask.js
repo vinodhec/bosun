@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
-import { startFixSession } from '../utils/claudeAgent.js';
+import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -77,9 +77,12 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   const maxSeconds = tier.maxSeconds; // tier runtime cap — second guard alongside the $ cap
 
   // The GitHub token (operator-provisioned) is backend-only — never exposed to clients.
+  // The same backend-only doc may hold read-only Firebase service-account keys for the org.
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
-  const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+  const secretData = secretSnap.exists ? secretSnap.data() : {};
+  const githubToken = secretData.githubToken;
   if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+  const firebaseSAs = firebaseSAsFromSecret(secretData);
 
   // Cost-aware routing: Sonnet handles all but `complex` fixes; Opus is reserved for those.
   const model = modelForComplexity(complexity);
@@ -109,8 +112,8 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   });
 
   try {
-    const { sessionId } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model) });
-    await taskRef.update({ status: 'running', sessionId });
+    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs });
+    await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch {
     await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
     throw new HttpsError('internal', 'We could not start the fix. You were not charged.');

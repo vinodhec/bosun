@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { continueFixSession, startFixSession } from '../utils/claudeAgent.js';
+import { continueFixSession, startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
@@ -223,16 +223,18 @@ export const confirmQuote = onCall(
     const gh = orgSnap.data()?.github;
     if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
     const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();
-    const githubToken = secretSnap.exists ? secretSnap.data().githubToken : null;
+    const secretData = secretSnap.exists ? secretSnap.data() : {};
+    const githubToken = secretData.githubToken;
     if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
+    const firebaseSAs = firebaseSAsFromSecret(secretData);
 
     const model = modelForComplexity(task.complexity);
     const repoUrl = `https://github.com/${gh.repoFullName}`;
     try {
-      const { sessionId } = await startFixSession({
-        prompt: task.prompt, images: [], repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model),
+      const { sessionId, firebaseFileIds } = await startFixSession({
+        prompt: task.prompt, images: [], repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs,
       });
-      await taskRef.update({ status: 'running', sessionId, model, confirmedAt: FieldValue.serverTimestamp() });
+      await taskRef.update({ status: 'running', sessionId, model, firebaseFileIds: firebaseFileIds || [], confirmedAt: FieldValue.serverTimestamp() });
     } catch (e) {
       console.error('confirmQuote:dispatch', taskId, e?.message || e);
       throw new HttpsError('internal', 'We could not start the work. You were not charged.');

@@ -121,12 +121,33 @@ function jamNote(text) {
   );
 }
 
+// Describes the read-only Firebase service-account keys we mount into the session (see
+// startFixSession). Lets the agent inspect the LIVE database to diagnose a bug — but it is
+// hard-bounded to reads: never write/update/delete, default to testing, prod only if the
+// problem is explicitly about production data. `mounts` is [{ env, projectId, mountPath }].
+function firebaseNote(mounts) {
+  if (!mounts?.length) return '';
+  const lines = mounts
+    .map((m) => `  - ${m.env}: project "${m.projectId}", key file at ${m.mountPath}`)
+    .join('\n');
+  return (
+    `This site is backed by Firebase. Read-only service-account keys are mounted for you:\n${lines}\n` +
+    `When it helps you diagnose the problem, set GOOGLE_APPLICATION_CREDENTIALS to the key for the ` +
+    `relevant environment and use the firebase CLI or the "firebase-admin" package to READ data ` +
+    `(list collections, read documents, check Auth). Default to the TESTING environment; only read ` +
+    `PRODUCTION if the problem is explicitly about production data.\n` +
+    `STRICTLY READ-ONLY: you must NEVER write, update, delete, run, deploy, or perform ANY mutating ` +
+    `Firebase/Firestore/Auth operation in ANY environment. Use this access only to understand the ` +
+    `data behind the bug; fix the problem by changing the repo's code and opening a PR as usual.\n\n`
+  );
+}
+
 /**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
  */
-export function buildFixPrompt(problem, imageCount = 0) {
+export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
   const screenshotNote =
     imageCount > 0
       ? `The owner also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} showing the problem — ` +
@@ -136,6 +157,7 @@ export function buildFixPrompt(problem, imageCount = 0) {
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
     jamNote(problem) +
+    firebaseNote(firebaseMounts) +
     `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
     `If a file named AGENTS.md exists at the repo root, READ IT FIRST: it's a maintainer-written ` +
     `map of where things live and which file to edit for common requests — use it to go straight ` +
