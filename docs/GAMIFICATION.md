@@ -11,6 +11,9 @@ Decisions locked in for v1:
   board become later phases — see §7.)
 - **"Shipped" = reached testing.** A fix that lands in the testing environment counts as a win;
   going to prod is a separate, gated step we don't require for points.
+- **v1 revenue lever: seat activation** (§6.1). The board's first job is to pull the employees who
+  *aren't* raising fixes yet into using it — same org wallet, more usage. Other levers ride along but
+  activation is what v1 is tuned and measured on.
 - **Status:** design only. v1 implementation is sketched in §6.
 
 ---
@@ -267,6 +270,26 @@ The whole feature rides machinery that already exists; nothing here touches mone
 7. **Result view** — surface the brief tip + score ("Great description — that helped us fix it first
    time ✨ Tip: next time, paste the link…"), and a small celebration when a fix ships or a badge
    unlocks.
+
+### 6.1 v1 focus: seat activation
+
+v1 is tuned and measured on **activation** — moving the org from *1 of 3 employees raising fixes* to
+*3 of 3*. The activation-specific mechanics:
+
+- **Everyone is on the board from day one**, including not-yet-active employees — shown as an
+  inviting "Not started yet · raise your first fix" row, **never** a shaming "0". Visibility is the
+  nudge; the framing stays a welcome, not a callout.
+- **A first-fix welcome quest + activation bonus.** A new seat's first *shipped* fix unlocks the
+  **First Ship** badge and a one-time activation bonus, so a dormant employee gets a fast, visible
+  win on their first try (the steep early part of the level curve, §4).
+- **Pull, not shame, from teammates' wins.** When a teammate ships, dormant seats see a gentle
+  "Asha just shipped a fix — try yours" prompt, not "you're behind." Social proof, opt-in tone.
+- **The weekly board (§2.1) resets the field** so a newly-activated employee can win *this week*
+  immediately, rather than facing an insurmountable all-time lead.
+
+**Success metric.** Track **active-seat rate** = share of org employees with ≥1 shipped fix in the
+trailing 30 days. This already derives from `tasks` (`userId` + `deployedTesting` + timestamp) — add
+it to the operator's `adminMetrics` so you can watch activation move. v1 wins if it climbs toward 3/3.
 
 **UI language (strict).** No technical words. "Shipped to testing" → say **"went live for review"** or
 **"ready to preview"**; "Level 3 · Trusted"; "2-week streak — keep it going" — never "deploy", "PR",
