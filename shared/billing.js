@@ -31,16 +31,16 @@ export const MARKUP_MULTIPLIER = 2.5;
  * The customer pays a multiple of actual COGS, with the multiplier decreasing as cost rises
  * (so tiny fixes don't feel rip-off-y and big fixes don't balloon):
  *   - first ₹50 of COGS     → 4.5×
- *   - next ₹50 (50–100)     → 3.5×
- *   - everything above ₹100 → 2.5×
+ *   - next ₹50 (50–100)     → 3×
+ *   - everything above ₹100 → 2×
  *
  * Worked examples:
  *   ₹10  → ₹45      (10×4.5)
  *   ₹40  → ₹180     (40×4.5)
- *   ₹75  → ₹225 + 25×3.5 = ₹313
- *   ₹100 → ₹225 + 50×3.5 = ₹400
- *   ₹200 → ₹400 + 100×2.5 = ₹650
- *   ₹500 → ₹400 + 400×2.5 = ₹1400 → clamped to MAX_CHARGE_INR
+ *   ₹75  → ₹225 + 25×3 = ₹300
+ *   ₹100 → ₹225 + 50×3 = ₹375
+ *   ₹200 → ₹375 + 100×2 = ₹575
+ *   ₹500 → ₹375 + 400×2 = ₹1175 → clamped to MAX_CHARGE_INR
  *
  * Output is rounded UP to whole rupees (favours business) and clamped to MAX_CHARGE_INR so
  * the customer never sees a runaway bill. No floor — small costs stay small. The hard COGS
@@ -48,8 +48,8 @@ export const MARKUP_MULTIPLIER = 2.5;
  */
 export const PRICING_BRACKETS = [
   { upToInr: 50,        multiplier: 4.5 },
-  { upToInr: 100,       multiplier: 3.5 },
-  { upToInr: Infinity,  multiplier: 2.5 },
+  { upToInr: 100,       multiplier: 3 },
+  { upToInr: Infinity,  multiplier: 2 },
 ];
 
 /** Bracketed price from actual COGS (INR). Rounded UP to whole rupees. */
