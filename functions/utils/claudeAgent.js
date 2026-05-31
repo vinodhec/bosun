@@ -48,11 +48,15 @@ export async function startFixSession({ prompt, images = [], repoUrl, githubToke
   for (const sa of firebaseSAs || []) {
     if (!sa?.json || !sa?.env) continue;
     try {
+      const fileName = `firebase-${sa.env}.json`;
       const up = await client.beta.files.upload({
-        file: await toFile(Buffer.from(sa.json), `firebase-${sa.env}.json`, { type: 'application/json' }),
+        file: await toFile(Buffer.from(sa.json), fileName, { type: 'application/json' }),
       });
-      const mountPath = `/workspace/secrets/firebase-${sa.env}.json`;
-      firebaseFileResources.push({ type: 'file', file_id: up.id, mount_path: mountPath });
+      // File resources are mounted UNDER /mnt/session/uploads/ — a leading-slash mount_path gets
+      // re-rooted there (e.g. "/workspace/x" → "/mnt/session/uploads/workspace/x"). So mount with a
+      // bare filename and tell the agent the REAL absolute path, so the two never disagree.
+      const mountPath = `/mnt/session/uploads/${fileName}`;
+      firebaseFileResources.push({ type: 'file', file_id: up.id, mount_path: fileName });
       firebaseMounts.push({ env: sa.env, projectId: sa.projectId || '(unknown)', mountPath });
       firebaseFileIds.push(up.id);
     } catch (e) {
