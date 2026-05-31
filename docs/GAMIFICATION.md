@@ -298,6 +298,43 @@ it to the operator's `adminMetrics` so you can watch activation move. v1 wins if
 **No test runner exists** — the gates are `vite build` (frontend) and the functions emulator. The
 pure functions in `shared/gamification.js` are written to be trivially eyeballable.
 
+### 6.2 Where it lives: a persistent left rail on the dashboard
+
+Activation needs the board **always in view**, not on a separate page you have to go find. Today
+`Dashboard.jsx` is a single centred column (`<main className="mx-auto max-w-2xl …">`). We widen the
+shell to two columns on large screens and dock the board in a **sticky left rail**:
+
+```
+┌──────────────────────────────────────────────── Navbar (balance) ───────────────────────────────┐
+│                                                                                                  │
+│  ┌─ left rail (sticky) ─────┐   ┌─ main column (the existing max-w-2xl content) ──────────────┐  │
+│  │  TEAM · This Week ▸      │   │  What’s broken on your website?  [ … fix box … ]            │  │
+│  │  ─────────────────────   │   │                                                            │  │
+│  │  🥇 Asha      level 3     │   │  Your fixes                                                │  │
+│  │  🥈 You      level 2  ◄── │   │  ▸ Fix card …                                              │  │
+│  │  🥉 Ravi     not started  │   │  ▸ Fix card …                                              │  │
+│  │  ─────────────────────   │   │                                                            │  │
+│  │  You: 1 fix to take #1   │   │                                                            │  │
+│  │  ✦ Next badge: Clear Brief│  │                                                            │  │
+│  └──────────────────────────┘   └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Concretely:
+
+- **Layout.** Replace the centred `<main>` with a responsive wrapper, e.g.
+  `lg:grid lg:grid-cols-[18rem_minmax(0,42rem)] lg:gap-6 lg:justify-center`. The left cell holds
+  `<Leaderboard>` in a `lg:sticky lg:top-20` container so it stays put as the fixes list scrolls.
+  The main cell keeps today's content unchanged (so nothing about the fix flow regresses).
+- **Mobile (`< lg`).** No room for a rail — collapse the board into a single compact strip
+  *above* the fix box ("You're #2 · 1 fix to take the lead", tap to expand the full board). Still
+  the first thing seen, still pushing action, without eating the small screen.
+- **The nudge is the point.** The rail's bottom line is always a personal call to action driven by
+  the signed-in member's standing: dormant → "Raise your first fix to get on the board"; active →
+  "1 fix to take #1" / "Keep your 2-week streak alive". This is the persistent activation push.
+- **One new mount, no new route.** `Dashboard.jsx` imports `<Leaderboard>` (fed by `useOrgStats`)
+  and renders it in the rail — no router change, it lives right where the work happens.
+
 ---
 
 ## 7. Later phases
