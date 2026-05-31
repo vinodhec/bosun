@@ -5,8 +5,12 @@ A per-organisation progress system (points, levels, streaks, badges) that reward
 
 Decisions locked in for v1:
 
-- **Reward basis:** healthy outcomes (fixes that go live, stay fixed, steady return usage) — not raw spend.
-- **Shape:** single-player progression first (works for one-person orgs). Anonymized cross-org board is a later phase.
+- **Reward basis:** healthy outcomes (fixes that ship to testing, stay fixed, clear briefs) — not raw spend.
+- **Shape:** a **board between the employees of one org**. This org has 3 people using Bosun; the
+  board ranks *them* against each other. (Single-player progression and the anonymized cross-org
+  board become later phases — see §7.)
+- **"Shipped" = reached testing.** A fix that lands in the testing environment counts as a win;
+  going to prod is a separate, gated step we don't require for points.
 - **Status:** design only. v1 implementation is sketched in §6.
 
 ---
@@ -21,9 +25,9 @@ the customer (and poisons word-of-mouth, the cheapest channel in this segment).
 So points reward the things that are good for the customer *and* for us:
 
 - A problem fixed that **stayed fixed** (no immediate revision).
-- The fix actually **went live** (deployed, not rotting in a PR).
+- The fix actually **shipped to testing** (delivered, not rotting in a PR).
+- A **clear brief** that let us fix it first time (cheaper for us, §3.1).
 - **Coming back** when something genuinely breaks (habit, not bingeing).
-- **Bringing other owners in** (referrals).
 
 Behaviourally this leans on *competence* and *progress* (durable motivators) rather than
 loss-chasing (a short-lived one). It is also the lower-churn business choice.
@@ -34,38 +38,56 @@ loss-chasing (a short-lived one). It is also the lower-churn business choice.
 
 ---
 
-## 2. The org/user reality (and what "leaderboard per org" means)
+## 2. The shape: a board between employees of one org
 
-A user is scoped to **one** org via the `orgId` custom claim, and an org is **one** small business
-with **one** repo. That makes a naive "leaderboard" ambiguous:
+Several users can share an org (they all carry the same `orgId` claim). This org has **3 employees**
+using Bosun, and the goal is to rank *them* against each other. So v1 is a **within-org employee
+leaderboard**, and it's a good fit because:
 
-| Shape | Works when | Risk |
+- **Attribution is already there.** Every task carries a `userId`, so each fix already belongs to a
+  specific employee — no new tracking needed, just a per-user roll-up.
+- **Social comparison works at this size *without* anonymization** — three coworkers who know each
+  other. The privacy problem that blocks a cross-org board doesn't exist inside one team.
+
+| Shape | Works when | Status |
 |---|---|---|
-| **Single-player progression** (levels/streaks/badges per org) | always — even a one-person org | none; this is the v1 spine |
-| **Anonymized cross-org percentile** ("top 15% of healthy sites") | enough orgs for ranks to mean something | privacy — must be anonymized + opt-in |
-| Within-org user-vs-user board | org has multiple team members | empty board for solo orgs |
+| **Within-org employee board** (rank the org's users) | org has ≥2 active users | **v1 — this doc** |
+| Single-player progression (levels/streaks for a solo user) | one-person orgs | falls out for free — a solo user just sees their own row |
+| Anonymized cross-org percentile | many orgs, opt-in | phase 2 (§7) |
 
-**v1 = single-player progression only.** The cross-org percentile is phase 2 (§7); the within-org
-board is out of scope until multi-user orgs are common.
+### 2.1 Designing for a *small* board (the 3-person trap)
+
+A 3-person leaderboard has a known failure mode: the person who's structurally 3rd disengages, and
+a permanent ranking demotivates more than it motivates. Mitigations are part of v1, not afterthoughts:
+
+- **Multiple boards, not one.** Rank on several axes — *most fixes shipped*, *best briefs*, *longest
+  streak* — so different people can lead different boards. Almost everyone is #1 at *something*.
+- **A rolling "this week" board** alongside the all-time one, so the standing resets and is always
+  winnable — last week's 3rd can win this week. Lifetime points still accrue for the level/badges.
+- **Personal progress is always shown** next to the rank, so a lower-ranked employee still sees
+  their own streak and badges climbing. The board motivates; progress reassures.
 
 ---
 
 ## 3. The points formula
 
 Points are awarded **only on server-confirmed good outcomes**, never on task *creation* — otherwise
-the board can be farmed by spamming trivial requests. The natural hook is the existing Firestore
-transaction in `functions/utils/finalize.js` that already writes the debit and updates
-`org.balance`, so points become as atomic and tamper-proof as money.
+the board can be farmed by spamming trivial requests. Each award is **credited to the task's
+`userId`** (the employee who raised it), which is what drives the board. The natural hook is the
+existing Firestore transaction in `functions/utils/finalize.js` that already writes the debit and
+updates `org.balance`, so points become as atomic and tamper-proof as money.
 
 | Event | Fires in | Points | Rationale |
 |---|---|---|---|
 | Fix approved / auto-charged | `chargeApprovedFix` / auto-charge path | `simple 10 / medium 25 / complex 50` | tier-weighted by `complexity` so effort scales |
 | **First-try bonus** | round closes with `freeRevisionsUsed === 0` | +50% of the row above | rewards a clean win; already tracked |
-| Fix went live | `deployedProd` flips `true` | +15 | the outcome that matters to the business |
+| Fix shipped to testing | `deployedTesting` flips `true` | +15 | the delivery milestone that matters — prod is a separate gated step we don't require |
 | Weekly active streak | a fix completes within 7d of the last | +5 × streak weeks (cap +50) | habit loop; cap kills spend-maxing |
-| Referral converts | a new org is credited via referral | +200 | cheapest growth channel for this segment |
 | **Clear brief + efficient fix** | round closes, see §3.1 | +20 | the brief was clear *and* the fix was first-try + under budget |
 | Failed run | `markRoundFailure` | **0** | we never charge failures — never penalise them |
+
+> Prod deploy (`deployedProd`) can carry a small extra bonus later if you want, but it's **not**
+> required to "count" — shipping to testing is the win for the employee doing the work.
 
 Two deliberate statistical choices:
 
@@ -142,11 +164,13 @@ All constants live next to the billing constants conceptually but in their own m
 **Badges** are milestone identity markers (psychologically stronger than raw numbers, and they map
 cleanly onto the plain-language UI rules):
 
-- **First fix live** — `deployedProd` true for the first time.
+- **First Ship** — first fix to reach testing (`deployedTesting`).
 - **Steady Hands** — 3 clean (first-try) fixes in a row.
-- **Always On** — site healthy 90 days (a window with no failed deploy).
-- **Good Neighbour** — referred a business that joined.
 - **Clear Brief** — 3 clear-brief + efficient fixes (§3.1); celebrates good descriptions, the habit that's cheapest for us.
+- **On a Roll** — a 4-week active streak.
+
+Badges are **per employee** (their own identity markers), so a lower-ranked teammate still collects
+them — this is the "personal progress reassures" half of §2.1.
 
 Badges, level and counters are denormalized onto the org doc (§5) — never recomputed by scanning
 all tasks on read (that pattern is fine for the operator's `adminMetrics`, but won't scale to a
@@ -156,26 +180,37 @@ live customer-facing card).
 
 ## 5. Data model
 
-Add one map to `organisations/{orgId}` — no new collection needed for v1:
+The board needs **per-employee** stats that **every teammate can read**. The cleanest fit that needs
+**no rules change** is a `members` map on `organisations/{orgId}`, keyed by `userId` — because the
+org doc is already readable by everyone carrying that `orgId` claim. With only a handful of
+employees this map stays tiny.
 
 ```jsonc
+// organisations/{orgId}
 orgStats: {
-  points: 0,            // cumulative lifetime points
-  level: 1,             // derived from points, stored for cheap reads
-  streakWeeks: 0,       // consecutive active weeks
-  cleanStreak: 0,       // consecutive first-try fixes (for Steady Hands)
-  fixesLive: 0,         // count of fixes deployed to prod
-  lastFixAt: Timestamp, // for streak math
-  clearBriefs: 0,       // count of clear-brief + efficient fixes (§3.1)
-  briefStreak: 0,       // consecutive clear briefs (for Clear Brief badge)
-  badges: ["first_live"], // unlocked badge ids
-  optInLeaderboard: false // §7 cross-org opt-in
+  members: {
+    "<uid>": {
+      name: "Asha",          // denormalized display name (backend writes it from auth)
+      points: 0,             // cumulative lifetime points (drives level + all-time board)
+      level: 1,              // derived from points, stored for cheap reads
+      weekPoints: 0,         // points in the current week (drives "this week" board, §2.1)
+      weekStart: Timestamp,  // start of the week weekPoints counts; reset lazily when stale
+      fixesShipped: 0,       // fixes that reached testing
+      cleanStreak: 0,        // consecutive first-try fixes (Steady Hands)
+      clearBriefs: 0,        // clear-brief + efficient fixes (§3.1)
+      briefStreak: 0,        // consecutive clear briefs (Clear Brief badge)
+      streakWeeks: 0,        // consecutive active weeks (On a Roll)
+      lastFixAt: Timestamp,  // for streak math
+      badges: ["first_ship"] // unlocked badge ids
+    }
+    // ... one entry per employee
+  }
 }
 ```
 
 Per-round, the agent result also carries a `briefScore` (0–100), stored on the task/round next to
 the existing `idealDescription` / `idealKeywords` — it drives the §3.1 bonus and the coaching copy.
-The score lives on the task, not `orgStats`; only the derived counters above roll up to the org.
+The score lives on the task; only the derived counters above roll up to the member entry.
 
 ```jsonc
 // added to each tasks/{id}.rounds[] entry (alongside idealDescription, idealKeywords)
@@ -183,57 +218,67 @@ briefScore: 82           // 0–100; emitted by the same agent output that produ
 ```
 
 **Rules:** the org doc is already `allow read: if request.auth.token.orgId == orgId;
-allow write: if false;` — so customers can read their own stats and can never forge them. No rule
-change needed; `orgStats` inherits the org doc's read gate. ✅
+allow write: if false;` — so all three employees can read the whole `members` map (that's the
+point: they see each other's scores) and **none** can forge it. **No rule change needed.** ✅
 
-**Writes:** updated inside the *existing* `db.runTransaction()` in `finalize.js`, gated on the same
-`billed`/`charged` flags that already make billing idempotent — so a re-run can't double-count
-points.
+**Writes:** the member entry for `task.userId` is updated inside the *existing* `db.runTransaction()`
+in `finalize.js`, gated on the same `billed`/`charged` flags that already make billing idempotent —
+so a re-run can't double-count points. The shipped-to-testing award rides the existing write that
+flips `deployedTesting`.
+
+> If team size ever grows past a couple dozen, move `members` to an
+> `organisations/{orgId}/members/{uid}` subcollection (with a rule allowing read when the caller's
+> `orgId` claim matches) to avoid a fat org doc. For 3 employees the map is simpler and cheaper.
 
 ---
 
-## 6. v1 implementation sketch (smallest motivating slice)
+## 6. v1 implementation sketch
 
-Ship the single-player core; skip the cross-org board (riskiest + weakest at low org count).
+The whole feature rides machinery that already exists; nothing here touches money math.
 
 1. **`shared/gamification.js`** — points table, level thresholds, badge rules, and pure functions
-   (`pointsForOutcome`, `levelForPoints`, `nextBadge`). Synced to `functions/shared/` by the
-   existing `sync-shared.sh` predeploy hook. No money logic.
+   (`pointsForOutcome`, `levelForPoints`, `nextBadge`, `applyAward(member, award, now)` which also
+   handles weekly reset + streaks). Synced to `functions/shared/` by the existing `sync-shared.sh`
+   predeploy hook. No money logic.
 2. **Agent result → `briefScore`** — extend the result parser (`functions/utils/agentResult.js`)
    to read a `briefScore` the agent emits *alongside* the tip it already produces
    (`idealDescription` / `idealKeywords`). No extra model call: it rides the same output. Fallback
    proxy if we skip the new field: score from how sparse `idealKeywords` is.
 3. **`functions/utils/finalize.js`** — inside the existing transaction, after the debit/balance
-   write, fold in the `orgStats` update (points, streaks, level, badge unlocks), including the
-   §3.1 clear-brief + efficient-fix bonus computed from `briefScore`, `freeRevisionsUsed`, and
-   `actualCostUsd` vs the tier `maxBudgetUsd`.
-4. **`deployedProd` hook** — wherever the prod-deploy flag flips, add the +15 and `fixesLive`/badge
-   update (same atomic-write discipline).
+   write, update `orgStats.members[task.userId]` (points, level, streaks, badges, weekly reset),
+   including the §3.1 clear-brief + efficient-fix bonus from `briefScore`, `freeRevisionsUsed`, and
+   `actualCostUsd` vs the tier `maxBudgetUsd`. Seed the member's `name` from the task's user on
+   first write.
+4. **`deployedTesting` hook** — wherever the testing-deploy flag flips, credit the +15 and
+   `fixesShipped`/`First Ship` badge to that task's `userId` (same atomic-write discipline).
 5. **`src/hooks/useOrgStats.js`** — mirrors `useOrg`; live `onSnapshot` on the org doc, returns the
-   `orgStats` map.
-6. **`src/components/ProgressCard.jsx`** — Dashboard card: level + name, points, current streak,
-   "1 more clean fix to earn *Steady Hands*", and a tasteful celebration when a fix goes live or a
-   badge unlocks. Surface the brief tip + score on the result view ("Great description — that helped
-   us fix it first time ✨").
+   `orgStats.members` map.
+6. **`src/components/Leaderboard.jsx`** — the board itself: ranked rows of the org's employees with
+   a toggle between **This Week** (`weekPoints`) and **All Time** (`points`), plus per-axis mini-boards
+   (most shipped, best briefs, longest streak) per §2.1. The signed-in employee's own row is
+   highlighted, with their level, streak, and next badge shown beside it.
+7. **Result view** — surface the brief tip + score ("Great description — that helped us fix it first
+   time ✨ Tip: next time, paste the link…"), and a small celebration when a fix ships or a badge
+   unlocks.
 
-**UI language (strict).** No technical words. "Level 3 · Trusted", "2-week streak — keep it going",
-"Site healthy 90 days" — never "deploy", "PR", "repo", "agent".
+**UI language (strict).** No technical words. "Shipped to testing" → say **"went live for review"** or
+**"ready to preview"**; "Level 3 · Trusted"; "2-week streak — keep it going" — never "deploy", "PR",
+"repo", "agent".
 
 **No test runner exists** — the gates are `vite build` (frontend) and the functions emulator. The
 pure functions in `shared/gamification.js` are written to be trivially eyeballable.
 
 ---
 
-## 7. Phase 2 — anonymized cross-org percentile
+## 7. Later phases
 
-Only worth doing once there are enough orgs for a rank to be meaningful, and only **opt-in**
-(`orgStats.optInLeaderboard`) and **anonymized** (no names, no activity detail).
-
-- A scheduled function (alongside `pollSessions`) computes rank buckets across opted-in orgs and
-  writes a single public `leaderboard/current` doc holding **only** anonymized buckets/thresholds —
-  never org identities.
-- A customer callable returns the caller's own percentile ("top 15% of businesses keeping their
-  site healthy"). This delivers the social-comparison kick with zero data leakage.
+- **Cross-org percentile (anonymized, opt-in).** Once many orgs exist, a scheduled function
+  (alongside `pollSessions`) computes rank buckets across opted-in orgs and writes a single public
+  `leaderboard/current` doc holding **only** anonymized buckets/thresholds — never org identities.
+  A callable returns the caller's own percentile ("top 15% of businesses keeping their site
+  healthy") — the social kick with zero data leakage.
+- **Team vs team.** If multiple multi-employee orgs adopt this, an org-aggregate board (sum of
+  member points) could rank teams — same anonymization rules as above.
 
 ---
 
@@ -241,6 +286,8 @@ Only worth doing once there are enough orgs for a rank to be meaningful, and onl
 
 - Exact point constants and level curve — needs real usage data to calibrate; the §3/§4 numbers are
   starting points.
-- Whether referral attribution exists yet (the +200 row assumes a referral signal we may not track).
-- Reset policy: are streaks purely lifetime, or do we show a "this season" view to re-engage lapsed
-  orgs?
+- **Display name source** — the board shows `members[uid].name`; confirm where we read it (Firebase
+  Auth `displayName`, the `users/{uid}` doc, or an admin-set value) and how it updates if it changes.
+- Reset policy — v1 keeps **lifetime** points (level/badges) *and* a **weekly** board (§2.1). Decide
+  later whether to add a monthly "season" with a visible winner to re-energise the team.
+- Prod bonus — whether reaching `deployedProd` should add a small extra on top of the testing award.
