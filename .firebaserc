@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "bosun-76bba"
+    "default": "bosun-76bba",
+    "testing": "maadiveedu-6b8ce",
+    "production": "maadiveeduvas"
   }
 }
