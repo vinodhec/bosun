@@ -159,14 +159,21 @@ function screenshotInstruction() {
     `images, a component's appearance — anything the owner could see). If your change is purely ` +
     `non-visual (backend, config, logic, copy in a file that doesn't render, a data fix), SKIP this ` +
     `entirely and set "screenshots" to [].\n` +
-    `If it IS visual, capture proof so the owner can see the difference:\n` +
-    `  - Render the affected page in a headless browser with Playwright (install if needed: ` +
-    `\`npm i -D playwright >/dev/null 2>&1 && npx playwright install --with-deps chromium\`). Start ` +
-    `the site locally the way this project runs — check package.json scripts (usually \`npm install\` ` +
-    `then \`npm run build && npm run preview\`, or \`npm run dev\`) — and open the page you changed.\n` +
-    `  - Capture an AFTER screenshot (with your fix applied). If it's cheap to also capture a BEFORE ` +
-    `(git stash your change or check out the original file, screenshot, then restore your change), do ` +
-    `that too — before/after is far more useful, but AFTER alone is fine.\n` +
+    `If it IS visual, capture proof so the owner can see the difference, using a headless browser ` +
+    `with Playwright (install if needed: \`npm i -D playwright >/dev/null 2>&1 && npx playwright ` +
+    `install --with-deps chromium\`):\n` +
+    `  - Pick the FASTEST way to render the page — you decide:\n` +
+    `      • If a ready, reachable URL already exists (the site's live/production deployment, or a ` +
+    `deploy-preview that's already built), open that directly. The live site is ideal for the ` +
+    `BEFORE shot since it shows the page as the owner sees it today.\n` +
+    `      • Otherwise run the site locally the way this project runs — check package.json scripts ` +
+    `(usually \`npm install\` then \`npm run build && npm run preview\`, or \`npm run dev\`) — and ` +
+    `open the page you changed. Do NOT sit and wait for a deploy-preview to finish building; if it ` +
+    `isn't ready, just run locally.\n` +
+    `  - Capture an AFTER screenshot (with your fix applied; run it locally for this). If it's cheap ` +
+    `to also capture a BEFORE (open the live site, or git stash your change / check out the original ` +
+    `file, screenshot, then restore), do that too — before/after is far more useful, but AFTER alone ` +
+    `is fine.\n` +
     `  - Save the PNGs into a folder named "${SCREENSHOT_STAGE_DIR}/" at the repo root (create it). Use ` +
     `short, clear filenames. Commit these PNGs to the SAME branch and push them alongside your fix. ` +
     `They are TEMPORARY staging files — the system removes this folder from the branch automatically ` +
