@@ -51,6 +51,7 @@ export default function Result() {
   }
 
   const files = Array.isArray(task.filesChanged) ? task.filesChanged : [];
+  const shots = Array.isArray(task.screenshots) ? task.screenshots.filter((s) => s.beforeUrl || s.afterUrl) : [];
   const low = balance != null && isLowBalance(balance);
 
   return (
@@ -69,6 +70,31 @@ export default function Result() {
             <dd className="font-semibold text-ink">{balance == null ? '…' : formatINR(balance)}</dd>
           </div>
         </dl>
+
+        {shots.length > 0 && (
+          <div className="mt-4 space-y-4">
+            <p className="text-sm font-semibold text-ink">Here’s the change 👀</p>
+            {shots.map((s, i) => (
+              <figure key={i} className="rounded-xl border border-line p-3">
+                {s.label && <figcaption className="mb-2 text-sm font-medium text-ink">{s.label}</figcaption>}
+                {s.beforeUrl && s.afterUrl ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <p className="mb-1 text-center text-xs font-medium text-ink-soft">Before</p>
+                      <img src={s.beforeUrl} alt="Before" className="w-full rounded-lg border border-line" loading="lazy" />
+                    </div>
+                    <div>
+                      <p className="mb-1 text-center text-xs font-medium text-ink-soft">After</p>
+                      <img src={s.afterUrl} alt="After" className="w-full rounded-lg border border-line" loading="lazy" />
+                    </div>
+                  </div>
+                ) : (
+                  <img src={s.afterUrl || s.beforeUrl} alt={s.label || 'Result'} className="w-full rounded-lg border border-line" loading="lazy" />
+                )}
+              </figure>
+            ))}
+          </div>
+        )}
 
         {files.length > 0 && (
           <div className="mt-4">

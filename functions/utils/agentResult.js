@@ -142,6 +142,55 @@ function firebaseNote(mounts) {
   );
 }
 
+// The branch-relative folder the agent stages before/after PNGs in. The backend
+// (utils/screenshots.js) collects them from the PR branch, re-hosts them on our side, embeds
+// them in the PR, then DELETES this folder from the branch — so it never reaches the owner's
+// main on merge. Keep this in sync with SCREENSHOT_STAGE_DIR in utils/screenshots.js.
+export const SCREENSHOT_STAGE_DIR = '.bosun-preview';
+
+// Tells the agent to capture visual proof when (and only when) the fix changes how a page
+// LOOKS. It renders the affected page in a headless browser, stages before/after PNGs in
+// SCREENSHOT_STAGE_DIR on the SAME branch, and lists them in RESULT_JSON. The backend takes it
+// from there (re-hosts + embeds in the PR + removes the staged folder). Bounded effort: if the
+// site won't run quickly, the agent skips it rather than burning the budget cap.
+function screenshotInstruction() {
+  return (
+    `VISUAL PROOF — only when your change affects how a page LOOKS (layout, text, colour, spacing, ` +
+    `images, a component's appearance — anything the owner could see). If your change is purely ` +
+    `non-visual (backend, config, logic, copy in a file that doesn't render, a data fix), SKIP this ` +
+    `entirely and set "screenshots" to [].\n` +
+    `If it IS visual, capture proof so the owner can see the difference, using a headless browser ` +
+    `with Playwright (install if needed: \`npm i -D playwright >/dev/null 2>&1 && npx playwright ` +
+    `install --with-deps chromium\`):\n` +
+    `  - Pick the FASTEST way to render the page — you decide:\n` +
+    `      • If a ready, reachable URL already exists (the site's live/production deployment, or a ` +
+    `deploy-preview that's already built), open that directly. The live site is ideal for the ` +
+    `BEFORE shot since it shows the page as the owner sees it today.\n` +
+    `      • Otherwise run the site locally the way this project runs — check package.json scripts ` +
+    `(usually \`npm install\` then \`npm run build && npm run preview\`, or \`npm run dev\`) — and ` +
+    `open the page you changed. Do NOT sit and wait for a deploy-preview to finish building; if it ` +
+    `isn't ready, just run locally.\n` +
+    `  - Capture an AFTER screenshot (with your fix applied; run it locally for this). If it's cheap ` +
+    `to also capture a BEFORE (open the live site, or git stash your change / check out the original ` +
+    `file, screenshot, then restore), do that too — before/after is far more useful, but AFTER alone ` +
+    `is fine.\n` +
+    `  - Save the PNGs into a folder named "${SCREENSHOT_STAGE_DIR}/" at the repo root (create it). Use ` +
+    `short, clear filenames. Commit these PNGs to the SAME branch and push them alongside your fix. ` +
+    `They are TEMPORARY staging files — the system removes this folder from the branch automatically ` +
+    `after collecting them, so they never reach the owner's main branch. Do NOT add them to ` +
+    `.gitignore, and do NOT embed the images in the pull request yourself.\n` +
+    `  - Keep this bounded: if the site doesn't build or run within a few minutes, skip the ` +
+    `screenshots (set "screenshots" to []) rather than spending the whole budget on it.\n\n`
+  );
+}
+
+// The "screenshots" field shape, shared by both prompts' RESULT_JSON spec.
+const SCREENSHOT_JSON_SPEC =
+  `"screenshots":[{"label":"<short plain-English name of the page or section shown, e.g. 'Home page header'>",` +
+  `"page":"<the path or URL of the page, e.g. '/' or '/pricing', or empty string>",` +
+  `"afterPath":"<branch-relative path under ${SCREENSHOT_STAGE_DIR}/ to the AFTER image>",` +
+  `"beforePath":"<branch-relative path to the BEFORE image, or empty string if none>"}] (empty array [] when the change is not visual),`;
+
 /**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
@@ -167,9 +216,12 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
     `dependency folders (node_modules, vendor, dist, build, .next, out, coverage) or lock files; ` +
     `they are noise and reading them only wastes effort. ` +
     `Commit to a new branch, push it, and open a pull request.\n\n` +
+    screenshotInstruction() +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's ORIGINAL description was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the description only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>",` +
+    SCREENSHOT_JSON_SPEC +
+    `"briefScore":<0-100 integer rating how clear and specific the owner's ORIGINAL description was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the description only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +
     `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
@@ -191,9 +243,12 @@ export function buildRevisePrompt(changes, imageCount = 0) {
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
     `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +
+    screenshotInstruction() +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's change request was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the request only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
+    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>",` +
+    SCREENSHOT_JSON_SPEC +
+    `"briefScore":<0-100 integer rating how clear and specific the owner's change request was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the request only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
     `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
   );
 }
@@ -206,6 +261,35 @@ const RESULT_LINE_RE = /RESULT_JSON:\s*(\{.*\})\s*$/;
  * Parse the agent's `agent.message` events for the most recent RESULT_JSON line we asked
  * it to emit (summary + filesChanged + prUrl). Falls back to the last plain-text reply.
  */
+// Validate the agent-reported screenshot specs. Every path MUST live under the staging dir
+// with no traversal and a real image extension — we feed these straight into GitHub file reads
+// + deletes, so an unvalidated path is a way to read/delete arbitrary repo files. Caps the count.
+const IMG_EXT_RE = /\.(png|jpe?g|webp)$/i;
+function safeStagePath(p) {
+  const s = String(p || '').trim().replace(/^\.?\/+/, ''); // strip leading ./ or /
+  if (!s || s.includes('..') || s.includes('\\')) return '';
+  if (!s.startsWith(`${SCREENSHOT_STAGE_DIR}/`)) return '';
+  if (!IMG_EXT_RE.test(s)) return '';
+  return s;
+}
+export function parseScreenshotSpecs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const s of raw) {
+    const afterPath = safeStagePath(s?.afterPath);
+    const beforePath = safeStagePath(s?.beforePath);
+    if (!afterPath && !beforePath) continue; // nothing usable
+    out.push({
+      label: String(s?.label || '').slice(0, 120).trim(),
+      page: String(s?.page || '').slice(0, 200).trim(),
+      afterPath,
+      beforePath,
+    });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 export async function extractResult(client, sessionId) {
   let resultSummary = '';
   let filesChanged = [];
@@ -213,6 +297,7 @@ export async function extractResult(client, sessionId) {
   let idealDescription = '';
   let idealKeywords = [];
   let briefScore = 0;
+  let screenshots = [];
   try {
     const res = await client.beta.sessions.events.list(sessionId);
     const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
@@ -233,6 +318,7 @@ export async function extractResult(client, sessionId) {
       resultSummary = String(j.summary || '').slice(0, 600);
       filesChanged = Array.isArray(j.filesChanged) ? j.filesChanged.slice(0, 50) : [];
       prUrl = j.prUrl || null;
+      screenshots = parseScreenshotSpecs(j.screenshots);
       idealDescription = String(j.idealDescription || '').slice(0, 400);
       // Keep only keywords whose phrase actually appears in idealDescription — guards against
       // the model inventing a "highlight" that doesn't match anything in the tip text.
@@ -261,5 +347,5 @@ export async function extractResult(client, sessionId) {
   } catch {
     /* best-effort — leave defaults */
   }
-  return { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore };
+  return { resultSummary, filesChanged, prUrl, screenshots, idealDescription, idealKeywords, briefScore };
 }

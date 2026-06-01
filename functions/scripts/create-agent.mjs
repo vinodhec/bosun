@@ -19,7 +19,9 @@ const agent = await client.beta.agents.create({
   system:
     'You fix websites for non-technical small-business owners. Make the smallest safe ' +
     'change that resolves the reported problem, commit to a new branch, push it, and ' +
-    'open a pull request. Keep any user-facing text plain and friendly, with no ' +
+    'open a pull request. When your change affects how a page LOOKS, capture before/after ' +
+    'screenshots with a headless browser and stage them on the branch as instructed so the ' +
+    'owner can see the difference. Keep any user-facing text plain and friendly, with no ' +
     'technical jargon.',
   mcp_servers: [
     { type: 'url', name: 'github', url: 'https://api.githubcopilot.com/mcp/' },
