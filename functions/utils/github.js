@@ -92,6 +92,63 @@ const GH_HEADERS = (token) => ({
   'Content-Type': 'application/json',
 });
 
+// Path goes straight into a URL but slashes must survive — encode the segment then restore '/'.
+const ghPath = (p) => encodeURIComponent(p).replace(/%2F/g, '/');
+
+// Read a PR's head branch + current body. Used to collect staged screenshots off the branch
+// and to append the Before/After section to the description.
+export async function getPullRequest(repoFullName, prNumber, token) {
+  const pr = await ghGet(repoFullName, `/pulls/${prNumber}`, token);
+  if (!pr) return null;
+  return { number: pr.number, branch: pr.head?.ref || null, body: pr.body || '', state: pr.state };
+}
+
+// Replace a PR's body (we read it first, append our section, then PATCH the whole thing).
+export async function updatePullRequestBody(repoFullName, prNumber, body, token) {
+  const res = await fetch(`https://api.github.com/repos/${repoFullName}/pulls/${prNumber}`, {
+    method: 'PATCH',
+    headers: GH_HEADERS(token),
+    body: JSON.stringify({ body }),
+  });
+  return res.ok;
+}
+
+// Fetch a file's raw bytes from a given ref. `Accept: raw` returns the bytes directly (works
+// for files past the 1 MB inline-JSON limit too), so screenshots come back whole. Returns a
+// Buffer, or null if the file isn't there.
+export async function getRepoFileRaw(repoFullName, path, ref, token) {
+  const res = await fetch(
+    `https://api.github.com/repos/${repoFullName}/contents/${ghPath(path)}?ref=${encodeURIComponent(ref)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.raw',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    }
+  );
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  return buf.length ? buf : null;
+}
+
+// The blob sha for a file at a ref — required to delete it via the Contents API.
+export async function getRepoFileSha(repoFullName, path, ref, token) {
+  const json = await ghGet(repoFullName, `/contents/${ghPath(path)}?ref=${encodeURIComponent(ref)}`, token);
+  return json?.sha || null;
+}
+
+// Delete one file from a branch (one commit). Best-effort caller — used to strip the staged
+// screenshot folder off the branch after we've re-hosted the images, so it never merges to main.
+export async function deleteRepoFile(repoFullName, path, sha, branch, token, message) {
+  const res = await fetch(`https://api.github.com/repos/${repoFullName}/contents/${ghPath(path)}`, {
+    method: 'DELETE',
+    headers: GH_HEADERS(token),
+    body: JSON.stringify({ message: message || `chore: remove ${path}`, sha, branch }),
+  });
+  return res.ok;
+}
+
 // Merge a PR into its base branch (squash). Pushing to the base triggers the
 // deploy-testing GitHub Action in the customer's repo.
 export async function mergePullRequest(repoFullName, prNumber, token) {

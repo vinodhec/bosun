@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
+import { attachScreenshotsToPr } from '../utils/screenshots.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 const BETA = 'managed-agents-2026-04-01';
@@ -79,8 +80,28 @@ export const pollSessions = onSchedule(
             // Round done → ready for the customer to review. We do NOT charge here; the
             // charge happens when they approve the fix (approveFix).
             logAgentUsage('done', docSnap.id, task, bd, roundUsd, roundSec);
-            const { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore } = await extractResult(client, task.sessionId);
+            const { resultSummary, filesChanged, prUrl, screenshots, idealDescription, idealKeywords, briefScore } = await extractResult(client, task.sessionId);
             await markRoundReady(docSnap.id, { actualCostUsd: costUsd, activeSeconds: activeSec, resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore });
+
+            // Best-effort, AFTER billing so it can never block the charge: if the agent staged
+            // before/after screenshots on the PR branch (a visual fix), re-host them on our
+            // Storage, embed them in the PR, and strip the staged folder off the branch. Persist
+            // the hosted urls on the task so the customer's "fix is ready" screen can show them.
+            if (prUrl && Array.isArray(screenshots) && screenshots.length) {
+              try {
+                const secret = await db.collection('orgSecrets').doc(task.orgId).get();
+                const token = secret.exists ? secret.data().githubToken : null;
+                if (token) {
+                  const hosted = await attachScreenshotsToPr({
+                    repoFullName: task.repoFullName, prUrl, specs: screenshots,
+                    orgId: task.orgId, taskId: docSnap.id, token,
+                  });
+                  if (hosted.length) await docSnap.ref.update({ screenshots: hosted });
+                }
+              } catch (e) {
+                console.error('pollSessions:screenshots', docSnap.id, e?.message || e);
+              }
+            }
             continue;
           }
           if (FAILED.has(status)) {

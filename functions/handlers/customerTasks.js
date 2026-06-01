@@ -56,6 +56,18 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
           : [],
         previewUrl: t.previewUrl ?? null,
         buildingPreview: !!t.needsPreview,
+        // Before/after screenshots of the owner's own site, re-hosted on our Storage (safe to
+        // expose — they're the customer's pages, never internal data). [] for non-visual fixes.
+        screenshots: Array.isArray(t.screenshots)
+          ? t.screenshots
+              .map((s) => ({
+                label: String(s?.label || ''),
+                beforeUrl: s?.beforeUrl || null,
+                afterUrl: s?.afterUrl || null,
+              }))
+              .filter((s) => s.beforeUrl || s.afterUrl)
+              .slice(0, 8)
+          : [],
         // Money: what they've already paid, and what tapping "Looks good" will charge now.
         paidInr: Number(t.finalCharge) || 0,
         owedInr: pendingReview ? Number(t.currentRoundCharge) || 0 : 0,
