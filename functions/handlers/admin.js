@@ -3,20 +3,10 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { DEFAULT_USD_TO_INR } from '../utils/billing.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
+import { requireAdmin } from '../utils/admin.js';
 
-// Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (comma-separated).
+// Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
-function requireAdmin(request) {
-  const email = request.auth?.token?.email;
-  const allow = (process.env.ADMIN_EMAILS || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (!email || !allow.includes(email.toLowerCase())) {
-    throw new HttpsError('permission-denied', 'Admin only.');
-  }
-  return email;
-}
 
 const REGION = 'asia-south1';
 
