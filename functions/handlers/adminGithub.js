@@ -11,20 +11,9 @@ import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
 import { mergePullRequest, promoteBranch } from '../utils/github.js';
 import { sanitizeImages } from '../utils/images.js';
+import { requireAdmin } from '../utils/admin.js';
 
 const BETA = 'managed-agents-2026-04-01';
-
-function requireAdmin(request) {
-  const email = request.auth?.token?.email;
-  const allow = (process.env.ADMIN_EMAILS || '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  if (!email || !allow.includes(email.toLowerCase())) {
-    throw new HttpsError('permission-denied', 'Admin only.');
-  }
-  return email;
-}
 
 // Operator provisions an org's GitHub repo + token. Stores repoFullName + vaultId on the
 // org doc (non-secret), the token in orgSecrets/{orgId} (backend-only), and sets up the
