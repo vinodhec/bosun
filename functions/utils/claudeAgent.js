@@ -4,6 +4,23 @@ import { buildFixPrompt, buildRevisePrompt } from './agentResult.js';
 const BETA = 'managed-agents-2026-04-01';
 
 /**
+ * Operator deep link to a managed-agent session in the Claude developer platform, so the admin
+ * can jump from a fix straight to its session trace (events, tool calls, cost) for debugging.
+ *
+ * Anthropic doesn't publish the console's single-session path, so it's CONFIGURABLE via
+ * CLAUDE_PLATFORM_SESSION_URL — either a template containing `{sessionId}`, or a base URL the
+ * id is appended to. Defaults to platform.claude.com. Operator-facing only (admin reads); the
+ * raw sessionId is also surfaced so it's copy-pasteable even if the path ever changes.
+ */
+export function platformSessionUrl(sessionId) {
+  if (!sessionId) return null;
+  const tmpl = process.env.CLAUDE_PLATFORM_SESSION_URL
+    || 'https://platform.claude.com/managed-agents/sessions/{sessionId}';
+  const id = encodeURIComponent(sessionId);
+  return tmpl.includes('{sessionId}') ? tmpl.replace('{sessionId}', id) : `${tmpl.replace(/\/$/, '')}/${id}`;
+}
+
+/**
  * Convert the `orgSecrets/{orgId}.firebaseServiceAccounts` map into the array
  * startFixSession expects: { testing: { projectId, json }, production: {...} } →
  * [{ env, projectId, json }]. Returns [] when the org has no Firebase keys configured.

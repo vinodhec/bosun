@@ -4,6 +4,7 @@ import {
   adminCreateOrg,
   adminAddCredits,
   adminDeductCredits,
+  adminListTransactions,
   adminSetUserOrg,
   adminSetOrgApproval,
   adminSetOrgDeploy,
@@ -274,6 +275,83 @@ function RunProgress({ task }) {
   );
 }
 
+// Per-org ledger: the line-by-line credit/debit statement for one organisation, newest first,
+// with a running balance — the detail behind the aggregate Overview numbers. Credits are
+// top-ups; debits are fix charges and manual adjustments. Operator-only.
+function Ledger({ orgs }) {
+  const [orgId, setOrgId] = useState('');
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = async (id) => {
+    setOrgId(id); setData(null); setErr('');
+    if (!id) return;
+    setBusy(true);
+    try { const { data: d } = await adminListTransactions({ orgId: id }); setData(d); }
+    catch { setErr('Failed to load the ledger.'); }
+    finally { setBusy(false); }
+  };
+
+  // Plain-English label for one ledger row from its type/kind.
+  const label = (t) => {
+    if (t.type === 'credit') return t.description || 'Credits added';
+    if (t.kind === 'admin_adjustment') return t.description || 'Manual adjustment';
+    if (t.taskId) return t.kind === 'new_scope' ? 'Fix charge (new request)' : 'Fix charge';
+    return t.description || t.kind || 'Debit';
+  };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-ink">Ledger</h2>
+        {data && (
+          <span className="text-sm text-ink-soft">
+            Balance: <span className="font-semibold text-ink">{formatINR(data.balance)}</span>
+          </span>
+        )}
+      </div>
+      <select className={field} value={orgId} onChange={(e) => load(e.target.value)}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {busy && <p className="text-sm text-ink-soft">Loading…</p>}
+      {orgId && !busy && data && data.transactions.length === 0 && (
+        <p className="text-sm text-ink-soft">No credits or debits yet.</p>
+      )}
+      {data && data.transactions.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-line text-ink-soft">
+                <th className="py-1.5 pr-3 font-medium">Date</th>
+                <th className="py-1.5 pr-3 font-medium">Detail</th>
+                <th className="py-1.5 pr-3 font-medium">Who</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Amount</th>
+                <th className="py-1.5 text-right font-medium">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.transactions.map((t) => (
+                <tr key={t.id} className="border-b border-line/60">
+                  <td className="py-1.5 pr-3 text-ink-soft">{t.createdAt ? new Date(t.createdAt).toLocaleString('en-IN') : '—'}</td>
+                  <td className="py-1.5 pr-3 text-ink">{label(t)}</td>
+                  <td className="py-1.5 pr-3 text-ink-soft">{t.by || t.userEmail || '—'}</td>
+                  <td className={`py-1.5 pr-3 text-right font-semibold ${t.type === 'credit' ? 'text-green-700' : 'text-rose-600'}`}>
+                    {t.type === 'credit' ? '+' : '−'}{formatINR(t.amount)}
+                  </td>
+                  <td className="py-1.5 text-right text-ink">{formatINR(t.balanceAfter)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -286,7 +364,7 @@ export default function Admin() {
   const [deduct, setDeduct] = useState({ orgId: '', amount: '', description: '' });
   const [assign, setAssign] = useState({ email: '', orgId: '' });
   const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '' });
-  const [test, setTest] = useState({ orgId: '', prompt: '', asCustomer: true });
+  const [test, setTest] = useState({ orgId: '', prompt: '', asCustomer: true, model: 'auto' });
   const [taskId, setTaskId] = useState(null);
   const [task, setTask] = useState(null);
   const [sessOrg, setSessOrg] = useState('');
@@ -359,6 +437,8 @@ export default function Admin() {
         orgId: test.orgId,
         prompt: test.prompt.trim(),
         asCustomer: test.asCustomer,
+        // Operator model override — omitted ('auto') means the normal cost-aware routing.
+        model: test.model !== 'auto' ? test.model : undefined,
         images: testImages.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       });
       setTaskId(data.taskId);
@@ -463,6 +543,8 @@ export default function Admin() {
           </button>
         </section>
 
+        <Ledger orgs={orgs} />
+
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Assign user to organisation</h2>
           <input className={field} type="email" value={assign.email} onChange={(e) => setAssign({ ...assign, email: e.target.value })} placeholder="user email" />
@@ -503,6 +585,19 @@ export default function Admin() {
           <label className="flex items-center gap-2 text-xs text-ink-soft">
             <input type="checkbox" checked={test.asCustomer} onChange={(e) => setTest({ ...test, asCustomer: e.target.checked })} />
             Run as customer (real classification, fixed-tier pricing, big-job quote flow)
+          </label>
+          <label className="flex items-center gap-2 text-xs text-ink-soft">
+            <span>Model</span>
+            <select
+              className="rounded-lg border border-line px-2 py-1 text-xs"
+              value={test.model}
+              onChange={(e) => setTest({ ...test, model: e.target.value })}
+            >
+              <option value="auto">Auto (default routing)</option>
+              <option value="sonnet">Sonnet (force)</option>
+              <option value="opus">Opus (force)</option>
+            </select>
+            <span className="text-ink-soft/70">override the model for this run</span>
           </label>
           <button className={btn} disabled={busy || !test.orgId || !test.prompt.trim()} onClick={onRun}>Run fix</button>
           {taskId && (
@@ -549,9 +644,10 @@ export default function Admin() {
                 </div>
                 <div className="mt-1 text-ink-soft">
                   {t.createdAt ? new Date(t.createdAt).toLocaleString('en-IN') : ''}
-                  {t.model ? ` · ${t.model}` : ''}
+                  {t.model ? ` · ${t.model}${t.modelOverride ? ' (forced)' : ''}` : ''}
                   {t.userEmail ? ` · ${t.userEmail}` : ''}
                 </div>
+                {t.sessionId && <div className="mt-0.5 font-mono text-[10px] text-ink-soft/80">{t.sessionId}</div>}
                 <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
                 <RunProgress task={t} />
                 {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
@@ -627,6 +723,7 @@ export default function Admin() {
                 <div className="mt-1 flex gap-3">
                   {t.prUrl && <a href={t.prUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
                   {t.previewUrl && <a href={t.previewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
+                  {t.platformUrl && <a href={t.platformUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Session →</a>}
                 </div>
                 {t.status === 'complete' && t.prUrl && (
                   <div className="mt-2 flex flex-wrap items-center gap-2">

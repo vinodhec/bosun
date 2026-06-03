@@ -3,12 +3,12 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js';
 import { ANTHROPIC_API_KEY, JAM_PAT } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
+import { startFixSession, firebaseSAsFromSecret, platformSessionUrl } from '../utils/claudeAgent.js';
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
-import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
+import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
 import { mergePullRequest, promoteBranch } from '../utils/github.js';
 import { sanitizeImages } from '../utils/images.js';
 
@@ -100,6 +100,11 @@ export const adminRunFix = onCall(
     // plain infra test: flat cap, no classification, no charge.
     const asCustomer = request.data?.asCustomer === true;
 
+    // Optional operator model override ('sonnet' | 'opus'), set from the "Test a fix" launcher.
+    // When present it wins over the cost-aware default; we persist it so a deferred run (a
+    // big-job quote confirmed later) honours the same choice. null = use the default routing.
+    const modelOverride = OVERRIDABLE_MODELS.includes(request.data?.model) ? request.data.model : null;
+
     if (asCustomer) {
       let complexity = String(request.data?.complexity ?? '').trim();
       if (!['simple', 'medium', 'complex', 'large'].includes(complexity)) {
@@ -114,7 +119,7 @@ export const adminRunFix = onCall(
           kind: 'initial', complexity: 'large', status: 'needs_quote',
           billed: false, approved: false, pendingReview: false,
           finalCharge: 0, currentRoundCharge: 0, freeRevisionsUsed: 0,
-          adminRun: true, asCustomer: true, imageCount: images.length,
+          adminRun: true, asCustomer: true, modelOverride, imageCount: images.length,
           createdAt: FieldValue.serverTimestamp(),
         });
         return { taskId: quoteRef.id, needsQuote: true };
@@ -127,11 +132,11 @@ export const adminRunFix = onCall(
       if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
       const firebaseSAs = firebaseSAsFromSecret(secretData);
 
-      const model = modelForComplexity(complexity);
+      const model = resolveModel(complexity, modelOverride);
       const taskRef = db.collection('tasks').doc();
       await taskRef.set({
         userId: uid, orgId, prompt, repoFullName: gh.repoFullName,
-        kind: 'initial', complexity, model, status: 'queued',
+        kind: 'initial', complexity, model, modelOverride, status: 'queued',
         billed: false, approved: false, pendingReview: false,
         maxBudgetUsd: tier.maxBudgetUsd, maxSeconds: tier.maxSeconds,
         currentRoundCharge: 0, finalCharge: 0, freeRevisionsUsed: 0,
@@ -163,9 +168,7 @@ export const adminRunFix = onCall(
 
     // Operator may force a model for testing; otherwise derive it from an optional
     // complexity hint (defaults to Sonnet, matching the customer path).
-    const model = ['sonnet', 'opus'].includes(request.data?.model)
-      ? request.data.model
-      : modelForComplexity(String(request.data?.complexity ?? '').trim());
+    const model = resolveModel(String(request.data?.complexity ?? '').trim(), modelOverride);
     const taskRef = db.collection('tasks').doc();
     await taskRef.set({
       userId: uid,
@@ -174,6 +177,7 @@ export const adminRunFix = onCall(
       repoFullName: gh.repoFullName,
       kind: 'initial',
       model,
+      modelOverride,
       status: 'queued',
       billed: false,
       adminRun: true,
@@ -238,6 +242,11 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         adminRun: t.adminRun ?? false,
         asCustomer: t.asCustomer ?? false,
         model: t.model ?? null,
+        modelOverride: t.modelOverride ?? null, // operator-forced model, if any
+        // The managed-agent session + a deep link to its trace on the Claude platform, so the
+        // operator can inspect events/tool calls/cost. Admin-only (stripped from customer reads).
+        sessionId: t.sessionId ?? null,
+        platformUrl: platformSessionUrl(t.sessionId),
         finalCharge: t.finalCharge ?? null,
         actualCostInr: t.actualCostInr ?? null,
         prUrl: t.prUrl ?? null,

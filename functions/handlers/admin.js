@@ -82,6 +82,64 @@ export const adminDeductCredits = onCall({ region: REGION }, async (request) => 
   return { orgId, balance };
 });
 
+// Per-org ledger: the full credit/debit history for one organisation, newest first, with a
+// running balance. Credits come from top-ups (adminAddCredits); debits from fix charges
+// (markRoundReady / chargeApprovedFix) and manual adjustments (adminDeductCredits). The
+// aggregate adminMetrics only sums totals — this is the line-by-line statement. Read-only.
+export const adminListTransactions = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+
+  const orgSnap = await db.collection('organisations').doc(orgId).get();
+  if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+  const balance = Number(orgSnap.data().balance ?? 0);
+
+  const snap = await db
+    .collection('transactions')
+    .where('orgId', '==', orgId)
+    .orderBy('createdAt', 'desc')
+    .limit(200)
+    .get();
+  const docs = snap.docs;
+
+  // Resolve the triggering employee's email for fix charges (one batched read, like
+  // adminListTasks) so the ledger shows WHO ran the fix, not an opaque uid.
+  const uids = [...new Set(docs.map((d) => d.data().userId).filter(Boolean))];
+  const emailByUid = {};
+  if (uids.length) {
+    const userSnaps = await db.getAll(...uids.map((u) => db.collection('users').doc(u)));
+    for (const us of userSnaps) if (us.exists) emailByUid[us.id] = us.data().email ?? null;
+  }
+
+  // Running balance: the newest row settles at the org's current balance; each older row is
+  // current minus the signed sum of everything more recent. Walk newest→oldest. (Balance may
+  // be negative — that's allowed; the operator reconciles via top-ups/deductions.)
+  let runningAfter = balance;
+  const transactions = docs.map((d) => {
+    const t = d.data();
+    const amount = Number(t.amount) || 0;
+    const type = t.type === 'credit' ? 'credit' : 'debit';
+    const balanceAfter = runningAfter;
+    runningAfter -= type === 'credit' ? amount : -amount; // balance just before this txn
+    return {
+      id: d.id,
+      type,
+      amount,
+      kind: t.kind ?? null,            // 'initial' | 'new_scope' | 'unresolved' | 'admin_adjustment'
+      description: t.description ?? null,
+      by: t.by ?? null,               // operator email (manual credit/deduction)
+      userEmail: t.userId ? (emailByUid[t.userId] ?? null) : null, // employee who ran the fix
+      taskId: t.taskId ?? null,
+      createdAt: t.createdAt?.toMillis?.() ?? null,
+      balanceAfter,
+    };
+  });
+
+  return { orgId, name: orgSnap.data().name ?? '(unnamed)', balance, transactions };
+});
+
 export const adminListOrgs = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
   const db = getFirestore();

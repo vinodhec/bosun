@@ -15,6 +15,7 @@ export {
   adminCreateOrg,
   adminAddCredits,
   adminDeductCredits,
+  adminListTransactions,
   adminListOrgs,
   adminSetUserOrg,
   adminSetOrgApproval,

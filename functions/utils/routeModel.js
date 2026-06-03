@@ -18,6 +18,19 @@ export function modelForComplexity(complexity) {
   return 'sonnet';
 }
 
+// Models the operator may force from the Admin panel, overriding the complexity-based default.
+export const OVERRIDABLE_MODELS = ['sonnet', 'opus'];
+
+/**
+ * Resolve the model for a run. An explicit operator OVERRIDE ('sonnet' | 'opus') wins — the
+ * Admin "Test a fix" launcher passes one when the operator wants to escalate a run to Opus
+ * (or pin it to Sonnet) regardless of the cost-aware default. Anything else falls back to the
+ * complexity-derived choice (currently Sonnet-only; see policy note above).
+ */
+export function resolveModel(complexity, override) {
+  return OVERRIDABLE_MODELS.includes(override) ? override : modelForComplexity(complexity);
+}
+
 // Resolve the model choice to a managed-agent id (env-configured). Falls back to the Opus
 // agent if no dedicated Sonnet agent is set — set ANTHROPIC_MANAGED_AGENT_ID_SONNET or the
 // cheaper routing silently runs on Opus.
