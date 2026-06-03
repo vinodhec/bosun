@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { continueFixSession, startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
-import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
+import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
 import { chargeApprovedFix } from '../utils/finalize.js';
@@ -228,7 +228,8 @@ export const confirmQuote = onCall(
     if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
     const firebaseSAs = firebaseSAsFromSecret(secretData);
 
-    const model = modelForComplexity(task.complexity);
+    // Honour an operator model override stamped on the quote (adminRunFix), else default routing.
+    const model = resolveModel(task.complexity, task.modelOverride);
     const repoUrl = `https://github.com/${gh.repoFullName}`;
     try {
       const { sessionId, firebaseFileIds } = await startFixSession({
