@@ -547,8 +547,9 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
 function FeatureCard({ feature: f, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [panel, setPanel] = useState(null); // 'refine' | 'replace' | null (plan-review forms)
+  const [panel, setPanel] = useState(null); // 'refine' | 'replace' | 'addChange' | null
   const [text, setText] = useState('');
+  const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const active = f.steps.find((st) => st.status === 'running' || st.status === 'failed');
   const reviewing = f.status === 'plan_review';
 
@@ -570,8 +571,8 @@ function FeatureCard({ feature: f, onChanged }) {
     setPanel(null); setText('');
   });
   const submitAddChange = () => run(async () => {
-    await addFeatureChange({ featureId: f.id, changes: text.trim() });
-    setPanel(null); setText('');
+    await addFeatureChange({ featureId: f.id, changes: text.trim(), images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })) });
+    setPanel(null); setText(''); resetImages();
   });
   const goLive = async () => {
     if (!window.confirm('Make this whole feature live on your website now?')) return;
@@ -732,19 +733,25 @@ function FeatureCard({ feature: f, onChanged }) {
           {panel === 'addChange' && (
             <div className="mt-3 rounded-xl bg-canvas p-3">
               <p className="text-sm font-medium text-ink">What else would you like to change about this feature?</p>
-              <textarea
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                rows={3}
-                placeholder="Example: also let visitors see the results without voting, and make the vote button green"
-                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
-              />
-              <p className="mt-1 text-xs text-ink-soft">We’ll build this as another step on this feature — you review and pay for it just like the others, and it’s added to this feature’s total.</p>
+              <div className="mt-2">
+                <ScreenshotComposer
+                  value={text}
+                  onChange={setText}
+                  placeholder="Example: also let visitors see the results without voting, and make the vote button green"
+                  images={images}
+                  imgErr={imgErr}
+                  dragging={dragging}
+                  setDragging={setDragging}
+                  addFiles={addFiles}
+                  removeImage={removeImage}
+                />
+              </div>
+              <p className="mt-1 text-xs text-ink-soft">📎 Attach, paste or drag in a screenshot to show what you mean. We’ll build this as another step on this feature — you review and pay for it just like the others, and it’s added to this feature’s total.</p>
               <div className="mt-2 flex gap-2">
                 <button onClick={submitAddChange} disabled={busy || !text.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
                   {busy ? 'Starting…' : 'Make this change →'}
                 </button>
-                <button onClick={() => { setPanel(null); setText(''); setErr(''); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setPanel(null); setText(''); setErr(''); resetImages(); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
                   Cancel
                 </button>
               </div>
