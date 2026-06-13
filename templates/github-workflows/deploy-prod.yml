@@ -1,4 +1,4 @@
-# .github/workflows/deploy-prod.yml — Bosun "Deploy to production" promotes release ← main → this runs.
+# .github/workflows/deploy-prod.yml — Bosun "Deploy to production" tags main's head (v*) → this runs.
 # Mirrors `yarn deploy` (vercel --prod && firebase deploy) but targets the PRODUCTION projects.
 #
 # Secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID_PROD, FIREBASE_TOKEN
@@ -6,7 +6,7 @@
 name: Deploy — production
 on:
   push:
-    branches: [release]
+    tags: ['v*']
 concurrency: { group: deploy-prod, cancel-in-progress: false }
 
 jobs:
@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { ref: release }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: corepack enable

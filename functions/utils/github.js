@@ -107,29 +107,34 @@ export async function mergePullRequest(repoFullName, prNumber, token) {
   return res.json();
 }
 
-// Point `toBranch` at `fromBranch`'s current head (create it if missing). Pushing to
-// `release` triggers the deploy-prod GitHub Action.
-export async function promoteBranch(repoFullName, fromBranch, toBranch, token) {
+// A sortable, date-based release tag (UTC), e.g. v2026.06.13-153045-a1b2. UTC keeps it
+// monotonic; the short random suffix means two deploys in the same second never collide.
+function releaseTagName() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const date = `${d.getUTCFullYear()}.${p(d.getUTCMonth() + 1)}.${p(d.getUTCDate())}`;
+  const time = `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+  return `v${date}-${time}-${crypto.randomBytes(2).toString('hex')}`;
+}
+
+// Create a lightweight git tag at `fromBranch`'s current head. Pushing the tag triggers the
+// customer's deploy-prod GitHub Action (which runs on `tags: ['v*']`). Bosun only moves the
+// ref — the repo's own Action does the actual production deploy. Returns the tag name + sha.
+export async function createReleaseTag(repoFullName, fromBranch, token) {
   const headers = GH_HEADERS(token);
   const r1 = await fetch(`https://api.github.com/repos/${repoFullName}/git/ref/heads/${fromBranch}`, { headers });
   if (!r1.ok) throw new Error(`source branch ${fromBranch} not found: ${r1.status}`);
   const sha = (await r1.json()).object.sha;
 
-  const upd = await fetch(`https://api.github.com/repos/${repoFullName}/git/refs/heads/${toBranch}`, {
-    method: 'PATCH',
-    headers,
-    body: JSON.stringify({ sha, force: true }),
-  });
-  if (upd.ok) return { sha, branch: toBranch, updated: true };
-
+  const tag = releaseTagName();
   const create = await fetch(`https://api.github.com/repos/${repoFullName}/git/refs`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ ref: `refs/heads/${toBranch}`, sha }),
+    body: JSON.stringify({ ref: `refs/tags/${tag}`, sha }),
   });
   if (!create.ok) {
     const t = await create.text().catch(() => '');
-    throw new Error(`promote failed: ${create.status} ${t}`);
+    throw new Error(`tag failed: ${create.status} ${t}`);
   }
-  return { sha, branch: toBranch, created: true };
+  return { sha, tag };
 }
