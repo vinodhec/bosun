@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -80,7 +80,7 @@ export default function Dashboard() {
     const id = setInterval(() => {
       let live = false;
       setSessions((prev) => { if (prev?.some((s) => isLive(s.status))) live = true; return prev; });
-      setFeatures((prev) => { if (prev?.some((f) => f.status === 'running')) live = true; return prev; });
+      setFeatures((prev) => { if (prev?.some((f) => f.status === 'running' || f.status === 'planning')) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
@@ -194,7 +194,7 @@ export default function Dashboard() {
           </button>
           <p className="mt-2 text-xs text-ink-soft">
             {mode === 'feature'
-              ? 'We’ll break it into steps and start the first one. There’s a small charge to plan it; then you pay for each step as it’s done.'
+              ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
               : 'You’re only charged after the fix is done.'}
           </p>
         </section>
@@ -541,64 +541,137 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
   );
 }
 
-// A planned feature: the ordered steps with their status, a running total of what's been paid,
-// and the active step rendered with the normal fix card (test the preview, approve, request
-// changes, and "Testing" to publish that step and move on). Go-live is held until every step is
-// done — then one button publishes the whole feature at once.
+// A planned feature. New lifecycle: planning (we explore your site + design) → plan_review (you
+// approve / request changes / start over) → running (build step by step, normal fix card on the
+// active step) → complete (one go-live). Nothing builds or is charged a build until you approve.
 function FeatureCard({ feature: f, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [panel, setPanel] = useState(null); // 'refine' | 'replace' | null (plan-review forms)
+  const [text, setText] = useState('');
   const active = f.steps.find((st) => st.status === 'running' || st.status === 'failed');
+  const reviewing = f.status === 'plan_review';
 
   const stepIcon = (st) =>
-    st.status === 'done' ? '✅' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️' : '◻️';
+    st.status === 'done' ? '✅' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️'
+      : st.status === 'proposed' ? '•' : '◻️';
 
-  const retry = async () => {
+  const run = async (fn) => {
     setBusy(true); setErr('');
-    try { await retryFeatureStep({ featureId: f.id }); await onChanged(); }
+    try { await fn(); await onChanged(); }
     catch (e) { setErr(friendlyError(e)); }
     finally { setBusy(false); }
   };
+  const retry = () => run(() => retryFeatureStep({ featureId: f.id }));
+  const approvePlan = () => run(() => approveFeaturePlan({ featureId: f.id }));
+  const submitRevise = () => run(async () => {
+    const mode = panel; // 'refine' | 'replace'
+    await reviseFeaturePlan({ featureId: f.id, mode, ...(mode === 'refine' ? { changes: text.trim() } : { prompt: text.trim() }) });
+    setPanel(null); setText('');
+  });
   const goLive = async () => {
     if (!window.confirm('Make this whole feature live on your website now?')) return;
-    setBusy(true); setErr('');
-    try { await customerDeployProd({ taskId: f.goLiveTaskId }); await onChanged(); }
-    catch (e) { setErr(friendlyError(e)); }
-    finally { setBusy(false); }
+    run(() => customerDeployProd({ taskId: f.goLiveTaskId }));
   };
+
+  const heading = {
+    planning: 'Planning your feature…',
+    plan_review: 'Here’s the plan — your call',
+    plan_failed: 'We couldn’t plan this one',
+    complete: 'All steps done 🎉',
+  }[f.status] || `Building your feature — step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}`;
 
   return (
     <div className="rounded-2xl border border-line bg-white p-5">
       <p className="text-sm text-ink-soft">“{f.prompt}”</p>
-      <h3 className="mt-1 font-semibold text-ink">
-        {f.status === 'complete'
-          ? 'All steps done 🎉'
-          : `Building your feature — step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}`}
-      </h3>
+      <h3 className="mt-1 font-semibold text-ink">{heading}</h3>
 
-      {/* The plan, step by step. */}
-      <ol className="mt-3 space-y-1.5">
-        {f.steps.map((st, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm">
-            <span className="mt-0.5 w-5 shrink-0 text-center">{stepIcon(st)}</span>
-            <span className={st.status === 'done' ? 'text-ink-soft' : 'text-ink'}>
-              <span className="font-medium">{st.title || `Step ${i + 1}`}</span>
-              {st.description && <span className="text-ink-soft"> — {st.description}</span>}
-              {st.status === 'done' && st.paidInr > 0 && (
-                <span className="ml-1 whitespace-nowrap text-xs text-ink-soft">· {formatINR(st.paidInr)}</span>
-              )}
-            </span>
-          </li>
-        ))}
-      </ol>
+      {f.status === 'planning' && (
+        <p className="mt-2 text-sm text-ink-soft">We’re looking at your site and your design to work out the smallest steps. This takes a few minutes — you can leave this open.</p>
+      )}
+      {f.status === 'plan_failed' && (
+        <p className="mt-2 text-sm text-ink-soft">Something went wrong while planning — you weren’t charged. Please describe the feature again above.</p>
+      )}
+
+      {/* The plan, step by step. Proposed steps show a Fixed / Live-data tag. */}
+      {f.steps.length > 0 && (
+        <ol className="mt-3 space-y-1.5">
+          {f.steps.map((st, i) => (
+            <li key={i} className="flex items-start gap-2 text-sm">
+              <span className="mt-0.5 w-5 shrink-0 text-center">{stepIcon(st)}</span>
+              <span className={st.status === 'done' ? 'text-ink-soft' : 'text-ink'}>
+                <span className="font-medium">{st.title || `Step ${i + 1}`}</span>
+                {(reviewing || f.status === 'planning') && (
+                  <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${st.kind === 'dynamic' ? 'bg-amber-100 text-amber-700' : 'bg-line/60 text-ink-soft'}`}>
+                    {st.kind === 'dynamic' ? 'Live data' : 'Fixed'}
+                  </span>
+                )}
+                {st.description && <span className="text-ink-soft"> — {st.description}</span>}
+                {st.status === 'done' && st.paidInr > 0 && (
+                  <span className="ml-1 whitespace-nowrap text-xs text-ink-soft">· {formatINR(st.paidInr)}</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
 
       {/* Running total — planning + each finished step. Not an estimate: this is what's paid. */}
-      <p className="mt-3 text-sm">
-        Paid so far: <span className="font-semibold">{formatINR(f.totalPaidInr)}</span>
-        {f.planningChargeInr > 0 && (
-          <span className="text-ink-soft"> (incl. {formatINR(f.planningChargeInr)} to plan it)</span>
-        )}
-      </p>
+      {f.totalPaidInr > 0 && (
+        <p className="mt-3 text-sm">
+          Paid so far: <span className="font-semibold">{formatINR(f.totalPaidInr)}</span>
+          {f.planningChargeInr > 0 && (
+            <span className="text-ink-soft"> (incl. {formatINR(f.planningChargeInr)} to plan it)</span>
+          )}
+        </p>
+      )}
+
+      {/* Plan review: approve to build, or refine / start over (each re-plan is a fresh look). */}
+      {reviewing && (
+        <div className="mt-4 border-t border-line pt-4">
+          {!panel && (
+            <>
+              <p className="text-sm text-ink">Happy with these steps? We’ll build them one at a time — you approve and pay for each as it’s done.</p>
+              {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button onClick={approvePlan} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                  {busy ? 'Starting…' : 'Looks good — start building →'}
+                </button>
+                <button onClick={() => { setPanel('refine'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+                  Request changes
+                </button>
+                <button onClick={() => { setPanel('replace'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-line/40 disabled:opacity-60">
+                  Start over
+                </button>
+              </div>
+            </>
+          )}
+          {panel && (
+            <div className="rounded-xl bg-canvas p-3">
+              <p className="text-sm font-medium text-ink">
+                {panel === 'refine' ? 'What should change about the plan?' : 'Describe the feature again, your way'}
+              </p>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={3}
+                placeholder={panel === 'refine' ? 'Example: combine the last two steps, and the footer should keep the existing links' : 'Describe what you want added to your website'}
+                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
+              />
+              <p className="mt-1 text-xs text-ink-soft">We’ll take another look and show you an updated plan. There’s a small charge to re-plan, the same as the first plan.</p>
+              {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+              <div className="mt-2 flex gap-2">
+                <button onClick={submitRevise} disabled={busy || !text.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                  {busy ? 'Re-planning…' : (panel === 'refine' ? 'Update the plan →' : 'Plan again →')}
+                </button>
+                <button onClick={() => { setPanel(null); setText(''); setErr(''); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* The active step uses the normal fix card. Go-live is hidden here — held to the end. */}
       {active && (

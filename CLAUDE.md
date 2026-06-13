@@ -119,29 +119,40 @@ Task lifecycle: `queued → running → (pendingReview ↔ revising) → complet
 
 ## The feature pipeline ("Plan a feature")
 
-A bigger ask, broken into a sequence of fix-sized steps that build one at a time.
+A bigger ask, broken into a sequence of fix-sized steps that build one at a time. Planning is
+**code-aware** and the plan is **reviewed before any building**.
 
-1. `planFeature` (customer callable, `handlers/featureTasks.js`) — one Sonnet call
-   (`utils/featurePlan.js`) breaks the request into ordered, plain-English steps. The breakdown
-   is charged IMMEDIATELY at `priceForPlanning` (2× its actual COGS) and a `features/{id}` doc is
-   written (`steps[]`, each `{title, description, status, taskId}`). Step 1 starts via
-   `utils/featureRun.js#startFeatureStep`.
-2. Each step is an ORDINARY fix task carrying `featureId` + `stepIndex` — same pipeline, same
-   bracketed charge on its own approval. The owner sees a clean step title (`task.prompt`); the
-   agent gets the engineered "step N of M, build on earlier steps" framing (decoupled in
-   `startFeatureStep`).
-3. The owner tests → deploys the step to testing (merges to `main`). `deployTaskToTesting` calls
-   `advanceFeature`, which marks the step done and starts the next — whose agent now clones the
-   updated `main`, so it builds on the previous step. Strictly one step at a time.
-4. `listMyFeatures` composes the customer view (per-step status recomputed from the tasks, the
-   running total = planning + Σ step charges, the active step rendered via the shared
-   `utils/sessionView.js`). `listMySessions` filters out `featureId` tasks so steps show only in
-   the feature card. `retryFeatureStep` re-runs a failed step (failures aren't charged).
-5. When every step is on testing, one go-live tags `main` and publishes the whole feature.
+Feature lifecycle: `planning → plan_review → running (step by step) → complete` (`plan_failed` on a
+bad plan; refine/redo loop back to `planning`).
 
-Feature lifecycle: `running (step by step) → complete`. Re-planning = a fresh `planFeature`,
-charged separately. New collection `features/{id}` follows the cardinal rule: owner-read,
-backend-only writes (`firestore.rules`).
+1. `planFeature` (customer callable, `handlers/featureTasks.js`) — persists the owner's screenshots
+   once (Files API, `claudeAgent.js#uploadImagesToFiles`), fetches the Figma design, and starts a
+   **code-aware managed-agent PLANNING session** (`utils/featurePlan.js#startPlanningSession`): it
+   clones the repo, reads it (`AGENTS.md` + relevant files), sees the design + screenshots, and emits
+   the ordered steps each tagged `kind:'static'|'dynamic'`. This is ASYNC (a real session) — the
+   feature is written `status:'planning'`; **nothing is charged or built yet**. The planning session
+   is a `tasks/{id}` of `kind:'planning'` so `pollSessions` picks it up.
+2. `pollSessions` planning branch — on the planning session finishing, `featurePlan.js#extractPlan`
+   parses its `RESULT_JSON`, writes `feature.steps` (`{title, description, kind, status, taskId}`),
+   sets `status:'plan_review'`, and charges the breakdown (`priceForPlanning` = 2× the session's real
+   COGS, in a transaction). Failed/over-cap planning → `plan_failed`, **never charged**.
+3. Owner reviews in the dashboard: **approve** (`approveFeaturePlan` → `running`, start step 0),
+   **request changes** (`reviseFeaturePlan {mode:'refine'}` — re-plan with the prior steps + note),
+   or **start over** (`{mode:'replace'}` — re-plan a new prompt). Each re-plan is a fresh planning
+   session, charged the same way.
+4. Each step is an ORDINARY fix task carrying `featureId` + `stepIndex` — same pipeline, same
+   bracketed charge on its own approval. `startFeatureStep` carries **Figma + the owner's screenshots
+   (by file_id) + Jam** (Jam rides in the embedded `feature.prompt`) into every step. The owner sees
+   a clean step title; the agent gets the "step N of M, build on earlier steps" framing.
+5. Owner tests → deploys the step to testing (merges to `main`). `deployTaskToTesting` →
+   `advanceFeature` marks the step done and starts the next (its agent clones the updated `main`).
+   `listMyFeatures` composes the view (proposed steps with `kind` while reviewing; the active step via
+   `utils/sessionView.js` while building). `listMySessions` filters out `featureId` tasks.
+6. When every step is on testing, one go-live tags `main` and publishes the whole feature.
+
+New collection `features/{id}` follows the cardinal rule: owner-read, backend-only writes
+(`firestore.rules`). Screenshots persist as Anthropic Files (`feature.screenshotFileIds`) so they
+carry into the plan + every step without bloating the doc (Firestore caps at 1 MB).
 
 ## Figma design-to-code (enriches a fix — NOT a separate task type)
 

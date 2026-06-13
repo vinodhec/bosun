@@ -1,88 +1,111 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { MODEL_PRICES } from './agentResult.js';
+// Code-aware feature planning. Unlike a stateless text split, the breakdown runs as a managed-
+// agent SESSION that clones the repo, reads it (AGENTS.md + the relevant files), and looks at the
+// owner's design + screenshots — so the steps are grounded in the ACTUAL code, and each is tagged
+// static (fixed UI) or dynamic (needs live data / back-end wiring). The session is async: started
+// here, finalized by pollSessions (parse the plan, charge 2× its real cost, open it for review).
 
-// The breakdown is a planning call (no repo editing), so it runs as a plain Sonnet Messages
-// call — the same shape as the Haiku classifier, just a more capable model for real planning.
-// Sonnet 4.6 is the current Sonnet snapshot; pricing is sourced from the SAME per-model table
-// the rest of the app bills sessions by, so the planning cost can never use a separate number.
-const PLANNER_MODEL = 'claude-sonnet-4-6';
-const MAX_STEPS = 8;
+import { startFixSession } from './claudeAgent.js';
+import { extractJamUrl } from './agentResult.js';
 
-// USD cost of one direct Messages call, priced at Sonnet rates. Planning uses no prompt cache,
-// so fresh input + output is the whole bill (cache fields handled defensively, valued at 0 if
-// absent). Mirrors usageBreakdown() in agentResult.js but for a Messages (not session) usage.
-function messageCostUsd(usage) {
-  const p = MODEL_PRICES.sonnet;
-  const input = Number(usage?.input_tokens) || 0;
-  const output = Number(usage?.output_tokens) || 0;
-  const cacheRead = Number(usage?.cache_read_input_tokens) || 0;
-  const cacheWrite = Number(usage?.cache_creation_input_tokens) || 0;
-  return (input * p.input + output * p.output + cacheRead * p.cacheRead + cacheWrite * p.cacheWrite5m) / 1e6;
+export const MAX_STEPS = 8;
+
+// The complete planning instruction (no SDK import, like buildFixPrompt — so the same text is
+// reproducible). `priorSteps` + `changeNote` drive a re-plan: refine (keep the ask, adjust the
+// existing steps) or replace (a brand-new ask). The agent must NOT edit code or open a PR.
+export function buildPlanPrompt(ask, { figmaDesign = null, screenshotCount = 0, priorSteps = null, changeNote = '' } = {}) {
+  const jamUrl = extractJamUrl(ask);
+  const designNote = figmaDesign?.summary
+    ? `The owner attached a design to match (image attached). Exact spec (positions relative to the design's top-left; px sizes; hex colours):\n${figmaDesign.summary}\n\n`
+    : (figmaDesign?.image ? `The owner attached a design to match (image attached).\n\n` : '');
+  const shotNote = screenshotCount > 0
+    ? `The owner attached ${screenshotCount} screenshot${screenshotCount > 1 ? 's' : ''} of their site — look at ${screenshotCount > 1 ? 'them' : 'it'}.\n\n`
+    : '';
+  const jamNote = jamUrl
+    ? `The owner shared a screen recording: ${jamUrl} — you may read it with the jam tools (getConsoleLogs / getNetworkRequests / getUserEvents, passing the URL as jamId) if it helps you understand the ask.\n\n`
+    : '';
+  const replanNote = priorSteps?.length
+    ? `You previously proposed this plan:\n${priorSteps.map((s, i) => `${i + 1}. ${s.title} — ${s.description}`).join('\n')}\n\n` +
+      `The owner wants it changed: "${changeNote}"\nProduce a REVISED plan that honours their change.\n\n`
+    : '';
+
+  return (
+    `A non-technical website owner wants this added to their site:\n"${ask}"\n\n` +
+    designNote + shotNote + jamNote + replanNote +
+    `You are PLANNING ONLY — do NOT edit any files, do NOT commit, do NOT open a pull request.\n` +
+    `First EXPLORE the repo at /workspace/repo to ground the plan in the real code: read AGENTS.md ` +
+    `if present, then look at the actual files/components/data involved. Ignore generated or ` +
+    `dependency folders (node_modules, dist, build, .next, vendor) and lock files.\n\n` +
+    `Then break the request into the FEWEST ordered, independently-shippable steps (1–${MAX_STEPS}; ` +
+    `a small ask can be a single step). Each step must be one self-contained change that can be ` +
+    `built, previewed and shipped on its own before the next; later steps may build on earlier ones.\n` +
+    `For EACH step decide "kind":\n` +
+    `  - "static"  = fixed presentation/UI only (layout, text, colours, links) — no live data.\n` +
+    `  - "dynamic" = needs live/changing data or back-end wiring (e.g. a list driven by real ` +
+    `activity, a form that saves, anything computed at runtime). Use the code you explored to ` +
+    `decide whether the data/source already exists or must be built, and scope the step accordingly.\n\n` +
+    `Write every title and description in plain, friendly English a shop owner would use — NEVER ` +
+    `technical words (no code, files, components, API, database, deploy, etc.). Describe what a ` +
+    `visitor or the owner will SEE or be able to DO.\n\n` +
+    `Reply with a short friendly sentence, then on the VERY LAST line append ONLY this machine-` +
+    `readable result (the owner won't see it):\n` +
+    `RESULT_JSON: {"steps":[{"title":"<3–6 word plain title>","description":"<one or two plain ` +
+    `sentences: what this step adds and where on the site>","kind":"static|dynamic"}]}`
+  );
 }
 
 /**
- * Break a feature request into an ordered list of fix-sized steps using one Sonnet call. Each
- * step is a self-contained change that can be built, previewed, and published on its own before
- * the next begins (later steps may build on earlier ones, which are merged to the repo's main
- * branch as each is deployed to testing). Returns the steps + the call's ACTUAL USD cost — the
- * planning charge is PLANNING_MULTIPLIER × this (see priceForPlanning). Titles/descriptions are
- * plain English (shown to the customer). Fails safe to a single step = the whole ask.
- *
- * @returns {Promise<{steps: {title:string, description:string}[], costUsd:number}>}
+ * Start the planning session (async). Mirrors a fix dispatch but with the planning instruction and
+ * NO PR intent. Returns { sessionId, firebaseFileIds }; pollSessions finalizes it via extractPlan.
  */
-export async function breakdownFeature(prompt, { images = [] } = {}) {
-  const ask = String(prompt ?? '').trim();
-  if (!ask) return { steps: [], costUsd: 0 };
-
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const content = [
-    ...images.map((im) => ({
-      type: 'image',
-      source: { type: 'base64', media_type: im.mediaType, data: im.data },
-    })),
-    {
-      type: 'text',
-      text:
-        `A non-technical website owner wants this feature added to their site:\n"${ask}"\n\n` +
-        `Break it into an ordered list of small, independent steps. Each step must be a single, ` +
-        `self-contained change that can be built, previewed and published on its own before the ` +
-        `next begins — later steps may rely on earlier ones already being live. Use the FEWEST ` +
-        `steps that make sense (1–${MAX_STEPS}); a small feature can be a single step. Order them ` +
-        `so each step works on its own once shipped.\n\n` +
-        `Write every title and description in plain, friendly English a shop owner would use — ` +
-        `NEVER any technical words (no code, files, components, API, database, deploy, etc.). ` +
-        `Describe what a visitor or the owner will SEE or be able to DO.\n\n` +
-        `Respond with JSON only — no prose, no code fences:\n` +
-        `{"steps":[{"title":"<3–6 word plain title>","description":"<one or two plain sentences: what this step adds and where on the site>"}]}`,
-    },
-  ];
-
-  const msg = await anthropic.messages.create({
-    model: PLANNER_MODEL,
-    max_tokens: 1500,
-    system: 'You plan website features for non-technical owners as a short, ordered list of plain-English steps. Respond with JSON only — no prose, no code fences.',
-    messages: [{ role: 'user', content }],
+export async function startPlanningSession({
+  ask, repoUrl, githubToken, vaultId, agentId, firebaseSAs = [],
+  figmaDesign = null, imageFileIds = [], screenshotCount = 0, priorSteps = null, changeNote = '',
+}) {
+  const instruction = buildPlanPrompt(ask, { figmaDesign, screenshotCount, priorSteps, changeNote });
+  return startFixSession({
+    instruction,
+    repoUrl, githubToken, vaultId, agentId, firebaseSAs,
+    figmaDesign, imageFileIds,
   });
+}
 
-  const costUsd = messageCostUsd(msg.usage);
-  const text = msg.content.find((c) => c.type === 'text')?.text ?? '{}';
+const RESULT_LINE_RE = /RESULT_JSON:\s*(\{.*\})\s*$/;
+
+/**
+ * Parse a finished planning session's events for the last RESULT_JSON line and return its steps,
+ * each normalised to { title, description, kind:'static'|'dynamic' }. Fail-safe: returns [] when
+ * nothing parses, so the caller can mark the plan failed (planning was a real session, so a
+ * single-step fallback would hide a genuine failure).
+ */
+export async function extractPlan(client, sessionId) {
   let steps = [];
   try {
-    const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
-    steps = Array.isArray(json.steps) ? json.steps : [];
-  } catch {
-    steps = [];
+    const res = await client.beta.sessions.events.list(sessionId);
+    const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
+    const lines = [];
+    for (const ev of events) {
+      if (ev?.type === 'agent.message') {
+        for (const b of ev.content ?? []) if (b?.type === 'text' && b.text) lines.push(...b.text.split('\n'));
+      }
+    }
+    let jsonStr = null;
+    for (const line of lines) {
+      const m = line.match(RESULT_LINE_RE);
+      if (m) jsonStr = m[1]; // keep the last
+    }
+    if (jsonStr) {
+      const json = JSON.parse(jsonStr);
+      steps = Array.isArray(json.steps) ? json.steps : [];
+    }
+  } catch (e) {
+    console.warn('extractPlan', sessionId, e?.message || e);
   }
-  steps = steps
+  return steps
     .map((s) => ({
       title: String(s?.title || '').slice(0, 80).trim(),
       description: String(s?.description || '').slice(0, 400).trim(),
+      kind: s?.kind === 'dynamic' ? 'dynamic' : 'static',
     }))
     .filter((s) => s.title || s.description)
     .slice(0, MAX_STEPS);
-
-  // Fail safe: the customer has paid for the breakdown, so always return something runnable.
-  if (steps.length === 0) steps = [{ title: 'Build the feature', description: ask.slice(0, 400) }];
-
-  return { steps, costUsd };
 }

@@ -3,6 +3,8 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
+import { extractPlan } from '../utils/featurePlan.js';
+import { priceForPlanning } from '../utils/billing.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -20,6 +22,50 @@ async function deleteSessionFiles(client, task) {
   }
 }
 const MAX_PREVIEW_TRIES = 12; // ~12 min before we give up waiting for the Vercel preview
+
+// A planning session (kind:'planning') ended without a usable plan → mark the planning task failed
+// and the feature plan_failed. Failed planning is NEVER charged (same as a failed fix).
+async function failPlan(db, taskSnap, task, reason, client) {
+  await taskSnap.ref.update({ status: 'failed', error: reason });
+  if (task.featureId) {
+    await db.collection('features').doc(task.featureId).update({ status: 'plan_failed', error: reason }).catch(() => {});
+  }
+  await deleteSessionFiles(client, task);
+}
+
+// A planning session finished with steps → write them onto the feature, open it for review, and
+// charge the breakdown (priceForPlanning = 2× the session's real COGS), atomically. Idempotent:
+// guarded on the planning task still being 'running' so two overlapping polls can't double-charge.
+async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
+  const chargeInr = priceForPlanning(costUsd);
+  const featureRef = db.collection('features').doc(task.featureId);
+  const orgRef = db.collection('organisations').doc(task.orgId);
+  const taskRef = taskSnap.ref;
+  await db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(taskRef);
+    if (!tSnap.exists || tSnap.data().status !== 'running') return; // already finalized
+    const oSnap = await tx.get(orgRef);
+    const fSnap = await tx.get(featureRef);
+    if (!fSnap.exists) return;
+    const balance = oSnap.exists ? Number(oSnap.data().balance ?? 0) : 0;
+    if (chargeInr > 0) {
+      tx.update(orgRef, { balance: balance - chargeInr });
+      tx.set(db.collection('transactions').doc(), {
+        orgId: task.orgId, userId: task.userId, type: 'debit', amount: chargeInr,
+        featureId: task.featureId, kind: 'planning', createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(featureRef, {
+      steps: steps.map((s) => ({ title: s.title, description: s.description, kind: s.kind, status: 'pending', taskId: null })),
+      status: 'plan_review',
+      planningChargeInr: chargeInr,
+      planningCostUsd: costUsd,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    tx.update(taskRef, { status: 'complete', actualCostUsd: costUsd, reviewedCostUsd: costUsd });
+  });
+  await deleteSessionFiles(client, task);
+}
 
 // Structured per-round usage line for Cloud Logging. The optimisation dashboard: token
 // breakdown, cache-hit ratio, and the THIS-round split (cumulative minus what prior rounds
@@ -70,6 +116,26 @@ export const pollSessions = onSchedule(
           // THIS round's split, used for both the cap checks below and the usage log.
           const roundUsd = costUsd - (Number(task.reviewedCostUsd) || 0);
           const roundSec = activeSec - (Number(task.reviewedSeconds) || 0);
+
+          // Planning sessions finalize differently: parse the proposed steps + charge the
+          // breakdown, instead of the fix round/PR flow. (Reuses the same cap guards.)
+          if (task.kind === 'planning') {
+            if (DONE.has(status)) {
+              const steps = await extractPlan(client, task.sessionId);
+              if (steps.length) await finalizePlanReady(db, docSnap, task, steps, costUsd, client);
+              else await failPlan(db, docSnap, task, 'no_steps', client);
+              continue;
+            }
+            if (FAILED.has(status)) { await failPlan(db, docSnap, task, 'agent_failed', client); continue; }
+            await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            const overSec = activeSec > (Number(task.maxSeconds) || 600);
+            const overUsd = costUsd > (Number(task.maxBudgetUsd) || 0.75);
+            if (overSec || overUsd) {
+              try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
+              await failPlan(db, docSnap, task, overSec ? 'timeout' : 'over_budget', client);
+            }
+            continue;
+          }
 
           // Terminal status first. The runtime/budget caps below are mid-flight guards that
           // stop a runaway session — they MUST NOT override a session that already finished

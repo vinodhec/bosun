@@ -12,8 +12,10 @@ export const confirmQuote = httpsCallable(functions, 'confirmQuote');
 export const declineQuote = httpsCallable(functions, 'declineQuote');
 export const customerDeployTesting = httpsCallable(functions, 'customerDeployTesting');
 export const customerDeployProd = httpsCallable(functions, 'customerDeployProd');
-// "Plan a feature": decompose into ordered steps, each built as a fix, billed per step.
+// "Plan a feature": code-aware breakdown → review/approve/refine → ordered steps, billed per step.
 export const planFeature = httpsCallable(functions, 'planFeature');
+export const approveFeaturePlan = httpsCallable(functions, 'approveFeaturePlan');
+export const reviseFeaturePlan = httpsCallable(functions, 'reviseFeaturePlan');
 export const listMyFeatures = httpsCallable(functions, 'listMyFeatures');
 export const retryFeatureStep = httpsCallable(functions, 'retryFeatureStep');
 

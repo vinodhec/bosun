@@ -56,6 +56,9 @@ export async function startFeatureStep(db, featureId, stepIndex) {
   // step with the design (exact spec + rendered image) so each step is built pixel-perfect — same
   // as a standalone fix (createTask). The link lives in feature.prompt, which each step embeds.
   const figmaDesign = await designContextFromText({ org, secretData, text: feature.prompt });
+  // Carry the owner's original screenshots forward into every step (persisted once at plan time as
+  // Files API ids), attached by file_id — alongside Figma (above) and Jam (rides in the prompt).
+  const imageFileIds = Array.isArray(feature.screenshotFileIds) ? feature.screenshotFileIds : [];
 
   // The owner sees a clean title/description (displayPrompt); the agent gets the full framing
   // (build on earlier steps, do only this step) via agentPrompt. They're decoupled so the
@@ -91,7 +94,7 @@ export async function startFeatureStep(db, featureId, stepIndex) {
     finalCharge: 0,
     freeRevisionsUsed: 0,
     pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt: displayPrompt },
-    imageCount: 0,
+    imageCount: imageFileIds.length, // owner's original screenshots carried into the step
     createdAt: FieldValue.serverTimestamp(),
   });
 
@@ -99,6 +102,7 @@ export async function startFeatureStep(db, featureId, stepIndex) {
     const { sessionId, firebaseFileIds } = await startFixSession({
       prompt: agentPrompt,
       images: [],
+      imageFileIds,
       repoUrl: `https://github.com/${gh.repoFullName}`,
       githubToken,
       vaultId: gh.vaultId,

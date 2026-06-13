@@ -34,6 +34,35 @@ export function firebaseSAsFromSecret(secretData) {
 }
 
 /**
+ * Upload owner screenshots to the Anthropic Files API ONCE so they can be re-attached, by
+ * file_id, to every later session of a feature (the planning session + each build step) without
+ * re-sending multi-MB base64 or storing it in Firestore (which caps at 1MB/doc). Returns the
+ * file_ids (best-effort: a failed upload is skipped, never throws). `images` is [{mediaType,data}].
+ */
+export async function uploadImagesToFiles(images = []) {
+  if (!Array.isArray(images) || images.length === 0) return [];
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    defaultHeaders: { 'anthropic-beta': BETA },
+  });
+  const ids = [];
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    if (!img?.data || !img?.mediaType) continue;
+    try {
+      const ext = (img.mediaType.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      const up = await client.beta.files.upload({
+        file: await toFile(Buffer.from(img.data, 'base64'), `shot-${i}.${ext}`, { type: img.mediaType }),
+      });
+      ids.push(up.id);
+    } catch (e) {
+      console.warn('uploadImagesToFiles', e?.message || e);
+    }
+  }
+  return ids;
+}
+
+/**
  * Start a Claude Managed Agent session to fix the user's repo.
  *
  * Runs in Anthropic's MANAGED CLOUD environment — no infrastructure of ours. The agent
@@ -44,7 +73,7 @@ export function firebaseSAsFromSecret(secretData) {
  *
  * Returns { sessionId }. The `pollSessions` scheduled function finalizes + bills.
  */
-export async function startFixSession({ prompt, images = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null }) {
+export async function startFixSession({ prompt, images = [], imageFileIds = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null, instruction = null }) {
   const resolvedAgent = agentId || process.env.ANTHROPIC_MANAGED_AGENT_ID;
   if (!resolvedAgent) throw new Error('ANTHROPIC_MANAGED_AGENT_ID not configured');
   const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID;
@@ -103,19 +132,31 @@ export async function startFixSession({ prompt, images = [], repoUrl, githubToke
     source: { type: 'base64', media_type: img.mediaType, data: img.data },
   }));
 
+  // Screenshots persisted on an earlier session (Files API) re-attached by file_id — used to carry
+  // the owner's original screenshot forward into a feature's build steps without resending base64.
+  const fileImageBlocks = (imageFileIds || []).map((fid) => ({
+    type: 'image',
+    source: { type: 'file', file_id: fid },
+  }));
+
   // If the owner linked a Figma design, append its rendered PNG as the LAST image — buildFixPrompt's
   // figmaNote tells the agent the last image IS the design and points it at the exact spec.
   const figmaImageBlock = figmaDesign?.image
     ? [{ type: 'image', source: { type: 'base64', media_type: figmaDesign.image.mediaType, data: figmaDesign.image.data } }]
     : [];
 
+  // `instruction`, when given (e.g. the planning pass), is the COMPLETE prompt and replaces the
+  // fix instruction — the caller has already folded in any design/screenshot framing it needs.
+  const text = instruction || buildFixPrompt(prompt, imageBlocks.length + fileImageBlocks.length, firebaseMounts, figmaDesign);
+
   await client.beta.sessions.events.send(session.id, {
     events: [
       {
         type: 'user.message',
         content: [
-          { type: 'text', text: buildFixPrompt(prompt, imageBlocks.length, firebaseMounts, figmaDesign) },
+          { type: 'text', text },
           ...imageBlocks,
+          ...fileImageBlocks,
           ...figmaImageBlock,
         ],
       },
