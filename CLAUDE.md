@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Bosun — a SaaS for non-technical small business owners in India to fix website problems with AI.
 Customer describes what's broken → managed Claude Agent edits their GitHub repo and opens a PR →
-the org wallet is billed only on success. Currency is INR; the canonical billing math lives in
-`shared/billing.js` (see "Money rules" below).
+the org wallet is billed only on success. Customers can also **plan a feature** — a bigger ask
+is broken into fix-sized steps that build one at a time (see "The feature pipeline"). Currency is
+INR; the canonical billing math lives in `shared/billing.js` (see "Money rules" below).
 
 ## Common commands
 
@@ -52,8 +53,8 @@ custom claim set by the operator; that claim gates org + transaction reads in th
 shared/         Canonical billing + currency. The only place pricing/markup/floors live.
 src/            Vite SPA — pages/, components/, hooks/, firebase/ (clients), utils/
 functions/      Cloud Functions (gen2, nodejs22, region asia-south1)
-  handlers/     One file per callable group (createTask, classifyTask, customerTasks, admin, adminGithub, pollSessions, ensureUser)
-  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize)
+  handlers/     One file per callable group (createTask, classifyTask, customerTasks, featureTasks, admin, adminGithub, pollSessions, ensureUser)
+  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize, classify, agentResult, featurePlan, featureRun, sessionView)
   scripts/      Standalone Managed-Agents E2E scripts (no Firebase) — see scripts/README.md
   shared/       GENERATED at predeploy from /shared (gitignored)
 scripts/sync-shared.sh   Copies /shared → /functions/shared. Runs before deploy AND emulate.
@@ -69,36 +70,78 @@ predeploy hook (declared in `firebase.json`) copies it across.
 
 All charge math goes through `shared/billing.js`. Key invariants:
 
-- **Fixed-tier pricing.** `COMPLEXITY_TIERS` (`simple` ₹149 / `medium` ₹375 / `complex` ₹749)
-  is the price the customer pays on approval, irrespective of token cost. `maxBudgetUsd` is the
-  hard $ cap the poller enforces (Managed Agents have no native spend cap). `maxSeconds` is a
-  second, independent runtime cap — kept because `session.usage` can stay at $0 for minutes
-  while tokens burn, so the cost-based check alone is unreliable.
-- **`large`** is a fourth tier with no fixed price — `createTask` parks it as `needs_quote`
-  for the operator to quote via `adminQuoteTask`; nothing runs until `confirmQuote`.
-- **Approve-before-charge.** A round ends in `pendingReview`; the user pays the tier price
-  on `approveFix` (or revises). `MAX_FREE_REVISIONS = 1` for `unresolved` (our shortfall);
-  `new_scope` always pays the tier price again. The classification is server-authoritative
-  (`classifyTask` re-runs; never trust client-supplied "it's unresolved").
-- **Idempotent + atomic billing.** Billing runs inside Firestore transactions in `pollSessions`
-  / `customerTasks` and gates on `billed: false`. Failed runs are never charged.
-- The legacy `MARKUP_MULTIPLIER` / `computeCharge` paths still exist for transaction estimates
-  but the production path is fixed-tier (`priceForComplexity`).
+- **Bracketed cost-plus pricing (the live path).** A completed round is charged
+  `priceFromCostUsd(actualCOGS)` in `utils/finalize.js` — the `PRICING_BRACKETS` markup on the
+  run's real token cost (4.5× the first ₹50, 3× the next ₹50, 2× above, capped at
+  `MAX_CHARGE_INR` ₹690, no minimum). Nothing is quoted upfront. `COMPLEXITY_TIERS` is still
+  consulted, but only for `maxBudgetUsd` (the poller's hard $ cap — Managed Agents have no
+  native cap) and `maxSeconds` (an independent runtime cap, kept because `session.usage` can
+  read $0 for minutes while tokens burn) plus model routing — **NOT** for the price. The fixed
+  `priceInr` tier values (`simple` ₹149 / `medium` ₹375 / `complex` ₹749) and `priceForComplexity`
+  are dormant for the auto path.
+- **`large`** has no auto price — `createTask` parks it as `needs_quote` for the operator to set
+  a flat `priceInr` via `adminQuoteTask`; nothing runs until `confirmQuote`. That operator quote
+  is the one place `priceInr` is actually charged.
+- **Approve-before-charge is per-ORG.** `org.requireApproval = true` ends a round in
+  `pendingReview` and waits for `approveFix`; the DEFAULT (`false`) auto-charges the bracketed
+  price the moment the agent finishes (`markRoundReady`). Either way `MAX_FREE_REVISIONS = 1`
+  free `unresolved` re-fix (our shortfall, charged ₹0); `new_scope` is charged again. A revision
+  RESUMES the same managed-agent session (`reviseSession` → `continueFixSession`) and appends to
+  `task.rounds` — there is no child task / `parentTaskId`.
+- **Idempotent + atomic billing.** Billing runs inside Firestore transactions in `finalize.js`
+  (called from `pollSessions` / `approveFix`) and gates on the round transition. Failed runs are
+  never charged (`markRoundFailure`).
+- **Feature planning** is the one charge that is NOT bracketed: a breakdown is billed
+  `priceForPlanning(cost)` = `PLANNING_MULTIPLIER` (2×) the planning call's actual COGS, debited
+  immediately on breakdown. Each resulting step is a normal fix, charged the bracketed way.
+- The `MARKUP_MULTIPLIER` / `computeCharge` (×2.5, ₹75 floor) path is legacy — it still backs the
+  `actualCostInr` analytics field and a couple of scripts, but the customer charge is
+  `priceFromCostUsd`, never `computeCharge` and never `priceForComplexity`.
 
 ## The fix pipeline (where state lives)
 
-1. `classifyTask` — Haiku call returns `{ complexity, reason }` for the estimate UI; we absorb its cost.
-2. `createTask` — gates on `org.balance >= requiredBalanceFor(complexity)`, writes `tasks/{id}`,
-   pulls the org's GitHub token from `orgSecrets/{orgId}` (the **vault** — clients have no read
-   access, even via rules), mints/uses it for the Managed Agent session, stores `sessionId`.
+1. `classifyTask` — Haiku call (`utils/classify.js`) returns `{ complexity, reason }`; drives the
+   caps + model routing, not a price. We absorb its cost.
+2. `createTask` — classifies if no complexity is passed, writes `tasks/{id}`, pulls the org's
+   GitHub token from `orgSecrets/{orgId}` (the **vault** — clients have no read access, even via
+   rules), starts the Managed Agent session, stores `sessionId`. Balance is **NOT** gated — orgs
+   may go negative; the operator reconciles via top-ups / `adminDeductCredits`.
 3. Managed Agent (Anthropic-hosted, NOT our infra) clones the repo via the GitHub MCP server,
    fixes, pushes a branch, opens a PR. Beta header `managed-agents-2026-04-01` is required.
 4. `pollSessions` (scheduled) reads `session.usage` + runtime, terminates over-cap sessions,
-   parses the final result via `utils/agentResult.js`, flips the task to `pendingReview`.
-5. `approveFix` / `reviseSession` (customer callables) — approval debits the org wallet in a
-   transaction and marks `billed: true`. Revisions create a child task linked by `parentTaskId`.
+   parses the final result via `utils/agentResult.js`, then `markRoundReady` either auto-charges
+   (default) or flips the task to `pendingReview` (requireApproval orgs).
+5. `approveFix` (requireApproval orgs) debits the wallet; `reviseSession` resumes the SAME session
+   for another round (no child task). `customerDeployTesting` merges the PR into `main` (testing
+   deploy); `customerDeployProd` tags `main` (go live).
 
 Task lifecycle: `queued → running → (pendingReview ↔ revising) → complete | failed | needs_quote`.
+
+## The feature pipeline ("Plan a feature")
+
+A bigger ask, broken into a sequence of fix-sized steps that build one at a time.
+
+1. `planFeature` (customer callable, `handlers/featureTasks.js`) — one Sonnet call
+   (`utils/featurePlan.js`) breaks the request into ordered, plain-English steps. The breakdown
+   is charged IMMEDIATELY at `priceForPlanning` (2× its actual COGS) and a `features/{id}` doc is
+   written (`steps[]`, each `{title, description, status, taskId}`). Step 1 starts via
+   `utils/featureRun.js#startFeatureStep`.
+2. Each step is an ORDINARY fix task carrying `featureId` + `stepIndex` — same pipeline, same
+   bracketed charge on its own approval. The owner sees a clean step title (`task.prompt`); the
+   agent gets the engineered "step N of M, build on earlier steps" framing (decoupled in
+   `startFeatureStep`).
+3. The owner tests → deploys the step to testing (merges to `main`). `deployTaskToTesting` calls
+   `advanceFeature`, which marks the step done and starts the next — whose agent now clones the
+   updated `main`, so it builds on the previous step. Strictly one step at a time.
+4. `listMyFeatures` composes the customer view (per-step status recomputed from the tasks, the
+   running total = planning + Σ step charges, the active step rendered via the shared
+   `utils/sessionView.js`). `listMySessions` filters out `featureId` tasks so steps show only in
+   the feature card. `retryFeatureStep` re-runs a failed step (failures aren't charged).
+5. When every step is on testing, one go-live tags `main` and publishes the whole feature.
+
+Feature lifecycle: `running (step by step) → complete`. Re-planning = a fresh `planFeature`,
+charged separately. New collection `features/{id}` follows the cardinal rule: owner-read,
+backend-only writes (`firestore.rules`).
 
 ## Frontend conventions
 

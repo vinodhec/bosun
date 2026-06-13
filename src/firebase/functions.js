@@ -12,6 +12,9 @@ export const confirmQuote = httpsCallable(functions, 'confirmQuote');
 export const declineQuote = httpsCallable(functions, 'declineQuote');
 export const customerDeployTesting = httpsCallable(functions, 'customerDeployTesting');
 export const customerDeployProd = httpsCallable(functions, 'customerDeployProd');
+export const planFeature = httpsCallable(functions, 'planFeature');
+export const listMyFeatures = httpsCallable(functions, 'listMyFeatures');
+export const retryFeatureStep = httpsCallable(functions, 'retryFeatureStep');
 
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');

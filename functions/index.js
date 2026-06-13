@@ -9,6 +9,7 @@ export { ensureUser } from './handlers/ensureUser.js';
 export { classifyTask } from './handlers/classifyTask.js';   // step 1: estimate
 export { createTask } from './handlers/createTask.js';        // step 2: run
 export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes
+export { planFeature, listMyFeatures, retryFeatureStep } from './handlers/featureTasks.js'; // plan a feature → sequential fix steps
 
 // Operator-only admin callables — credits live at the organisation level.
 export {

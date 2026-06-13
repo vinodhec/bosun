@@ -75,6 +75,26 @@ export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
 }
 
 /**
+ * Feature planning (breakdown) charge. A "feature" is one larger request the owner makes; a
+ * single Sonnet call breaks it into an ordered list of fix-sized steps. UNLIKE a fix — whose
+ * price is the bracketed cost-plus on the run's COGS (priceFromCostUsd, applied in
+ * finalize.js) — the breakdown is billed at a flat MULTIPLE of its OWN actual cost and debited
+ * immediately, the moment the owner breaks the feature down. Each resulting step then runs and
+ * is charged exactly like a standalone fix; nothing about the tiers or the fix charge math
+ * changes. Re-planning is just a fresh breakdown, charged again the same way.
+ */
+export const PLANNING_MULTIPLIER = 2;
+
+/**
+ * Charge (INR) for one feature breakdown — PLANNING_MULTIPLIER × the planning call's actual
+ * COGS. Rounded UP to whole rupees (favours the business). No floor and no cap: planning is
+ * cheap, so the charge tracks the real cost closely rather than snapping to a tier.
+ */
+export function priceForPlanning(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
+  return Math.ceil(usdToInr(Math.max(0, Number(costUsd) || 0), rate) * PLANNING_MULTIPLIER);
+}
+
+/**
  * Canonical charge for a completed task.
  * @param {number} actualCostUsd  cost reported by the agent run
  * @param {{rate?: number}} [opts]

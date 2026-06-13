@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -40,11 +40,13 @@ export default function Dashboard() {
   const { user } = useAuth();
   const org = useOrg(user);
   const { members, meId } = useOrgStats(user);
+  const [mode, setMode] = useState('fix'); // 'fix' = one-off fix · 'feature' = plan a feature as steps
   const [problem, setProblem] = useState('');
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
+  const [features, setFeatures] = useState(null);
 
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
@@ -57,20 +59,32 @@ export default function Dashboard() {
       setSessions((prev) => prev ?? []);
     }
   }, []);
+  const refreshFeatures = useCallback(async () => {
+    try {
+      const { data } = await listMyFeatures();
+      setFeatures(data?.features ?? []);
+    } catch {
+      setFeatures((prev) => prev ?? []);
+    }
+  }, []);
+  const refreshAll = useCallback(async () => {
+    await Promise.all([refresh(), refreshFeatures()]);
+  }, [refresh, refreshFeatures]);
 
-  // Initial load + light polling while anything is in progress.
+  // Initial load + light polling while anything is in progress — a live fix, or a feature whose
+  // steps are still running / advancing. Latest state is read via functional setState so the
+  // interval never closes over stale values.
   useEffect(() => {
     if (!user) return undefined;
-    refresh();
+    refreshAll();
     const id = setInterval(() => {
-      setSessions((prev) => {
-        if (prev && !prev.some((s) => isLive(s.status))) return prev; // idle — skip
-        refresh();
-        return prev;
-      });
+      let live = false;
+      setSessions((prev) => { if (prev?.some((s) => isLive(s.status))) live = true; return prev; });
+      setFeatures((prev) => { if (prev?.some((f) => f.status === 'running')) live = true; return prev; });
+      if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
-  }, [user, refresh]);
+  }, [user, refreshAll]);
 
   const onFix = async () => {
     if (!problem.trim()) return;
@@ -81,13 +95,33 @@ export default function Dashboard() {
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       });
       setProblem(''); resetImages();
-      await refresh();
+      await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
     } finally {
       setBusy(false);
     }
   };
+
+  const onPlan = async () => {
+    if (!problem.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await planFeature({
+        prompt: problem.trim(),
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
+      setProblem(''); resetImages();
+      await refreshAll();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const tabCls = (active) =>
+    `rounded-lg px-3 py-1.5 text-sm font-semibold transition ${active ? 'bg-white text-ink shadow-sm ring-1 ring-line' : 'text-ink-soft hover:text-ink'}`;
 
   return (
     <div className="min-h-screen">
@@ -114,7 +148,19 @@ export default function Dashboard() {
         )}
 
         <section className="rounded-2xl border border-line bg-white p-5 sm:p-6">
-          <h1 className="text-xl font-bold text-ink">What’s broken on your website?</h1>
+          {/* Pick a quick one-off fix, or plan a whole feature that we build as steps. */}
+          <div className="mb-4 inline-flex rounded-xl bg-canvas p-1 ring-1 ring-line">
+            <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
+              Fix something
+            </button>
+            <button type="button" onClick={() => { setMode('feature'); setErr(''); }} className={tabCls(mode === 'feature')}>
+              Plan a feature
+            </button>
+          </div>
+
+          <h1 className="text-xl font-bold text-ink">
+            {mode === 'feature' ? 'What would you like to add to your website?' : 'What’s broken on your website?'}
+          </h1>
           {connected && (
             <p className="mt-1 text-sm text-ink-soft">
               Connected: <span className="font-medium text-ink">{org.github.repoFullName}</span>
@@ -124,7 +170,9 @@ export default function Dashboard() {
             <ScreenshotComposer
               value={problem}
               onChange={setProblem}
-              placeholder="Example: My menu disappears on mobile phone"
+              placeholder={mode === 'feature'
+                ? 'Example: Let customers book an appointment and get an email confirmation'
+                : 'Example: My menu disappears on mobile phone'}
               images={images}
               imgErr={imgErr}
               dragging={dragging}
@@ -134,26 +182,37 @@ export default function Dashboard() {
             />
           </div>
           <p className="mt-1.5 text-xs text-ink-soft">
-            📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what’s wrong.
+            📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
           </p>
           {err && <p className="mt-2 text-sm text-bad">{err}</p>}
           <button
-            onClick={onFix}
+            onClick={mode === 'feature' ? onPlan : onFix}
             disabled={busy || !problem.trim() || !connected}
             className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-brand-600 px-5 py-3 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60 sm:w-auto"
           >
-            {busy ? 'Starting…' : 'Fix My Website →'}
+            {busy ? (mode === 'feature' ? 'Planning…' : 'Starting…') : (mode === 'feature' ? 'Plan My Feature →' : 'Fix My Website →')}
           </button>
           <p className="mt-2 text-xs text-ink-soft">
-            You’re only charged after the fix is done.
+            {mode === 'feature'
+              ? 'We’ll break it into steps and start the first one. There’s a small charge to plan it; then you pay for each step as it’s done.'
+              : 'You’re only charged after the fix is done.'}
           </p>
         </section>
+
+        {Array.isArray(features) && features.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your features</h2>
+            {features.map((f) => (
+              <FeatureCard key={f.id} feature={f} onChanged={refreshAll} />
+            ))}
+          </section>
+        )}
 
         {Array.isArray(sessions) && sessions.length > 0 && (
           <section className="space-y-3">
             <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your fixes</h2>
             {sessions.map((s) => (
-              <SessionCard key={s.id} session={s} onRevised={refresh} />
+              <SessionCard key={s.id} session={s} onRevised={refreshAll} />
             ))}
           </section>
         )}
@@ -175,7 +234,7 @@ function roundCost(r) {
   return r.kind === 'initial' ? formatINR(r.addedInr) : `+${formatINR(r.addedInr)}`;
 }
 
-function SessionCard({ session: s, onRevised }) {
+function SessionCard({ session: s, onRevised, hideGoLive = false }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('unresolved'); // 'unresolved' (free) | 'new_scope' (paid)
   const [changes, setChanges] = useState('');
@@ -190,7 +249,7 @@ function SessionCard({ session: s, onRevised }) {
   // Self-deploy availability. Publishing to testing is open to every org member; going live
   // (production) is allowed only for people the operator has granted it to (canDeployProd).
   const canDeployTesting = s.canDeployTesting && !s.deployedTesting;
-  const canGoLive = !!s.canDeployProd;
+  const canGoLive = !!s.canDeployProd && !hideGoLive;
   const showDeploy = canDeployTesting || canGoLive;
 
   const approve = async () => {
@@ -477,6 +536,115 @@ function SessionCard({ session: s, onRevised }) {
 
       {s.status === 'failed' && (
         <p className="mt-1 text-ink-soft">No charge was applied. Please try again.</p>
+      )}
+    </div>
+  );
+}
+
+// A planned feature: the ordered steps with their status, a running total of what's been paid,
+// and the active step rendered with the normal fix card (test the preview, approve, request
+// changes, and "Testing" to publish that step and move on). Go-live is held until every step is
+// done — then one button publishes the whole feature at once.
+function FeatureCard({ feature: f, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const active = f.steps.find((st) => st.status === 'running' || st.status === 'failed');
+
+  const stepIcon = (st) =>
+    st.status === 'done' ? '✅' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️' : '◻️';
+
+  const retry = async () => {
+    setBusy(true); setErr('');
+    try { await retryFeatureStep({ featureId: f.id }); await onChanged(); }
+    catch (e) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
+  };
+  const goLive = async () => {
+    if (!window.confirm('Make this whole feature live on your website now?')) return;
+    setBusy(true); setErr('');
+    try { await customerDeployProd({ taskId: f.goLiveTaskId }); await onChanged(); }
+    catch (e) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-2xl border border-line bg-white p-5">
+      <p className="text-sm text-ink-soft">“{f.prompt}”</p>
+      <h3 className="mt-1 font-semibold text-ink">
+        {f.status === 'complete'
+          ? 'All steps done 🎉'
+          : `Building your feature — step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}`}
+      </h3>
+
+      {/* The plan, step by step. */}
+      <ol className="mt-3 space-y-1.5">
+        {f.steps.map((st, i) => (
+          <li key={i} className="flex items-start gap-2 text-sm">
+            <span className="mt-0.5 w-5 shrink-0 text-center">{stepIcon(st)}</span>
+            <span className={st.status === 'done' ? 'text-ink-soft' : 'text-ink'}>
+              <span className="font-medium">{st.title || `Step ${i + 1}`}</span>
+              {st.description && <span className="text-ink-soft"> — {st.description}</span>}
+              {st.status === 'done' && st.paidInr > 0 && (
+                <span className="ml-1 whitespace-nowrap text-xs text-ink-soft">· {formatINR(st.paidInr)}</span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      {/* Running total — planning + each finished step. Not an estimate: this is what's paid. */}
+      <p className="mt-3 text-sm">
+        Paid so far: <span className="font-semibold">{formatINR(f.totalPaidInr)}</span>
+        {f.planningChargeInr > 0 && (
+          <span className="text-ink-soft"> (incl. {formatINR(f.planningChargeInr)} to plan it)</span>
+        )}
+      </p>
+
+      {/* The active step uses the normal fix card. Go-live is hidden here — held to the end. */}
+      {active && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+            Current step: {active.title}
+          </p>
+          {active.status === 'failed' ? (
+            <div>
+              <p className="text-sm text-ink-soft">This step didn’t work — no charge for it. You can try it again.</p>
+              {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+              <button onClick={retry} disabled={busy} className="mt-2 rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                {busy ? 'Starting…' : 'Try this step again'}
+              </button>
+            </div>
+          ) : (
+            active.session && <SessionCard session={active.session} onRevised={onChanged} hideGoLive />
+          )}
+        </div>
+      )}
+
+      {/* The next step is being prepared — or a rare dispatch hiccup left it not started.
+          Either way a gentle nudge resumes it (retryFeatureStep starts the current step). */}
+      {f.status === 'running' && !active && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="text-sm text-ink-soft">Getting the next step ready…</p>
+          {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+          <button onClick={retry} disabled={busy} className="mt-2 rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+            {busy ? 'Starting…' : 'Continue building →'}
+          </button>
+        </div>
+      )}
+
+      {/* Whole feature done → one button publishes everything (only for owners allowed to go live). */}
+      {f.status === 'complete' && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="text-sm text-ink">
+            Every step is on your testing site.{f.canGoLive ? ' Ready to make the whole feature live?' : ''}
+          </p>
+          {err && <p className="mt-1 text-sm text-bad">{err}</p>}
+          {f.canGoLive && (
+            <button onClick={goLive} disabled={busy} className="mt-2 rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
+              {busy ? 'Publishing…' : 'Go live →'}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
