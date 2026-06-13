@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -569,6 +569,10 @@ function FeatureCard({ feature: f, onChanged }) {
     await reviseFeaturePlan({ featureId: f.id, mode, ...(mode === 'refine' ? { changes: text.trim() } : { prompt: text.trim() }) });
     setPanel(null); setText('');
   });
+  const submitAddChange = () => run(async () => {
+    await addFeatureChange({ featureId: f.id, changes: text.trim() });
+    setPanel(null); setText('');
+  });
   const goLive = async () => {
     if (!window.confirm('Make this whole feature live on your website now?')) return;
     run(() => customerDeployProd({ taskId: f.goLiveTaskId }));
@@ -712,10 +716,39 @@ function FeatureCard({ feature: f, onChanged }) {
             Every step is on your testing site.{f.canGoLive ? ' Ready to make the whole feature live?' : ''}
           </p>
           {err && <p className="mt-1 text-sm text-bad">{err}</p>}
-          {f.canGoLive && (
-            <button onClick={goLive} disabled={busy} className="mt-2 rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
-              {busy ? 'Publishing…' : 'Go live →'}
-            </button>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {f.canGoLive && (
+              <button onClick={goLive} disabled={busy} className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
+                {busy ? 'Publishing…' : 'Go live →'}
+              </button>
+            )}
+            {panel !== 'addChange' && (
+              <button onClick={() => { setPanel('addChange'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+                Add another change
+              </button>
+            )}
+          </div>
+
+          {panel === 'addChange' && (
+            <div className="mt-3 rounded-xl bg-canvas p-3">
+              <p className="text-sm font-medium text-ink">What else would you like to change about this feature?</p>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={3}
+                placeholder="Example: also let visitors see the results without voting, and make the vote button green"
+                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
+              />
+              <p className="mt-1 text-xs text-ink-soft">We’ll build this as another step on this feature — you review and pay for it just like the others, and it’s added to this feature’s total.</p>
+              <div className="mt-2 flex gap-2">
+                <button onClick={submitAddChange} disabled={busy || !text.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                  {busy ? 'Starting…' : 'Make this change →'}
+                </button>
+                <button onClick={() => { setPanel(null); setText(''); setErr(''); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
         </div>
       )}

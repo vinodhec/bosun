@@ -11,8 +11,24 @@ import { tierFor } from './billing.js';
 // the agent clones already contains them and it can build on top.
 function buildAgentPrompt(feature, stepIndex) {
   const step = feature.steps[stepIndex];
-  const total = feature.steps.length;
   const body = step.description ? `${step.title} — ${step.description}` : step.title;
+
+  // A FOLLOW-UP change added after the feature was delivered. The whole feature is already merged
+  // into the project, so the agent gets that context and builds the change on top of it.
+  if (step.added) {
+    const built = (feature.steps || [])
+      .filter((s) => !s.added && (s.title || s.description))
+      .map((s, i) => `${i + 1}. ${s.title}${s.description ? ` — ${s.description}` : ''}`)
+      .join('\n');
+    return (
+      `You previously built a feature for this website owner. The feature they asked for:\n"${feature.prompt}"\n\n` +
+      (built ? `It was delivered as these parts (all already merged into the project you're working on):\n${built}\n\n` : '') +
+      `The owner now wants this ADDITIONAL change on top of that feature:\n"${step.changeText || body}"\n\n` +
+      `Make ONLY this change. Build on what's already there — do NOT redo the feature.`
+    );
+  }
+
+  const total = feature.steps.length;
   return (
     `This is step ${stepIndex + 1} of ${total} of a larger feature the website owner asked for:\n` +
     `"${feature.prompt}"\n\n` +
@@ -57,8 +73,12 @@ export async function startFeatureStep(db, featureId, stepIndex) {
   // as a standalone fix (createTask). The link lives in feature.prompt, which each step embeds.
   const figmaDesign = await designContextFromText({ org, secretData, text: feature.prompt });
   // Carry the owner's original screenshots forward into every step (persisted once at plan time as
-  // Files API ids), attached by file_id — alongside Figma (above) and Jam (rides in the prompt).
-  const imageFileIds = Array.isArray(feature.screenshotFileIds) ? feature.screenshotFileIds : [];
+  // Files API ids), attached by file_id — alongside Figma (above) and Jam (rides in the prompt). A
+  // follow-up change may also carry its OWN screenshots (step.imageFileIds), shown first.
+  const imageFileIds = [
+    ...(Array.isArray(step.imageFileIds) ? step.imageFileIds : []),
+    ...(Array.isArray(feature.screenshotFileIds) ? feature.screenshotFileIds : []),
+  ];
 
   // The owner sees a clean title/description (displayPrompt); the agent gets the full framing
   // (build on earlier steps, do only this step) via agentPrompt. They're decoupled so the

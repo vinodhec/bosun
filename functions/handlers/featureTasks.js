@@ -278,6 +278,62 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
   return { features };
 });
 
+// Add another change to a feature AFTER all its steps are done. It runs as a NEW step on the same
+// feature — same review/approve/charge lifecycle, so its cost rolls into the feature's running
+// total — and the agent gets the whole feature as context (it's all merged into the repo, plus the
+// original design/screenshots) so it understands what it's extending. This replaces opening a
+// separate standalone fix for follow-up tweaks.
+export const addFeatureChange = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const featureId = String(request.data?.featureId ?? '').trim();
+  const changes = String(request.data?.changes ?? '').trim();
+  if (!featureId) throw new HttpsError('invalid-argument', 'featureId required.');
+  if (!changes) throw new HttpsError('invalid-argument', 'Please describe the change you want.');
+  const images = sanitizeImages(request.data?.images);
+
+  const db = getFirestore();
+  const featureRef = db.collection('features').doc(featureId);
+  const fSnap = await featureRef.get();
+  if (!fSnap.exists) throw new HttpsError('not-found', 'Feature not found.');
+  const f = fSnap.data();
+  if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
+  // Only once the feature is fully built (every step on testing). Finish the steps first otherwise.
+  if (f.status !== 'complete') throw new HttpsError('failed-precondition', 'NOT_COMPLETE');
+
+  // This change may carry its own screenshots (what the owner is pointing at now); persist them.
+  const newFileIds = await uploadImagesToFiles(images);
+
+  // Append the change as a new step, atomically, and flip the feature back to building.
+  let newIndex = -1;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(featureRef);
+    if (!snap.exists) return;
+    const steps = Array.isArray(snap.data().steps) ? [...snap.data().steps] : [];
+    steps.push({
+      title: 'Your extra change',
+      description: changes.slice(0, 400),
+      kind: 'static',
+      status: 'pending',
+      taskId: null,
+      added: true,
+      changeText: changes,
+      imageFileIds: newFileIds,
+    });
+    newIndex = steps.length - 1;
+    tx.update(featureRef, { steps, status: 'running', currentStep: newIndex, updatedAt: FieldValue.serverTimestamp() });
+  });
+  if (newIndex < 0) throw new HttpsError('not-found', 'Feature not found.');
+
+  try {
+    await startFeatureStep(db, featureId, newIndex);
+  } catch (e) {
+    console.error('addFeatureChange', featureId, e?.message || e);
+    throw new HttpsError('internal', 'We could not start this change. You were not charged.');
+  }
+  return { ok: true };
+});
+
 // Retry the current step of a building feature when it failed to run. Failed runs were never
 // charged, so no new charge. Only valid while the feature is building.
 export const retryFeatureStep = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {

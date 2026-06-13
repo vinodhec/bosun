@@ -149,6 +149,10 @@ bad plan; refine/redo loop back to `planning`).
    `listMyFeatures` composes the view (proposed steps with `kind` while reviewing; the active step via
    `utils/sessionView.js` while building). `listMySessions` filters out `featureId` tasks.
 6. When every step is on testing, one go-live tags `main` and publishes the whole feature.
+7. After a feature is `complete`, `addFeatureChange` appends a follow-up change as a NEW step
+   (`added:true`, carrying its own `changeText`/screenshots) — same review/approve/charge lifecycle,
+   so its cost rolls into the feature total, and `buildAgentPrompt` gives the agent the whole feature
+   as context (it's all merged into the repo). This is the in-feature alternative to a standalone fix.
 
 New collection `features/{id}` follows the cardinal rule: owner-read, backend-only writes
 (`firestore.rules`). Screenshots persist as Anthropic Files (`feature.screenshotFileIds`) so they
