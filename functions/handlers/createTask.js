@@ -3,6 +3,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
+import { designContextFromText } from '../utils/figma.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -84,6 +85,11 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   if (!githubToken) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
   const firebaseSAs = firebaseSAsFromSecret(secretData);
 
+  // If the owner pasted a Figma link AND the org has a connected Figma account, pull the design
+  // (exact spec + rendered image) so the agent can build it pixel-perfect. Degrades to null on any
+  // problem — a design link must never block the fix.
+  const figmaDesign = await designContextFromText({ org, secretData, text: prompt });
+
   // Cost-aware routing: Sonnet handles all but `complex` fixes; Opus is reserved for those.
   const model = modelForComplexity(complexity);
   const repoUrl = `https://github.com/${gh.repoFullName}`;
@@ -112,7 +118,7 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   });
 
   try {
-    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs });
+    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch {
     await taskRef.update({ status: 'failed', error: 'dispatch_failed' });

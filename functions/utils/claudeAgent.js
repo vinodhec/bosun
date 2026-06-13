@@ -44,7 +44,7 @@ export function firebaseSAsFromSecret(secretData) {
  *
  * Returns { sessionId }. The `pollSessions` scheduled function finalizes + bills.
  */
-export async function startFixSession({ prompt, images = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [] }) {
+export async function startFixSession({ prompt, images = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null }) {
   const resolvedAgent = agentId || process.env.ANTHROPIC_MANAGED_AGENT_ID;
   if (!resolvedAgent) throw new Error('ANTHROPIC_MANAGED_AGENT_ID not configured');
   const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID;
@@ -103,11 +103,21 @@ export async function startFixSession({ prompt, images = [], repoUrl, githubToke
     source: { type: 'base64', media_type: img.mediaType, data: img.data },
   }));
 
+  // If the owner linked a Figma design, append its rendered PNG as the LAST image — buildFixPrompt's
+  // figmaNote tells the agent the last image IS the design and points it at the exact spec.
+  const figmaImageBlock = figmaDesign?.image
+    ? [{ type: 'image', source: { type: 'base64', media_type: figmaDesign.image.mediaType, data: figmaDesign.image.data } }]
+    : [];
+
   await client.beta.sessions.events.send(session.id, {
     events: [
       {
         type: 'user.message',
-        content: [{ type: 'text', text: buildFixPrompt(prompt, imageBlocks.length, firebaseMounts) }, ...imageBlocks],
+        content: [
+          { type: 'text', text: buildFixPrompt(prompt, imageBlocks.length, firebaseMounts, figmaDesign) },
+          ...imageBlocks,
+          ...figmaImageBlock,
+        ],
       },
     ],
   });
@@ -120,7 +130,7 @@ export async function startFixSession({ prompt, images = [], repoUrl, githubToke
  * environment + GitHub auth, so the agent updates the SAME branch/PR. Usage accrues on
  * the same session, so the cost we read later is cumulative across rounds.
  */
-export async function continueFixSession({ sessionId, changes, images = [] }) {
+export async function continueFixSession({ sessionId, changes, images = [], figmaDesign = null }) {
   if (!sessionId) throw new Error('missing sessionId');
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
@@ -132,11 +142,19 @@ export async function continueFixSession({ sessionId, changes, images = [] }) {
     type: 'image',
     source: { type: 'base64', media_type: img.mediaType, data: img.data },
   }));
+  // A design link in the revision is enriched the same way as the initial fix (rendered PNG last).
+  const figmaImageBlock = figmaDesign?.image
+    ? [{ type: 'image', source: { type: 'base64', media_type: figmaDesign.image.mediaType, data: figmaDesign.image.data } }]
+    : [];
   await client.beta.sessions.events.send(sessionId, {
     events: [
       {
         type: 'user.message',
-        content: [{ type: 'text', text: buildRevisePrompt(changes, imageBlocks.length) }, ...imageBlocks],
+        content: [
+          { type: 'text', text: buildRevisePrompt(changes, imageBlocks.length, figmaDesign) },
+          ...imageBlocks,
+          ...figmaImageBlock,
+        ],
       },
     ],
   });

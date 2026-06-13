@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth.js';
 import Landing from './pages/Landing.jsx';
 import Auth from './pages/Auth.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Plan from './pages/Plan.jsx';
 import Admin from './pages/Admin.jsx';
 
 function RequireAuth({ children }) {
@@ -20,6 +21,7 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/auth" element={<Auth />} />
       <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
+      <Route path="/plan" element={<RequireAuth><Plan /></RequireAuth>} />
       <Route path="/admin" element={<RequireAuth><Admin /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

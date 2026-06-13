@@ -52,8 +52,8 @@ custom claim set by the operator; that claim gates org + transaction reads in th
 shared/         Canonical billing + currency. The only place pricing/markup/floors live.
 src/            Vite SPA — pages/, components/, hooks/, firebase/ (clients), utils/
 functions/      Cloud Functions (gen2, nodejs22, region asia-south1)
-  handlers/     One file per callable group (createTask, classifyTask, customerTasks, admin, adminGithub, pollSessions, ensureUser)
-  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize)
+  handlers/     One file per callable group (createTask, classifyTask, customerTasks, admin, adminGithub, adminTrello, adminFigma, planFeature, publishPlan, pollSessions, ensureUser)
+  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize, classify, planTasks, trello, figma)
   scripts/      Standalone Managed-Agents E2E scripts (no Firebase) — see scripts/README.md
   shared/       GENERATED at predeploy from /shared (gitignored)
 scripts/sync-shared.sh   Copies /shared → /functions/shared. Runs before deploy AND emulate.
@@ -99,6 +99,49 @@ All charge math goes through `shared/billing.js`. Key invariants:
    transaction and marks `billed: true`. Revisions create a child task linked by `parentTaskId`.
 
 Task lifecycle: `queued → running → (pendingReview ↔ revising) → complete | failed | needs_quote`.
+
+## "Plan a feature" (a separate task type — does NOT touch GitHub/agent/pollSessions)
+
+A second customer flow at `/plan` (RequireAuth). The owner describes a feature → we decompose it
+into editable tasks → on approval we publish them as cards to the org's Trello board → the wallet
+is billed a single flat price. Key points:
+
+- `planFeature` (callable) — FREE preview, mirrors `classifyTask`: a cheap model (`utils/planTasks.js`)
+  returns `{ tasks: [{ title, description, acceptanceCriteria[], dependsOn[] }] }`. Cost absorbed.
+- `publishPlan` (callable) — gates on `org.balance >= priceForPlan()`, pulls Trello creds from
+  `orgSecrets/{orgId}.trello` (vault), writes one card per task via `utils/trello.js`, records a
+  `tasks/{id}` of `type:'plan'`, and debits the wallet in a Firestore transaction gated on
+  `billed:false`. **Idempotent** via a client `planId` (the doc id `plan_<planId>`): a retry never
+  duplicates cards or double-charges. Charge lands only on a successful publish.
+- Pricing lives in `shared/billing.js` (`PLAN_PRICE_INR` / `priceForPlan()`); `requiredBalanceFor('plan')`
+  returns the flat price. Do NOT fork the math.
+- Trello uses an API key + per-user token (not the static-bearer MCP shape) — an operator connects
+  them via `adminTrello.js` callables (Admin panel). Token never returned to the browser; a non-secret
+  `org.trello.connected` status is mirrored to the org doc for the `/plan` readiness check.
+- `firestore.rules` is unchanged: plan tasks reuse the `tasks` collection (owner-read, backend-write)
+  and `orgSecrets` stays fully client-unreadable.
+
+## Figma design-to-code (enriches a fix — NOT a separate task type)
+
+When a customer pastes a **figma.com link** into "what's broken", the fix is enriched with the
+design so the agent builds it **pixel-perfect**. This rides the normal fix pipeline + tier pricing —
+no new task type, no billing change. It mirrors the `jam` link pattern, but because Figma's official
+MCP is OAuth-only/client-gated (can't be a vault `static_bearer` like GitHub/Jam), we use the **Figma
+REST API** instead:
+
+- An operator connects the org's Figma **Personal Access Token** via `adminFigma.js` (Admin panel).
+  It's validated against `GET /v1/me` and stored backend-only in `orgSecrets/{orgId}.figma` (the
+  vault — never returned to the browser); a non-secret `org.figma.connected` + handle is mirrored.
+- `utils/figma.js` is the only integration point: `designContextFromText({ org, secretData, text })`
+  fires iff the text has a figma link AND the org is connected. It pulls the node tree
+  (`/v1/files/:key/nodes`) into an **exact spec** (positions, sizes, auto-layout gap/padding, fonts,
+  hex colours) + a rendered PNG (`/v1/images`). Any failure degrades to `null` — a bad link never
+  blocks the fix.
+- `createTask` (initial) and `reviseSession` (revision) call it and pass `figmaDesign` to
+  `startFixSession` / `continueFixSession`; `buildFixPrompt` / `buildRevisePrompt` add a `figmaNote`
+  that attaches the PNG as the LAST image and instructs exact-value, repo-native reproduction.
+- `firestore.rules` unchanged — `orgSecrets.figma` is client-unreadable; the `org.figma` mirror is
+  owner-readable like `org.trello`.
 
 ## Frontend conventions
 

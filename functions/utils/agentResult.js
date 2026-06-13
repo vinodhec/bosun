@@ -142,12 +142,38 @@ function firebaseNote(mounts) {
   );
 }
 
+// Describes a design the owner linked (a Figma file) that they want built. We fetched it via the
+// Figma REST API in startFixSession: a rendered image (attached as the LAST image) plus an EXACT
+// structural spec — per-element position, size, auto-layout gap/padding, fonts, and hex colours.
+// `design` is { name, summary, image }. The brief is explicit: reproduce it pixel-perfect, using
+// the EXACT values from the spec — but built in the repo's own framework/styling system.
+function figmaNote(design) {
+  if (!design || (!design.summary && !design.image)) return '';
+  const imgLine = design.image
+    ? `A rendered image of the design is attached as the LAST image — match it pixel-for-pixel.\n`
+    : '';
+  const struct = design.summary
+    ? `Exact spec (positions are relative to the design's top-left; sizes in px; colours in hex):\n${design.summary}\n`
+    : '';
+  return (
+    `The owner linked a design to build: "${design.name || 'design'}".\n` +
+    imgLine +
+    struct +
+    `Reproduce this design PIXEL-PERFECT. Use the EXACT values from the spec above — colours (use the ` +
+    `exact hex), spacing (padding, gaps), sizes, alignment/position, corner radius, borders, and fonts ` +
+    `(family, weight, size, line-height). Do NOT approximate or "clean up" the values; match them. ` +
+    `Build it in the repo's EXISTING framework and styling system — reuse its components and design ` +
+    `tokens, and do NOT add new dependencies or a separate style system. If the repo has a token whose ` +
+    `value equals a spec value, use the token; otherwise use the literal value from the spec.\n\n`
+  );
+}
+
 /**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
  */
-export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
+export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], figmaDesign = null) {
   const screenshotNote =
     imageCount > 0
       ? `The owner also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} showing the problem — ` +
@@ -158,6 +184,7 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
     screenshotNote +
     jamNote(problem) +
     firebaseNote(firebaseMounts) +
+    figmaNote(figmaDesign) +
     `Investigate the repo at /workspace/repo and make the smallest safe change that resolves it. ` +
     `If a file named AGENTS.md exists at the repo root, READ IT FIRST: it's a maintainer-written ` +
     `map of where things live and which file to edit for common requests — use it to go straight ` +
@@ -178,7 +205,7 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = []) {
  * Follow-up instruction for a REVISION on the same session. The agent keeps the existing
  * branch + pull request (updates them) so the work stays in one PR / one session.
  */
-export function buildRevisePrompt(changes, imageCount = 0) {
+export function buildRevisePrompt(changes, imageCount = 0, figmaDesign = null) {
   const screenshotNote =
     imageCount > 0
       ? `They also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} — ` +
@@ -188,6 +215,7 @@ export function buildRevisePrompt(changes, imageCount = 0) {
     `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
     screenshotNote +
     jamNote(changes) +
+    figmaNote(figmaDesign) +
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
     `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +

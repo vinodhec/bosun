@@ -44,6 +44,24 @@ Browser (Vite SPA)
 | `functions/` | Firebase Cloud Functions (auth trigger, callables, webhook, billing). |
 | `scripts/sync-shared.sh` | Copies `shared/` into `functions/shared/` (predeploy + pre-emulate). |
 
+## Plan a feature (task type beside the fix pipeline)
+
+A second customer flow that does **not** touch GitHub or the managed agent. At `/plan` the
+owner describes a feature in plain language; a cheap model breaks it into individual tasks
+(title + description + acceptance criteria), which they review/edit. On "Send to my board" the
+tasks are published as cards to the org's connected Trello board, and the org wallet is billed a
+single flat price (`PLAN_PRICE_INR`, in `shared/billing.js`).
+
+- **Preview is free** (`planFeature`) — the decompose cost is absorbed, exactly like `classifyTask`.
+- **Publish charges once** (`publishPlan`) — atomic + idempotent (a client-supplied `planId` is
+  the task doc id, so a retry never duplicates cards or double-charges). The charge lands only on
+  a successful publish; if the board writes fail, nothing is charged.
+- **Board credentials** (Trello key + token + target board/list) live in `orgSecrets/{orgId}.trello`
+  (the vault — client-unreadable). An operator connects them from the Admin panel; a non-secret
+  `connected` status is mirrored onto the org doc so `/plan` can tell the board is ready.
+- Plan tasks (`type: 'plan'`) share the `tasks` collection but are filtered out of the fix
+  dashboard (`listMySessions`).
+
 ## Setup
 
 1. **Firebase project** — create one, then in the console enable:

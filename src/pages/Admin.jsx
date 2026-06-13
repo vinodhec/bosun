@@ -20,6 +20,12 @@ import {
   declineQuote,
   deployTesting,
   deployProd,
+  adminConnectTrello,
+  adminListTrelloBoards,
+  adminListTrelloLists,
+  adminSetTrelloTarget,
+  adminConnectFigma,
+  adminDisconnectFigma,
 } from '../firebase/functions.js';
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
@@ -418,6 +424,204 @@ function DeployAccess({ orgs }) {
   );
 }
 
+// Operator-only: connect an org's task board (Trello) for the "Plan a feature" flow. Saves the
+// key + token (stored backend-only), lists the org's boards/columns, and picks the target list
+// where cards land. The token is never returned to the browser.
+function TrelloConnect({ orgs }) {
+  const [orgId, setOrgId] = useState('');
+  const [creds, setCreds] = useState({ key: '', token: '' });
+  const [boards, setBoards] = useState([]);
+  const [lists, setLists] = useState([]);
+  const [board, setBoard] = useState(null); // { id, name }
+  const [list, setList] = useState(null);   // { id, name }
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const selectedOrg = orgs.find((o) => o.id === orgId);
+
+  const reset = () => { setBoards([]); setLists([]); setBoard(null); setList(null); };
+
+  const saveCreds = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminConnectTrello({ orgId: orgId.trim(), key: creds.key.trim(), token: creds.token.trim() });
+      setMsg('Saved. Now load the boards and pick where tasks should go.');
+      reset();
+    } catch (e) { setErr(e?.message || 'Could not save.'); }
+    finally { setBusy(false); }
+  };
+
+  const loadBoards = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const { data } = await adminListTrelloBoards({ orgId: orgId.trim() });
+      setBoards(data.boards || []);
+      setLists([]); setBoard(null); setList(null);
+    } catch (e) { setErr(e?.message || 'Could not load boards.'); }
+    finally { setBusy(false); }
+  };
+
+  const loadLists = async (b) => {
+    setBoard(b); setLists([]); setList(null); setBusy(true); setErr(''); setMsg('');
+    try {
+      const { data } = await adminListTrelloLists({ orgId: orgId.trim(), boardId: b.id });
+      setLists(data.lists || []);
+    } catch (e) { setErr(e?.message || 'Could not load columns.'); }
+    finally { setBusy(false); }
+  };
+
+  const saveTarget = async () => {
+    if (!board || !list) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminSetTrelloTarget({
+        orgId: orgId.trim(), boardId: board.id, listId: list.id,
+        boardName: board.name, listName: list.name,
+      });
+      setMsg(`Connected — tasks will land in “${list.name}” on “${board.name}”.`);
+    } catch (e) { setErr(e?.message || 'Could not save the target.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">Connect task board (Plan a feature)</h2>
+      <p className="text-xs text-ink-soft">
+        Trello key + token (stored backend-only), then pick the board and column where suggested tasks are added.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => { setOrgId(e.target.value); reset(); setMsg(''); setErr(''); }}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}{o.trello?.connected ? ` — ✓ ${o.trello.listName || 'connected'}` : ''}
+          </option>
+        ))}
+      </select>
+
+      {orgId && (
+        <>
+          <input className={field} value={creds.key} onChange={(e) => setCreds({ ...creds, key: e.target.value })} placeholder="Trello API key" />
+          <input className={field} value={creds.token} onChange={(e) => setCreds({ ...creds, token: e.target.value })} placeholder="Trello token" />
+          <div className="flex flex-wrap gap-2">
+            <button className={btn} disabled={busy || !creds.key.trim() || !creds.token.trim()} onClick={saveCreds}>Save key + token</button>
+            <button className="rounded-lg px-4 py-2 font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60" disabled={busy} onClick={loadBoards}>
+              Load boards
+            </button>
+          </div>
+
+          {boards.length > 0 && (
+            <div>
+              <p className="mt-1 text-xs font-medium text-ink-soft">Board</p>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {boards.map((b) => (
+                  <button key={b.id} onClick={() => loadLists(b)} disabled={busy}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition disabled:opacity-50 ${board?.id === b.id ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line hover:bg-brand-50'}`}>
+                    {b.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {lists.length > 0 && (
+            <div>
+              <p className="mt-1 text-xs font-medium text-ink-soft">Column (list)</p>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {lists.map((l) => (
+                  <button key={l.id} onClick={() => setList(l)} disabled={busy}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition disabled:opacity-50 ${list?.id === l.id ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line hover:bg-brand-50'}`}>
+                    {l.name}
+                  </button>
+                ))}
+              </div>
+              <button className={`${btn} mt-2`} disabled={busy || !list} onClick={saveTarget}>Set as task board</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {msg && <p className="rounded-lg bg-green-50 px-3 py-2 text-xs text-green-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-bad">{err}</p>}
+    </section>
+  );
+}
+
+// Operator-only: connect an org's Figma account so a customer who pastes a design link gets it
+// built pixel-perfect. We save the Figma access token backend-only (orgSecrets/{orgId}.figma) and
+// validate it on save; the token is never returned to the browser. No board/target to pick — the
+// customer supplies the design link per request, so a valid token is the whole setup.
+function FigmaConnect({ orgs }) {
+  const [orgId, setOrgId] = useState('');
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const selectedOrg = orgs.find((o) => o.id === orgId);
+
+  const save = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const { data } = await adminConnectFigma({ orgId: orgId.trim(), token: token.trim() });
+      setMsg(`Connected to Figma as ${data.handle || data.email || 'the account'}.`);
+      setToken('');
+    } catch (e) { setErr(e?.message || 'Could not connect.'); }
+    finally { setBusy(false); }
+  };
+
+  const disconnect = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminDisconnectFigma({ orgId: orgId.trim() });
+      setMsg('Disconnected.');
+    } catch (e) { setErr(e?.message || 'Could not disconnect.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">Connect Figma (design-to-code)</h2>
+      <p className="text-xs text-ink-soft">
+        Paste a Figma access token (stored backend-only). Once connected, when a customer includes a
+        Figma link in what they want, we build it pixel-perfect from the design.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => { setOrgId(e.target.value); setMsg(''); setErr(''); }}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}{o.figma?.connected ? ` — ✓ ${o.figma.handle || 'connected'}` : ''}
+          </option>
+        ))}
+      </select>
+
+      {orgId && (
+        <>
+          {selectedOrg?.figma?.connected && (
+            <p className="text-xs text-ink-soft">
+              Currently linked to <span className="font-medium text-ink">{selectedOrg.figma.handle || selectedOrg.figma.email || 'an account'}</span>.
+            </p>
+          )}
+          <input className={field} value={token} onChange={(e) => setToken(e.target.value)} placeholder="Figma access token (figd_…)" />
+          <div className="flex flex-wrap gap-2">
+            <button className={btn} disabled={busy || !token.trim()} onClick={save}>
+              {selectedOrg?.figma?.connected ? 'Update token' : 'Connect'}
+            </button>
+            {selectedOrg?.figma?.connected && (
+              <button className="rounded-lg px-4 py-2 font-semibold text-bad ring-1 ring-line transition hover:bg-rose-50 disabled:opacity-60" disabled={busy} onClick={disconnect}>
+                Disconnect
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
+      {msg && <p className="rounded-lg bg-green-50 px-3 py-2 text-xs text-green-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-bad">{err}</p>}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -628,6 +832,10 @@ export default function Admin() {
           <input className={field} value={gh.token} onChange={(e) => setGh({ ...gh, token: e.target.value })} placeholder="GitHub token (github_pat_… / ghp_…)" />
           <button className={btn} disabled={busy || !gh.orgId || !gh.repoFullName || !gh.token} onClick={() => run(() => adminSetGithubRepo({ orgId: gh.orgId.trim(), repoFullName: gh.repoFullName.trim(), token: gh.token.trim() }).then(() => setGh({ orgId: '', repoFullName: '', token: '' })), 'GitHub repo connected.')}>Connect repo</button>
         </section>
+
+        <TrelloConnect orgs={orgs} />
+
+        <FigmaConnect orgs={orgs} />
 
         <section className="space-y-2 rounded-2xl border border-brand-500 bg-brand-50/40 p-5">
           <h2 className="font-semibold text-ink">Test a fix</h2>

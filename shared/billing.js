@@ -157,6 +157,22 @@ export function tierFor(complexity) {
   return COMPLEXITY_TIERS[complexity] || COMPLEXITY_TIERS.medium;
 }
 
+/**
+ * "Plan a feature" pricing — a SEPARATE task type from the fix pipeline. The customer
+ * describes a feature, we break it into tasks, and on approval we publish them as cards to
+ * the org's task board. There's no agent run and no token volatility here, so it's a single
+ * low FLAT price charged once, on a successful publish (never on the free preview, never if
+ * publishing fails). Tune here and nowhere else.
+ *
+ * NOTE: a starting hypothesis to validate in the concierge phase, not final.
+ */
+export const PLAN_PRICE_INR = 99;
+
+/** The fixed price (INR) a successful "Plan a feature" publish costs the customer. */
+export function priceForPlan() {
+  return PLAN_PRICE_INR;
+}
+
 /** The fixed price (INR) a completed fix of this complexity costs the customer. */
 export function priceForComplexity(complexity) {
   return tierFor(complexity).priceInr;
@@ -183,6 +199,9 @@ export function isFreeRevision(reason) {
  * we never run work we can't bill.
  */
 export function requiredBalanceFor(complexity, opts) {
+  // "Plan a feature" is a flat-priced task type with no agent run — its required balance is
+  // simply the flat publish price, not a COGS-derived ceiling.
+  if (complexity === 'plan') return priceForPlan();
   return priceFromCostUsd(tierFor(complexity).maxBudgetUsd, opts);
 }
 

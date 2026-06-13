@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { continueFixSession, startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
+import { designContextFromText } from '../utils/figma.js';
 import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
@@ -30,7 +31,9 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     .get();
 
   return {
-    sessions: snap.docs.map((d) => {
+    // "Plan a feature" tasks (type 'plan') share the tasks collection but are NOT fixes —
+    // keep them out of the fix dashboard so the two flows stay cleanly separate.
+    sessions: snap.docs.filter((d) => d.data().type !== 'plan').map((d) => {
       const t = d.data();
       const merged = !!(t.deployedTesting || t.deployedProd);
       const pendingReview = !!t.pendingReview;
@@ -168,10 +171,20 @@ export const reviseSession = onCall(
       throw new HttpsError('failed-precondition', 'TOO_MANY_FREE_REVISIONS');
     }
 
+    // A Figma link in the change request enriches the revision the same way as the initial fix
+    // (exact spec + rendered image), so design tweaks land pixel-perfect too. Null on any problem.
+    const orgSnap = await db.collection('organisations').doc(task.orgId).get();
+    const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();
+    const figmaDesign = await designContextFromText({
+      org: orgSnap.exists ? orgSnap.data() : null,
+      secretData: secretSnap.exists ? secretSnap.data() : {},
+      text: changes,
+    });
+
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
     try {
-      await continueFixSession({ sessionId: task.sessionId, changes, images });
+      await continueFixSession({ sessionId: task.sessionId, changes, images, figmaDesign });
     } catch (e) {
       console.error('reviseSession:dispatch', taskId, e?.message || e);
       throw new HttpsError('internal', 'We could not start the changes. You were not charged.');
