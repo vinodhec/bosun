@@ -9,11 +9,7 @@ export { ensureUser } from './handlers/ensureUser.js';
 export { classifyTask } from './handlers/classifyTask.js';   // step 1: estimate
 export { createTask } from './handlers/createTask.js';        // step 2: run
 export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes
-
-// "Plan a feature" — a separate task type beside the fix pipeline (no GitHub, no agent).
-// planFeature is the FREE preview (decompose); publishPlan publishes cards + charges once.
-export { planFeature } from './handlers/planFeature.js';
-export { publishPlan } from './handlers/publishPlan.js';
+export { planFeature, listMyFeatures, retryFeatureStep } from './handlers/featureTasks.js'; // plan a feature → sequential fix steps
 
 // Operator-only admin callables — credits live at the organisation level.
 export {
@@ -30,14 +26,6 @@ export {
   adminMetrics,
   adminBackfillGamification,
 } from './handlers/admin.js';
-
-// Operator-only: connect an org's task board (Trello) for "Plan a feature".
-export {
-  adminConnectTrello,
-  adminListTrelloBoards,
-  adminListTrelloLists,
-  adminSetTrelloTarget,
-} from './handlers/adminTrello.js';
 
 // Operator-only: connect an org's Figma account so a pasted design link enriches a fix with
 // exact design context (the agent builds the UI pixel-perfect).

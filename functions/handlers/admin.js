@@ -141,10 +141,6 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       balance: d.data().balance ?? 0,
       repo: d.data().github?.repoFullName ?? null,
       requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
-      // Non-secret "Plan a feature" board status (names only — no credentials).
-      trello: d.data().trello?.connected
-        ? { connected: true, boardName: d.data().trello.boardName || '', listName: d.data().trello.listName || '' }
-        : null,
       // Non-secret Figma connection status (handle only — never the token).
       figma: d.data().figma?.connected
         ? { connected: true, handle: d.data().figma.handle || '', email: d.data().figma.email || '' }

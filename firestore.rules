@@ -44,6 +44,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Features — a "plan a feature" request + its ordered steps. Owner-read; all writes are
+    // backend-only (the planner debits the wallet for the breakdown, and the sequencer mutates
+    // the steps). The customer UI reads features via the listMyFeatures callable, not directly.
+    match /features/{featureId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
       allow read:  if isSignedIn() && request.auth.token.orgId == resource.data.orgId;

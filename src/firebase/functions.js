@@ -12,10 +12,10 @@ export const confirmQuote = httpsCallable(functions, 'confirmQuote');
 export const declineQuote = httpsCallable(functions, 'declineQuote');
 export const customerDeployTesting = httpsCallable(functions, 'customerDeployTesting');
 export const customerDeployProd = httpsCallable(functions, 'customerDeployProd');
-
-// "Plan a feature": free preview (decompose) + publish to the org's task board.
+// "Plan a feature": decompose into ordered steps, each built as a fix, billed per step.
 export const planFeature = httpsCallable(functions, 'planFeature');
-export const publishPlan = httpsCallable(functions, 'publishPlan');
+export const listMyFeatures = httpsCallable(functions, 'listMyFeatures');
+export const retryFeatureStep = httpsCallable(functions, 'retryFeatureStep');
 
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
@@ -36,9 +36,5 @@ export const adminListTasks = httpsCallable(functions, 'adminListTasks');
 export const adminStopTask = httpsCallable(functions, 'adminStopTask');
 export const deployTesting = httpsCallable(functions, 'deployTesting');
 export const deployProd = httpsCallable(functions, 'deployProd');
-export const adminConnectTrello = httpsCallable(functions, 'adminConnectTrello');
-export const adminListTrelloBoards = httpsCallable(functions, 'adminListTrelloBoards');
-export const adminListTrelloLists = httpsCallable(functions, 'adminListTrelloLists');
-export const adminSetTrelloTarget = httpsCallable(functions, 'adminSetTrelloTarget');
 export const adminConnectFigma = httpsCallable(functions, 'adminConnectFigma');
 export const adminDisconnectFigma = httpsCallable(functions, 'adminDisconnectFigma');

@@ -26,9 +26,6 @@ export default function Navbar({ balance }) {
         </Link>
         <nav className="flex items-center gap-2 sm:gap-3">
           <BalanceBadge balance={balance} />
-          <Link to="/plan" className={linkCls}>
-            Plan a feature
-          </Link>
           {isAdmin && (
             <Link to="/admin" className={linkCls}>
               Admin

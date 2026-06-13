@@ -7,6 +7,7 @@ import { startFixSession, firebaseSAsFromSecret, platformSessionUrl } from '../u
 import { tierFor } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
+import { advanceFeature } from '../utils/featureRun.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
 import { mergePullRequest, createReleaseTag } from '../utils/github.js';
@@ -317,6 +318,9 @@ async function deployTaskToTesting(db, taskId) {
   // Credit the "went live for review" milestone to the employee (best-effort; never blocks
   // the deploy). Idempotent — guarded by the task's shipPointsAwarded flag.
   try { await awardShipPoints(taskId); } catch (e) { console.error('awardShipPoints', taskId, e?.message || e); }
+  // If this task is a feature step, merging it to main is the cue to start the next step (its
+  // agent now clones the updated main and builds on this one). Best-effort, never throws.
+  await advanceFeature(db, taskId);
   return { ok: true };
 }
 

@@ -6,6 +6,7 @@ import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
 import { chargeApprovedFix } from '../utils/finalize.js';
+import { sessionView } from '../utils/sessionView.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // Customer-facing view of their fix sessions. Returns ONLY safe fields — never the PR
@@ -31,79 +32,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     .get();
 
   return {
-    // "Plan a feature" tasks (type 'plan') share the tasks collection but are NOT fixes —
-    // keep them out of the fix dashboard so the two flows stay cleanly separate.
-    sessions: snap.docs.filter((d) => d.data().type !== 'plan').map((d) => {
-      const t = d.data();
-      const merged = !!(t.deployedTesting || t.deployedProd);
-      const pendingReview = !!t.pendingReview;
-      return {
-        id: d.id,
-        problem: t.prompt ?? '',
-        status: t.status ?? null, // queued | running | complete | failed | needs_quote | quoted | cancelled
-        complexity: t.complexity ?? null,
-        quoteInr: t.status === 'quoted' ? (Number(t.priceInr) || 0) : null,
-        summary: t.resultSummary ?? null,
-        idealDescription: t.idealDescription || '',
-        idealKeywords: Array.isArray(t.idealKeywords)
-          ? t.idealKeywords
-              .map((k) => ({ phrase: String(k?.phrase || ''), why: String(k?.why || '') }))
-              .filter((k) => k.phrase && k.why)
-              .slice(0, 5)
-          : [],
-        changes: Array.isArray(t.filesChanged)
-          ? t.filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
-          : [],
-        previewUrl: t.previewUrl ?? null,
-        buildingPreview: !!t.needsPreview,
-        // Money: what they've already paid, and what tapping "Looks good" will charge now.
-        paidInr: Number(t.finalCharge) || 0,
-        owedInr: pendingReview ? Number(t.currentRoundCharge) || 0 : 0,
-        priceInr: t.priceInr ?? null,
-        // Approval state (approve-before-charge): a finished round waits for the customer.
-        pendingReview,
-        approved: !!t.approved,
-        freeRevisionsLeft: Math.max(0, MAX_FREE_REVISIONS - (Number(t.freeRevisionsUsed) || 0)),
-        // The change request currently being applied — echoed while it runs.
-        revisePrompt: t.revisePrompt ?? null,
-        // The iteration thread: initial fix + each revision, with per-round prompt, summary,
-        // plain-English changes, and what (if anything) that round added to the price.
-        rounds: Array.isArray(t.rounds)
-          ? t.rounds.map((r) => ({
-              kind: r.kind || 'initial', // 'initial' | 'unresolved' | 'new_scope'
-              prompt: String(r.prompt || ''),
-              summary: String(r.summary || ''),
-              changes: Array.isArray(r.changes)
-                ? r.changes.map((c) => String(c || '')).filter(Boolean).slice(0, 12)
-                : [],
-              idealDescription: String(r.idealDescription || ''),
-              idealKeywords: Array.isArray(r.idealKeywords)
-                ? r.idealKeywords
-                    .map((k) => ({ phrase: String(k?.phrase || ''), why: String(k?.why || '') }))
-                    .filter((k) => k.phrase && k.why)
-                    .slice(0, 5)
-                : [],
-              briefScore: Number(r.briefScore) || 0, // clarity rating shown beside the description
-              addedInr: Number(r.addedInr) || 0,
-              free: r.kind !== 'initial' && (Number(r.addedInr) || 0) === 0,
-              charged: !!r.charged,
-              at: r.at ?? null,
-            }))
-          : [],
-        canApprove: t.status === 'complete' && pendingReview,
-        canRevise: t.status === 'complete' && !merged,
-        // Self-deploy: the fix is finished + approved (paid / auto-charged) and it produced a
-        // PR. Stays available through the testing→production flow — hidden only once it's live
-        // in PRODUCTION. Testing is open to every org member; going live (production) needs the
-        // per-user grant. The dashboard uses these to show Testing vs Go-live and the ✓ states.
-        canDeployTesting: t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
-        canDeployProd: userCanDeployProd && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
-        deployedTesting: !!t.deployedTesting,
-        deployedProd: !!t.deployedProd,
-        deployed: merged,
-        createdAt: t.createdAt?.toMillis?.() ?? null,
-      };
-    }),
+    // Feature steps are filtered out here — they belong to a feature and are shown inside its
+    // card (listMyFeatures), never as standalone fixes. sessionView is the shared task → safe-
+    // view projection used by both this list and a feature's active step.
+    sessions: snap.docs
+      .filter((d) => !d.data().featureId)
+      .map((d) => sessionView(d.data(), d.id, { userCanDeployProd })),
   };
 });
 
