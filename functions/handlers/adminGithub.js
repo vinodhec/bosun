@@ -364,7 +364,10 @@ async function requireCustomerDeploy(db, uid, taskId) {
   return user;
 }
 
-export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
+// Needs ANTHROPIC_API_KEY: deploying a feature step to testing advances the feature
+// (deployTaskToTesting → advanceFeature → startFeatureStep), which dispatches the next step's
+// managed-agent session. Without the secret the Anthropic client can't authenticate.
+export const deployTesting = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
   requireAdmin(request);
   const taskId = String(request.data?.taskId ?? '');
   if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
@@ -378,8 +381,9 @@ export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
   return deployTaskToProd(getFirestore(), taskId);
 });
 
-// Customer self-deploy to TESTING — open to any member of the task's org.
-export const customerDeployTesting = onCall({ region: 'asia-south1' }, async (request) => {
+// Customer self-deploy to TESTING — open to any member of the task's org. Carries
+// ANTHROPIC_API_KEY because advancing a feature step (below) dispatches the next step's session.
+export const customerDeployTesting = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
   const db = getFirestore();
   const taskId = String(request.data?.taskId ?? '');
   await requireCustomerDeploy(db, request.auth?.uid, taskId);
