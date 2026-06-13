@@ -1,6 +1,7 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { classifyComplexity } from './classify.js';
 import { startFixSession, firebaseSAsFromSecret } from './claudeAgent.js';
+import { designContextFromText } from './figma.js';
 import { modelForComplexity, agentIdForModel } from './routeModel.js';
 import { tierFor } from './billing.js';
 
@@ -31,7 +32,7 @@ async function loadRepoContext(db, orgId) {
   const secretData = secretSnap.exists ? secretSnap.data() : {};
   const githubToken = secretData.githubToken;
   if (!githubToken) throw new Error('NO_REPO_CONNECTED');
-  return { gh, githubToken, firebaseSAs: firebaseSAsFromSecret(secretData) };
+  return { gh, githubToken, firebaseSAs: firebaseSAsFromSecret(secretData), org: orgSnap.data(), secretData };
 }
 
 /**
@@ -49,7 +50,12 @@ export async function startFeatureStep(db, featureId, stepIndex) {
   const step = feature.steps?.[stepIndex];
   if (!step) throw new Error('step_not_found');
 
-  const { gh, githubToken, firebaseSAs } = await loadRepoContext(db, feature.orgId);
+  const { gh, githubToken, firebaseSAs, org, secretData } = await loadRepoContext(db, feature.orgId);
+
+  // If the owner's feature request included a Figma link and the org is connected, enrich every
+  // step with the design (exact spec + rendered image) so each step is built pixel-perfect — same
+  // as a standalone fix (createTask). The link lives in feature.prompt, which each step embeds.
+  const figmaDesign = await designContextFromText({ org, secretData, text: feature.prompt });
 
   // The owner sees a clean title/description (displayPrompt); the agent gets the full framing
   // (build on earlier steps, do only this step) via agentPrompt. They're decoupled so the
@@ -98,6 +104,7 @@ export async function startFeatureStep(db, featureId, stepIndex) {
       vaultId: gh.vaultId,
       agentId: agentIdForModel(model),
       firebaseSAs,
+      figmaDesign,
     });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch (e) {
