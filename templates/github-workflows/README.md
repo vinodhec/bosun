@@ -7,7 +7,7 @@ Vercel and Firebase.
 ```
 agent fix ─▶ PR into main   → Vercel native PR Preview on the TESTING project (mav3.0)
   Bosun "Deploy to testing"  → merges PR → main     → Vercel native deploy (mav3.0) + deploy-testing.yml (Firebase)
-  Bosun "Deploy to production" → release ← main      → deploy-prod.yml (Vercel --prod mav3.0prod + Firebase)
+  Bosun "Deploy to production" → tags main's head (v*) → deploy-prod.yml (Vercel --prod mav3.0prod + Firebase)
 ```
 
 **Previews come from the testing project automatically.** `mav3.0` (testing) is Git-connected
@@ -17,7 +17,7 @@ deploys testing on merge to `main`. No custom preview workflow is needed, and pr
 
 So the Actions only do what Vercel's native integration doesn't:
 - **deploy-testing.yml** — Firebase (testing) on push to `main`.
-- **deploy-prod.yml** — Vercel `--prod` (mav3.0prod, via CLI) + Firebase (prod) on push to `release`.
+- **deploy-prod.yml** — Vercel `--prod` (mav3.0prod, via CLI) + Firebase (prod) on a pushed `v*` tag.
 
 ## Install
 1. Copy `deploy-testing.yml` and `deploy-prod.yml` into the repo's `.github/workflows/`.

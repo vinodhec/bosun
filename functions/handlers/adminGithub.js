@@ -9,7 +9,7 @@ import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
-import { mergePullRequest, promoteBranch } from '../utils/github.js';
+import { mergePullRequest, createReleaseTag } from '../utils/github.js';
 import { sanitizeImages } from '../utils/images.js';
 import { requireAdmin } from '../utils/admin.js';
 
@@ -320,8 +320,9 @@ async function deployTaskToTesting(db, taskId) {
   return { ok: true };
 }
 
-// Deploy to PRODUCTION = promote `release` to `main`'s head. The push triggers the
-// customer's deploy-prod GitHub Action (Vercel --prod + Firebase prod).
+// Deploy to PRODUCTION = create a release tag at `main`'s head. Pushing the tag triggers the
+// customer's deploy-prod GitHub Action (Vercel --prod + Firebase prod); Bosun never deploys
+// directly. Assumes the fix is already on `main` (deploy to testing merges the PR first).
 async function deployTaskToProd(db, taskId) {
   const ref = db.collection('tasks').doc(taskId);
   const snap = await ref.get();
@@ -332,32 +333,31 @@ async function deployTaskToProd(db, taskId) {
   const token = secret.exists ? secret.data().githubToken : null;
   if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
 
-  const result = await promoteBranch(t.repoFullName, 'main', 'release', token);
-  await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp() });
+  const result = await createReleaseTag(t.repoFullName, 'main', token);
+  await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp(), releaseTag: result.tag });
   return { ok: true, ...result };
 }
 
-// Gate for CUSTOMER self-deploy: the signed-in user must belong to the task's org AND that
-// org must have self-deploy switched on (adminSetOrgDeploy). We also require the fix to be
-// finished and APPROVED (paid / auto-charged) before it can go anywhere — never deploy work
-// that's still pending the customer's review. Returns nothing; throws on any failure.
+// Base gate for CUSTOMER self-deploy: the signed-in user must belong to the task's org, and
+// the fix must be finished and APPROVED (paid / auto-charged) before it can go anywhere —
+// never deploy work that's still pending the customer's review. Testing self-deploy is open
+// to every org member; production is gated separately (per-user canDeployProd, checked by the
+// prod entry point below). Returns the caller's user-doc data; throws on any failure.
 async function requireCustomerDeploy(db, uid, taskId) {
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
   if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
   const userSnap = await db.collection('users').doc(uid).get();
-  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  const user = userSnap.exists ? userSnap.data() : null;
+  const orgId = user?.orgId || null;
   if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
   const taskSnap = await db.collection('tasks').doc(taskId).get();
   if (!taskSnap.exists) throw new HttpsError('not-found', 'Task not found.');
   const t = taskSnap.data();
   if (t.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your task.');
-  const orgSnap = await db.collection('organisations').doc(orgId).get();
-  if (!orgSnap.exists || orgSnap.data().allowCustomerDeploy !== true) {
-    throw new HttpsError('permission-denied', 'SELF_DEPLOY_DISABLED');
-  }
   if (t.status !== 'complete' || t.approved !== true) {
     throw new HttpsError('failed-precondition', 'NOT_DEPLOYABLE');
   }
+  return user;
 }
 
 export const deployTesting = onCall({ region: 'asia-south1' }, async (request) => {
@@ -374,7 +374,7 @@ export const deployProd = onCall({ region: 'asia-south1' }, async (request) => {
   return deployTaskToProd(getFirestore(), taskId);
 });
 
-// Customer self-deploy (only when the org's allowCustomerDeploy toggle is on).
+// Customer self-deploy to TESTING — open to any member of the task's org.
 export const customerDeployTesting = onCall({ region: 'asia-south1' }, async (request) => {
   const db = getFirestore();
   const taskId = String(request.data?.taskId ?? '');
@@ -382,9 +382,14 @@ export const customerDeployTesting = onCall({ region: 'asia-south1' }, async (re
   return deployTaskToTesting(db, taskId);
 });
 
+// Customer self-deploy to PRODUCTION (go live) — gated per-user by the admin-granted
+// canDeployProd flag (adminSetUserDeploy). Testing is open to all; going live is not.
 export const customerDeployProd = onCall({ region: 'asia-south1' }, async (request) => {
   const db = getFirestore();
   const taskId = String(request.data?.taskId ?? '');
-  await requireCustomerDeploy(db, request.auth?.uid, taskId);
+  const user = await requireCustomerDeploy(db, request.auth?.uid, taskId);
+  if (user?.canDeployProd !== true) {
+    throw new HttpsError('permission-denied', 'PROD_DEPLOY_NOT_ALLOWED');
+  }
   return deployTaskToProd(db, taskId);
 });

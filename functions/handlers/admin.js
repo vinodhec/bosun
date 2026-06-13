@@ -141,7 +141,6 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       balance: d.data().balance ?? 0,
       repo: d.data().github?.repoFullName ?? null,
       requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
-      allowCustomerDeploy: d.data().allowCustomerDeploy === true, // can the customer self-deploy from the dashboard?
     })),
   };
 });
@@ -160,18 +159,34 @@ export const adminSetOrgApproval = onCall({ region: REGION }, async (request) =>
   return { orgId, requireApproval };
 });
 
-// Toggle whether this org's customers can deploy their own approved fixes (Testing +
-// Production) straight from the dashboard. Default (false) = deploy stays operator-only.
-export const adminSetOrgDeploy = onCall({ region: REGION }, async (request) => {
+// List the people assigned to an org, each with their per-user "can publish to production"
+// grant. Powers the admin's deploy-access controls: publishing to testing is open to every
+// member, but going live (production) is granted per-user (adminSetUserDeploy).
+export const adminListUsers = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
-  const orgId = String(request.data?.orgId ?? '');
-  const allowCustomerDeploy = request.data?.allowCustomerDeploy === true;
+  const orgId = String(request.data?.orgId ?? '').trim();
   if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
   const db = getFirestore();
-  const ref = db.collection('organisations').doc(orgId);
-  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
-  await ref.update({ allowCustomerDeploy });
-  return { orgId, allowCustomerDeploy };
+  const snap = await db.collection('users').where('orgId', '==', orgId).get();
+  const users = snap.docs
+    .map((d) => ({ uid: d.id, email: d.data().email ?? null, canDeployProd: d.data().canDeployProd === true }))
+    .sort((a, b) => (a.email || '').localeCompare(b.email || ''));
+  return { orgId, users };
+});
+
+// Grant / revoke a single user's permission to publish their org's fixes to PRODUCTION (go
+// live). Testing self-deploy is open to every org member; production is gated per-user by this
+// flag, read server-side in customerDeployProd and surfaced via listMySessions.
+export const adminSetUserDeploy = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const uid = String(request.data?.uid ?? '').trim();
+  const canDeployProd = request.data?.canDeployProd === true;
+  if (!uid) throw new HttpsError('invalid-argument', 'uid required.');
+  const db = getFirestore();
+  const ref = db.collection('users').doc(uid);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'User not found.');
+  await ref.update({ canDeployProd });
+  return { uid, canDeployProd };
 });
 
 // Quote a BIG job (a 'large' task parked in needs_quote / needs_requote). The operator

@@ -15,15 +15,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
 
   const db = getFirestore();
 
-  // Whether this customer's org may self-deploy (operator toggle). One read, applied to every
-  // card's `canDeploy` below — the PR link itself is never exposed; deploy goes by taskId.
+  // Whether this customer may publish to PRODUCTION (go live). Per-user grant, set by the
+  // operator (adminSetUserDeploy). One read, applied to every card's `canDeployProd` below.
+  // Publishing to testing is open to every org member; the PR link is never exposed —
+  // deploy goes by taskId.
   const userSnap = await db.collection('users').doc(uid).get();
-  const orgId = userSnap.exists ? userSnap.data().orgId : null;
-  let allowCustomerDeploy = false;
-  if (orgId) {
-    const orgSnap = await db.collection('organisations').doc(orgId).get();
-    allowCustomerDeploy = orgSnap.exists && orgSnap.data().allowCustomerDeploy === true;
-  }
+  const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
 
   const snap = await db
     .collection('tasks')
@@ -92,11 +89,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
           : [],
         canApprove: t.status === 'complete' && pendingReview,
         canRevise: t.status === 'complete' && !merged,
-        // Self-deploy: only when the org allows it, the fix is finished + approved (paid /
-        // auto-charged), and it produced a PR. Stays available through the testing→production
-        // flow — we hide it only once it's live in PRODUCTION. Per-environment flags below let
-        // the dashboard show "✓ on testing" / "✓ live" and disable the testing re-merge.
-        canDeploy: allowCustomerDeploy && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
+        // Self-deploy: the fix is finished + approved (paid / auto-charged) and it produced a
+        // PR. Stays available through the testing→production flow — hidden only once it's live
+        // in PRODUCTION. Testing is open to every org member; going live (production) needs the
+        // per-user grant. The dashboard uses these to show Testing vs Go-live and the ✓ states.
+        canDeployTesting: t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
+        canDeployProd: userCanDeployProd && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
         deployedTesting: !!t.deployedTesting,
         deployedProd: !!t.deployedProd,
         deployed: merged,

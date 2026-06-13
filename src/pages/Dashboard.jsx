@@ -187,6 +187,12 @@ function SessionCard({ session: s, onRevised }) {
   const revising = s.status === 'running' && !!s.summary; // re-running with a prior result
   const noFreeLeft = (s.freeRevisionsLeft ?? 0) <= 0;
 
+  // Self-deploy availability. Publishing to testing is open to every org member; going live
+  // (production) is allowed only for people the operator has granted it to (canDeployProd).
+  const canDeployTesting = s.canDeployTesting && !s.deployedTesting;
+  const canGoLive = !!s.canDeployProd;
+  const showDeploy = canDeployTesting || canGoLive;
+
   const approve = async () => {
     setBusy(true); setErr('');
     try {
@@ -368,13 +374,13 @@ function SessionCard({ session: s, onRevised }) {
               </button>
             )}
 
-            {/* Self-deploy (only when the operator enabled it for this org). Mirrors the admin
-                control: pick Testing or Production, with a confirm before going live. */}
-            {s.canDeploy && !open && (
+            {/* Self-deploy. Publishing to testing is open to everyone in the organisation;
+                going live (production) shows only for people the operator has allowed. */}
+            {showDeploy && !open && (
               deployOpen ? (
                 <>
                   <span className="text-sm text-ink-soft">Deploy to:</span>
-                  {!s.deployedTesting && (
+                  {canDeployTesting && (
                     <button
                       onClick={() => act(customerDeployTesting)}
                       disabled={busy}
@@ -383,13 +389,15 @@ function SessionCard({ session: s, onRevised }) {
                       {busy ? 'Deploying…' : 'Testing'}
                     </button>
                   )}
-                  <button
-                    onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
-                    disabled={busy}
-                    className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
-                  >
-                    {busy ? 'Publishing…' : 'Go live'}
-                  </button>
+                  {canGoLive && (
+                    <button
+                      onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
+                      disabled={busy}
+                      className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                    >
+                      {busy ? 'Publishing…' : 'Go live'}
+                    </button>
+                  )}
                   <button onClick={() => setDeployOpen(false)} disabled={busy} className="px-2 py-2 text-sm font-medium text-ink-soft underline disabled:opacity-60">
                     cancel
                   </button>

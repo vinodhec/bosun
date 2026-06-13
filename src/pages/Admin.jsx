@@ -7,7 +7,8 @@ import {
   adminListTransactions,
   adminSetUserOrg,
   adminSetOrgApproval,
-  adminSetOrgDeploy,
+  adminListUsers,
+  adminSetUserDeploy,
   adminQuoteTask,
   adminStopTask,
   adminSetGithubRepo,
@@ -352,6 +353,71 @@ function Ledger({ orgs }) {
   );
 }
 
+// Per-user "go live" access. Publishing a fix to testing is open to everyone in an org; making
+// it live (production) is granted per person here. Pick an org, then switch each teammate on/off.
+function DeployAccess({ orgs }) {
+  const [orgId, setOrgId] = useState('');
+  const [users, setUsers] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = async (id) => {
+    setOrgId(id); setUsers([]); setErr(''); setMsg('');
+    if (!id) return;
+    setBusy(true);
+    try { const { data } = await adminListUsers({ orgId: id }); setUsers(data.users || []); }
+    catch { setErr('Failed to load people.'); }
+    finally { setBusy(false); }
+  };
+
+  const toggle = async (u) => {
+    setBusy(true); setErr(''); setMsg('');
+    const next = !u.canDeployProd;
+    try {
+      await adminSetUserDeploy({ uid: u.uid, canDeployProd: next });
+      setUsers((list) => list.map((x) => (x.uid === u.uid ? { ...x, canDeployProd: next } : x)));
+      setMsg(`${u.email || 'User'} ${next ? 'can now go live.' : 'is testing-only now.'}`);
+    } catch { setErr('Could not update that person.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">Who can go live</h2>
+      <p className="text-xs text-ink-soft">Everyone in the organisation can publish to testing. Only the people you switch on here can make a fix live (production).</p>
+      <select className={field} value={orgId} onChange={(e) => load(e.target.value)}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {msg && <p className="text-sm text-green-700">{msg}</p>}
+      {orgId && !busy && users.length === 0 && <p className="text-sm text-ink-soft">Nobody is assigned to this organisation yet.</p>}
+      {users.length > 0 && (
+        <ul className="space-y-2">
+          {users.map((u) => (
+            <li key={u.uid} className="flex items-center justify-between gap-3 rounded-lg border border-line p-3 text-sm">
+              <span className="truncate text-ink">{u.email || u.uid}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className={`text-xs ${u.canDeployProd ? 'text-green-700' : 'text-ink-soft'}`}>
+                  {u.canDeployProd ? 'can go live' : 'testing only'}
+                </span>
+                <button
+                  className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => toggle(u)}
+                >
+                  {u.canDeployProd ? 'Revoke go-live' : 'Allow go-live'}
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -490,18 +556,6 @@ export default function Admin() {
                       {o.requireApproval ? 'Switch to auto-charge' : 'Require “Looks good”'}
                     </button>
                   </div>
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="text-ink-soft">
-                      self-deploy: {o.allowCustomerDeploy ? 'customer can go live' : 'operator only'}
-                    </span>
-                    <button
-                      className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
-                      disabled={busy}
-                      onClick={() => run(() => adminSetOrgDeploy({ orgId: o.id, allowCustomerDeploy: !o.allowCustomerDeploy }), 'Self-deploy setting updated.')}
-                    >
-                      {o.allowCustomerDeploy ? 'Disable self-deploy' : 'Allow self-deploy'}
-                    </button>
-                  </div>
                 </li>
               ))
             )}
@@ -516,7 +570,10 @@ export default function Admin() {
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Add credits</h2>
-          <input className={field} value={credit.orgId} onChange={(e) => setCredit({ ...credit, orgId: e.target.value })} placeholder="orgId" />
+          <select className={field} value={credit.orgId} onChange={(e) => setCredit({ ...credit, orgId: e.target.value })}>
+            <option value="">Select organisation…</option>
+            {orgs.map((o) => <option key={o.id} value={o.id}>{o.name} — {formatINR(o.balance)}</option>)}
+          </select>
           <input className={field} type="number" value={credit.amount} onChange={(e) => setCredit({ ...credit, amount: e.target.value })} placeholder="amount (₹)" />
           <button className={btn} disabled={busy || !credit.orgId || !credit.amount} onClick={() => run(() => adminAddCredits({ orgId: credit.orgId.trim(), amount: Number(credit.amount) }), 'Credits added.')}>Add credits</button>
         </section>
@@ -524,7 +581,10 @@ export default function Admin() {
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Deduct credits</h2>
           <p className="text-xs text-ink-soft">Balance is allowed to go negative. Use this for refunds-in-reverse, fee corrections, or adjustments.</p>
-          <input className={field} value={deduct.orgId} onChange={(e) => setDeduct({ ...deduct, orgId: e.target.value })} placeholder="orgId" />
+          <select className={field} value={deduct.orgId} onChange={(e) => setDeduct({ ...deduct, orgId: e.target.value })}>
+            <option value="">Select organisation…</option>
+            {orgs.map((o) => <option key={o.id} value={o.id}>{o.name} — {formatINR(o.balance)}</option>)}
+          </select>
           <input className={field} type="number" value={deduct.amount} onChange={(e) => setDeduct({ ...deduct, amount: e.target.value })} placeholder="amount (₹)" />
           <input className={field} value={deduct.description} onChange={(e) => setDeduct({ ...deduct, description: e.target.value })} placeholder="reason (recorded in ledger)" />
           <button
@@ -555,10 +615,15 @@ export default function Admin() {
           <button className={btn} disabled={busy || !assign.email || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ email: assign.email.trim(), orgId: assign.orgId }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
         </section>
 
+        <DeployAccess orgs={orgs} />
+
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Connect GitHub repo</h2>
           <p className="text-xs text-ink-soft">owner/repo + a token (Contents RW + Pull requests RW). Stored backend-only; sets up the org’s MCP vault.</p>
-          <input className={field} value={gh.orgId} onChange={(e) => setGh({ ...gh, orgId: e.target.value })} placeholder="orgId" />
+          <select className={field} value={gh.orgId} onChange={(e) => setGh({ ...gh, orgId: e.target.value })}>
+            <option value="">Select organisation…</option>
+            {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}{o.repo ? ` — ${o.repo}` : ''}</option>)}
+          </select>
           <input className={field} value={gh.repoFullName} onChange={(e) => setGh({ ...gh, repoFullName: e.target.value })} placeholder="owner/repo" />
           <input className={field} value={gh.token} onChange={(e) => setGh({ ...gh, token: e.target.value })} placeholder="GitHub token (github_pat_… / ghp_…)" />
           <button className={btn} disabled={busy || !gh.orgId || !gh.repoFullName || !gh.token} onClick={() => run(() => adminSetGithubRepo({ orgId: gh.orgId.trim(), repoFullName: gh.repoFullName.trim(), token: gh.token.trim() }).then(() => setGh({ orgId: '', repoFullName: '', token: '' })), 'GitHub repo connected.')}>Connect repo</button>
@@ -737,7 +802,7 @@ export default function Admin() {
                         </button>
                         <button className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
                           disabled={busy}
-                          onClick={() => { if (window.confirm('Promote release → PRODUCTION (vercel --prod + firebase)?')) { setDeployFor(null); deploy(() => deployProd({ taskId: t.id }), 'Promoting → production.'); } }}>
+                          onClick={() => { if (window.confirm('Tag a release → PRODUCTION? The repo’s Actions deploy it (vercel --prod + firebase).')) { setDeployFor(null); deploy(() => deployProd({ taskId: t.id }), 'Tagged a release → production deploy started.'); } }}>
                           Production
                         </button>
                         <button className="text-xs text-ink-soft underline disabled:opacity-60" disabled={busy} onClick={() => setDeployFor(null)}>cancel</button>
