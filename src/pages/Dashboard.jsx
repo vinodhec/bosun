@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, requestCheckup, listMyCheckups } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -47,6 +47,8 @@ export default function Dashboard() {
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
   const [features, setFeatures] = useState(null);
+  const [checkups, setCheckups] = useState(null);
+  const composerRef = useRef(null);
 
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
@@ -67,9 +69,26 @@ export default function Dashboard() {
       setFeatures((prev) => prev ?? []);
     }
   }, []);
+  const refreshCheckups = useCallback(async () => {
+    try {
+      const { data } = await listMyCheckups();
+      setCheckups(data?.checkups ?? []);
+    } catch {
+      setCheckups((prev) => prev ?? []);
+    }
+  }, []);
   const refreshAll = useCallback(async () => {
-    await Promise.all([refresh(), refreshFeatures()]);
-  }, [refresh, refreshFeatures]);
+    await Promise.all([refresh(), refreshFeatures(), refreshCheckups()]);
+  }, [refresh, refreshFeatures, refreshCheckups]);
+
+  // Drop an idea from the check-up straight into "Plan a feature": switch tabs, pre-fill the
+  // composer with the idea's details (the owner can edit before planning), and scroll up to it.
+  const planFromIdea = useCallback((text) => {
+    setMode('feature');
+    setProblem(text);
+    setErr('');
+    setTimeout(() => composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  }, []);
 
   // Initial load + light polling while anything is in progress — a live fix, or a feature whose
   // steps are still running / advancing. Latest state is read via functional setState so the
@@ -81,6 +100,7 @@ export default function Dashboard() {
       let live = false;
       setSessions((prev) => { if (prev?.some((s) => isLive(s.status))) live = true; return prev; });
       setFeatures((prev) => { if (prev?.some((f) => f.status === 'running' || f.status === 'planning')) live = true; return prev; });
+      setCheckups((prev) => { if (prev?.some((c) => c.status === 'running')) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
@@ -147,7 +167,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        <section className="rounded-2xl border border-line bg-white p-5 sm:p-6">
+        <section ref={composerRef} className="rounded-2xl border border-line bg-white p-5 sm:p-6">
           {/* Pick a quick one-off fix, or plan a whole feature that we build as steps. */}
           <div className="mb-4 inline-flex rounded-xl bg-canvas p-1 ring-1 ring-line">
             <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
@@ -198,6 +218,10 @@ export default function Dashboard() {
               : 'You’re only charged after the fix is done.'}
           </p>
         </section>
+
+        {connected && (
+          <CheckupSection checkups={checkups} onChanged={refreshAll} onPlanIdea={planFromIdea} />
+        )}
 
         {Array.isArray(features) && features.length > 0 && (
           <section className="space-y-3">
@@ -538,6 +562,111 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
         <p className="mt-1 text-ink-soft">No charge was applied. Please try again.</p>
       )}
     </div>
+  );
+}
+
+// Value/effort badges for a check-up idea. Value high = green (worth doing); effort low = green
+// (easy). The plain label carries the meaning; colour just reinforces it at a glance.
+const VALUE_BADGE = {
+  high:   { cls: 'text-good ring-good',     label: 'High value' },
+  medium: { cls: 'text-warn ring-warn',     label: 'Medium value' },
+  low:    { cls: 'text-ink-soft ring-line', label: 'Low value' },
+};
+const EFFORT_BADGE = {
+  low:    { cls: 'text-good ring-good',     label: 'Low effort' },
+  medium: { cls: 'text-ink-soft ring-line', label: 'Medium effort' },
+  high:   { cls: 'text-warn ring-warn',     label: 'High effort' },
+};
+function Badge({ cls, label }) {
+  return (
+    <span className={`whitespace-nowrap rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold ring-1 ${cls}`}>
+      {label}
+    </span>
+  );
+}
+
+// "Check my website": a free AI review of the whole site → a prioritised list of improvement ideas,
+// each tagged with value (how much it helps) + effort (how big a change). The owner taps "Add to
+// plan" on any idea to pre-fill "Plan a feature" with it, then edits and plans it. Shows the most
+// recent check-up; "Check again" re-runs it.
+function CheckupSection({ checkups, onChanged, onPlanIdea }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const latest = Array.isArray(checkups) && checkups.length > 0 ? checkups[0] : null;
+  const running = latest?.status === 'running';
+  const items = latest?.status === 'ready' && Array.isArray(latest.items) ? latest.items : [];
+
+  const start = async () => {
+    setBusy(true); setErr('');
+    try {
+      await requestCheckup();
+      await onChanged();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="rounded-2xl border border-line bg-white p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-bold text-ink">Not sure what to improve?</h2>
+          <p className="mt-1 text-sm text-ink-soft">
+            We’ll look over your whole website and suggest ideas — what helps most, and how big each one is.
+            It’s free, and you can turn any idea into a plan in one tap.
+          </p>
+        </div>
+        {!running && (
+          <button
+            onClick={start}
+            disabled={busy}
+            className="shrink-0 rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+          >
+            {busy ? 'Starting…' : (items.length > 0 || latest?.status === 'failed' ? 'Check again' : 'Check my website →')}
+          </button>
+        )}
+      </div>
+
+      {err && <p className="mt-2 text-sm text-bad">{err}</p>}
+
+      {running && (
+        <p className="mt-3 text-sm text-ink-soft">Looking over your website… this takes a few minutes. You can leave this open.</p>
+      )}
+      {latest?.status === 'failed' && !running && (
+        <p className="mt-3 text-sm text-ink-soft">We couldn’t finish the check-up — you weren’t charged. Please try again.</p>
+      )}
+
+      {items.length > 0 && !running && (
+        <>
+          <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-ink-soft">Ideas to improve your website</p>
+          <ul className="mt-2 space-y-2">
+            {items.map((it, i) => (
+              <li key={i} className="rounded-xl border border-line bg-canvas p-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-semibold text-ink">{it.title || 'Suggestion'}</span>
+                  {it.category && (
+                    <span className="rounded-full bg-line/60 px-2 py-0.5 text-[11px] font-medium text-ink-soft">{it.category}</span>
+                  )}
+                  <span className="ml-auto flex gap-1.5">
+                    <Badge {...(VALUE_BADGE[it.value] || VALUE_BADGE.medium)} />
+                    <Badge {...(EFFORT_BADGE[it.effort] || EFFORT_BADGE.medium)} />
+                  </span>
+                </div>
+                {it.description && <p className="mt-1 text-sm text-ink-soft">{it.description}</p>}
+                <button
+                  onClick={() => onPlanIdea(it.description ? `${it.title}: ${it.description}` : it.title)}
+                  className="mt-2 rounded-lg border border-brand-600 px-3 py-1.5 text-sm font-semibold text-brand-600 transition hover:bg-brand-50"
+                >
+                  Add to plan →
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }
 

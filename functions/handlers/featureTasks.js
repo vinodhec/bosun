@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { startPlanningSession } from '../utils/featurePlan.js';
+import { startCheckupSession } from '../utils/checkup.js';
 import { startFeatureStep } from '../utils/featureRun.js';
 import { sessionView } from '../utils/sessionView.js';
 import { designContextFromText } from '../utils/figma.js';
@@ -13,6 +14,11 @@ import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 // cheap. pollSessions terminates a planning session that crosses either.
 const PLANNING_MAX_USD = 0.75;
 const PLANNING_MAX_SEC = 600;
+
+// A check-up reads the WHOLE site (not just the files for one ask), so it gets a touch more
+// headroom than a single-feature plan. pollSessions terminates a check-up that crosses either.
+const CHECKUP_MAX_USD = 1.0;
+const CHECKUP_MAX_SEC = 600;
 
 // Feature lifecycle: planning → plan_review → running → complete (plan_failed on a failed plan;
 // refine/redo loop back to planning). Planning is a CODE-AWARE managed-agent session (clone repo +
@@ -365,4 +371,101 @@ export const retryFeatureStep = onCall({ region: 'asia-south1', secrets: [ANTHRO
     throw new HttpsError('internal', 'We could not start this step. You were not charged.');
   }
   return { ok: true };
+});
+
+// "Check my website": kick off a code-aware review session that explores the WHOLE site and
+// proposes a prioritised list of improvement ideas (each tagged value + effort). It's FREE — we
+// absorb the cost (like classify), because the check-up exists to feed the paid plan/fix flow: the
+// owner picks an idea, it pre-fills "Plan a feature", and they plan it from there. Async: the
+// check-up is created `running`; pollSessions parses the items and flips it to `ready`. A check-up
+// is a kind:'checkup' task so pollSessions picks it up (mirrors the planning session).
+export const requestCheckup = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+
+  const db = getFirestore();
+  const userSnap = await db.collection('users').doc(uid).get();
+  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
+  const { gh, secretData } = await loadOrgCtx(db, orgId);
+
+  const checkupRef = db.collection('checkups').doc();
+  await checkupRef.set({
+    userId: uid,
+    orgId,
+    repoFullName: gh.repoFullName,
+    status: 'running',
+    items: [],
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  try {
+    const { sessionId, firebaseFileIds } = await startCheckupSession({
+      repoUrl: `https://github.com/${gh.repoFullName}`,
+      githubToken: secretData.githubToken,
+      vaultId: gh.vaultId,
+      agentId: agentIdForModel('sonnet'),
+      firebaseSAs: firebaseSAsFromSecret(secretData),
+    });
+    const taskRef = db.collection('tasks').doc();
+    await taskRef.set({
+      userId: uid,
+      orgId,
+      checkupId: checkupRef.id,
+      kind: 'checkup',
+      status: 'running',
+      sessionId,
+      firebaseFileIds: firebaseFileIds || [],
+      model: 'sonnet',
+      maxBudgetUsd: CHECKUP_MAX_USD,
+      maxSeconds: CHECKUP_MAX_SEC,
+      reviewedCostUsd: 0,
+      reviewedSeconds: 0,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await checkupRef.update({ taskId: taskRef.id });
+  } catch (e) {
+    console.error('requestCheckup:dispatch', checkupRef.id, e?.message || e);
+    await checkupRef.update({ status: 'failed', error: 'checkup_dispatch_failed' });
+    throw new HttpsError('internal', 'We could not start the check-up. You were not charged.');
+  }
+
+  return { checkupId: checkupRef.id };
+});
+
+// Customer-facing view of their website check-ups, newest first. Each carries the prioritised
+// improvement ideas (value + effort) once ready, so the dashboard can show them and let the owner
+// send any one into "Plan a feature". No money fields — the check-up itself is free.
+export const listMyCheckups = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+
+  const snap = await db
+    .collection('checkups')
+    .where('userId', '==', uid)
+    .orderBy('createdAt', 'desc')
+    .limit(5)
+    .get();
+  if (snap.empty) return { checkups: [] };
+
+  const norm = (v, fallback, allowed) => (allowed.includes(v) ? v : fallback);
+  const checkups = snap.docs.map((d) => {
+    const c = d.data();
+    const items = Array.isArray(c.items) ? c.items.map((it) => ({
+      title: it.title || '',
+      description: it.description || '',
+      value: norm(it.value, 'medium', ['low', 'medium', 'high']),
+      effort: norm(it.effort, 'medium', ['low', 'medium', 'high']),
+      category: it.category || '',
+    })) : [];
+    return {
+      id: d.id,
+      status: c.status || 'running', // running | ready | failed
+      items,
+      createdAt: c.createdAt?.toMillis?.() ?? null,
+    };
+  });
+
+  return { checkups };
 });
