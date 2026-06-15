@@ -19,6 +19,10 @@ export const reviseFeaturePlan = httpsCallable(functions, 'reviseFeaturePlan');
 export const addFeatureChange = httpsCallable(functions, 'addFeatureChange');
 export const listMyFeatures = httpsCallable(functions, 'listMyFeatures');
 export const retryFeatureStep = httpsCallable(functions, 'retryFeatureStep');
+// "Check my website": AI review of the whole site → prioritised improvement ideas (value + effort)
+// the owner can send into "Plan a feature". The check-up itself is free.
+export const requestCheckup = httpsCallable(functions, 'requestCheckup');
+export const listMyCheckups = httpsCallable(functions, 'listMyCheckups');
 
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');

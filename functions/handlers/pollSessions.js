@@ -4,7 +4,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
-import { priceForPlanning } from '../utils/billing.js';
+import { extractCheckup } from '../utils/checkup.js';
+import { priceForPlanning, computeCharge } from '../utils/billing.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -63,6 +64,47 @@ async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
       updatedAt: FieldValue.serverTimestamp(),
     });
     tx.update(taskRef, { status: 'complete', actualCostUsd: costUsd, reviewedCostUsd: costUsd });
+  });
+  await deleteSessionFiles(client, task);
+}
+
+// A check-up session (kind:'checkup') ended without usable items → mark the task + check-up failed.
+// Check-ups are FREE, so nothing is charged either way (mirrors failPlan).
+async function failCheckup(db, taskSnap, task, reason, client) {
+  await taskSnap.ref.update({ status: 'failed', error: reason });
+  if (task.checkupId) {
+    await db.collection('checkups').doc(task.checkupId).update({ status: 'failed', error: reason }).catch(() => {});
+  }
+  await deleteSessionFiles(client, task);
+}
+
+// A check-up finished with items → write them onto the check-up and open it for the owner. FREE: we
+// RECORD the COGS we absorbed (so admin P&L is honest, exactly like a planning task) but never
+// charge and never touch the wallet. Idempotent: guarded on the task still being 'running' so two
+// overlapping polls can't run twice.
+async function finalizeCheckupReady(db, taskSnap, task, items, costUsd, client) {
+  const rate = Number(process.env.USD_TO_INR) || undefined;
+  const checkupRef = db.collection('checkups').doc(task.checkupId);
+  const taskRef = taskSnap.ref;
+  await db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(taskRef);
+    if (!tSnap.exists || tSnap.data().status !== 'running') return; // already finalized
+    const cSnap = await tx.get(checkupRef);
+    if (!cSnap.exists) return;
+    tx.update(checkupRef, {
+      items: items.map((it) => ({
+        title: it.title, description: it.description, value: it.value, effort: it.effort, category: it.category,
+      })),
+      status: 'ready',
+      costUsd,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    tx.update(taskRef, {
+      status: 'complete',
+      actualCostUsd: costUsd,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr, // COGS we absorbed (free check-up)
+      reviewedCostUsd: costUsd,
+    });
   });
   await deleteSessionFiles(client, task);
 }
@@ -133,6 +175,26 @@ export const pollSessions = onSchedule(
             if (overSec || overUsd) {
               try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
               await failPlan(db, docSnap, task, overSec ? 'timeout' : 'over_budget', client);
+            }
+            continue;
+          }
+
+          // Check-up sessions finalize like planning but FREE: parse the improvement items and open
+          // the check-up for the owner. No charge. (Reuses the same cap guards.)
+          if (task.kind === 'checkup') {
+            if (DONE.has(status)) {
+              const items = await extractCheckup(client, task.sessionId);
+              if (items.length) await finalizeCheckupReady(db, docSnap, task, items, costUsd, client);
+              else await failCheckup(db, docSnap, task, 'no_items', client);
+              continue;
+            }
+            if (FAILED.has(status)) { await failCheckup(db, docSnap, task, 'agent_failed', client); continue; }
+            await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            const overSec = activeSec > (Number(task.maxSeconds) || 600);
+            const overUsd = costUsd > (Number(task.maxBudgetUsd) || 1.0);
+            if (overSec || overUsd) {
+              try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
+              await failCheckup(db, docSnap, task, overSec ? 'timeout' : 'over_budget', client);
             }
             continue;
           }

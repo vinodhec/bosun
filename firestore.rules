@@ -52,6 +52,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Website check-ups — an AI review of the whole site → a prioritised list of improvement ideas
+    // (each tagged value + effort). Owner-read; all writes backend-only. The customer UI reads these
+    // via the listMyCheckups callable, not directly. No money fields — the check-up itself is free.
+    match /checkups/{checkupId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
       allow read:  if isSignedIn() && request.auth.token.orgId == resource.data.orgId;
