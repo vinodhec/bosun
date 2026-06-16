@@ -38,6 +38,7 @@ export {
   adminSetGithubRepo,
   adminRunFix,
   adminListTasks,
+  adminListFeatures,
   adminStopTask,
   deployTesting,
   deployProd,

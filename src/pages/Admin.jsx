@@ -14,6 +14,7 @@ import {
   adminSetGithubRepo,
   adminRunFix,
   adminListTasks,
+  adminListFeatures,
   adminMetrics,
   confirmQuote,
   approveFix,
@@ -495,6 +496,175 @@ function FigmaConnect({ orgs }) {
   );
 }
 
+// Plain-English lifecycle labels for a "Plan a feature" feature + its steps, plus the badge tones.
+const FEAT_STATUS = {
+  planning: 'Planning…',
+  plan_review: 'Awaiting plan approval',
+  plan_failed: 'Plan failed',
+  running: 'Building',
+  complete: 'Complete ✅',
+};
+const FEAT_TONE = {
+  planning: 'bg-blue-50 text-blue-700',
+  plan_review: 'bg-amber-50 text-amber-700',
+  plan_failed: 'bg-rose-50 text-rose-700',
+  running: 'bg-blue-50 text-blue-700',
+  complete: 'bg-green-50 text-green-700',
+};
+const STEP_STATUS = {
+  proposed: 'Proposed', pending: 'Queued', running: 'Building', built: 'Built (not deployed)',
+  failed: 'Failed', done: 'Done',
+};
+const STEP_TONE = {
+  proposed: 'bg-slate-100 text-slate-600', pending: 'bg-slate-100 text-slate-600',
+  running: 'bg-blue-50 text-blue-700', built: 'bg-indigo-50 text-indigo-700',
+  failed: 'bg-rose-50 text-rose-700', done: 'bg-green-50 text-green-700',
+};
+
+// One paid / cost / margin line (everything already in INR). Mirrors TaskPnL but for the
+// already-converted feature figures (planning COGS is converted server-side).
+function MarginLine({ paidInr, costInr, label = null, className = '' }) {
+  const paid = Number(paidInr) || 0;
+  const cogs = Number(costInr) || 0;
+  const margin = paid - cogs;
+  const pct = paid > 0 ? Math.round((margin / paid) * 100) : cogs > 0 ? -100 : 0;
+  return (
+    <div className={`flex flex-wrap items-center gap-x-2 text-xs text-ink-soft ${className}`}>
+      {label && <span className="font-medium text-ink">{label}</span>}
+      <span>paid <span className="font-semibold text-ink">{formatINR(paid)}</span></span>
+      <span>·</span>
+      <span>our cost <span className="font-semibold text-ink">{inrPrecise(cogs)}</span></span>
+      <span>·</span>
+      <span className={margin >= 0 ? 'text-green-700' : 'text-rose-600'}>
+        margin <span className="font-semibold">{inrPrecise(margin)}</span> ({pct}%)
+      </span>
+    </div>
+  );
+}
+
+// "Plan a feature" — its OWN group in the admin, separate from the raw fix Sessions list. Pick an
+// org (or all), and each feature shows its lifecycle, the planning (breakdown) charge + COGS, every
+// step's status + paid/cost/margin, and the running total for the whole feature. Operator-only:
+// the planning + step session traces deep-link to the Claude platform.
+function Features({ orgs }) {
+  const [orgId, setOrgId] = useState('*'); // '*' = all organisations
+  const [features, setFeatures] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+
+  const load = async (id) => {
+    setBusy(true); setErr('');
+    try {
+      const { data } = await adminListFeatures(id === '*' ? {} : { orgId: id });
+      setFeatures(data.features || []);
+    } catch { setErr('Failed to load features.'); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(orgId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Refresh while anything is mid-flight so the breakdown tracks the poller's per-minute snapshots.
+  useEffect(() => {
+    const inFlight = features.some((f) => ['planning', 'running'].includes(f.status));
+    if (!inFlight) return undefined;
+    const t = setInterval(() => load(orgId), 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [features, orgId]);
+
+  const pick = (id) => { setOrgId(id); load(id); };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-ink">Plan a feature</h2>
+        <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+          disabled={busy} onClick={() => load(orgId)}>Refresh</button>
+      </div>
+      <p className="text-xs text-ink-soft">
+        Bigger asks broken into fix-sized steps. The breakdown (planning) is charged 2× its own cost
+        up front; each step is then billed like a normal fix. Totals below are planning + every step.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="*">All organisations</option>
+        {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {busy && features.length === 0 && <p className="text-sm text-ink-soft">Loading…</p>}
+      {!busy && features.length === 0 && <p className="text-sm text-ink-soft">No features yet.</p>}
+
+      <ul className="space-y-3">
+        {features.map((f) => (
+          <li key={f.id} className="rounded-xl border border-line p-3">
+            <div className="flex items-start justify-between gap-3">
+              <span className="font-medium text-ink">{f.prompt}</span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${FEAT_TONE[f.status] || 'bg-slate-100 text-slate-600'}`}>
+                {FEAT_STATUS[f.status] || f.status}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-ink-soft">
+              {orgId === '*' && f.orgId ? `${orgName[f.orgId] || f.orgId} · ` : ''}
+              {f.createdAt ? new Date(f.createdAt).toLocaleString('en-IN') : ''}
+              {f.userEmail ? ` · ${f.userEmail}` : ''}
+              {f.stepCount ? ` · ${f.stepCount} step${f.stepCount === 1 ? '' : 's'}` : ''}
+              {f.status === 'running' ? ` · on step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}` : ''}
+            </div>
+            {f.error && <p className="mt-1 text-xs text-bad">error: {f.error}</p>}
+
+            {/* Feature total — the headline P&L for the whole feature (planning + all steps). */}
+            <div className="mt-2 rounded-lg bg-canvas/50 p-2">
+              <MarginLine label="Total" paidInr={f.totalPaidInr} costInr={f.totalCostInr} />
+              <div className="mt-1 text-[11px] text-ink-soft">
+                Planning: paid <span className="font-semibold text-ink">{formatINR(f.planningChargeInr)}</span>
+                {' · '}cost <span className="font-semibold text-ink">{inrPrecise(f.planningCostInr)}</span>
+                {' '}({fmtUSD(f.planningCostUsd)})
+                {f.planningSessionUrl && (
+                  <a href={f.planningSessionUrl} target="_blank" rel="noreferrer" className="ml-2 font-semibold text-brand-600">plan session →</a>
+                )}
+              </div>
+            </div>
+
+            {/* Step-by-step breakdown. Before the plan is approved these are just proposals. */}
+            {f.steps.length > 0 && (
+              <ol className="mt-2 space-y-2">
+                {f.steps.map((s, i) => (
+                  <li key={i} className="rounded-lg border border-line/70 p-2 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-medium text-ink">
+                        {i + 1}. {s.title}
+                        <span className="ml-1 rounded bg-slate-100 px-1 py-0.5 text-[10px] font-normal text-slate-600">{s.kind}</span>
+                        {s.added && <span className="ml-1 rounded bg-violet-50 px-1 py-0.5 text-[10px] font-normal text-violet-700">added</span>}
+                      </span>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${STEP_TONE[s.status] || 'bg-slate-100 text-slate-600'}`}>
+                        {STEP_STATUS[s.status] || s.status}
+                      </span>
+                    </div>
+                    {s.description && <p className="mt-0.5 text-ink-soft">{s.description}</p>}
+                    {s.taskId && (s.status === 'running' || s.status === 'built' || s.status === 'done' || s.status === 'failed') && (
+                      <MarginLine paidInr={s.paidInr} costInr={s.costInr} className="mt-1" />
+                    )}
+                    {s.summary && <p className="mt-0.5 text-ink-soft">{s.summary}</p>}
+                    {s.error && <p className="mt-0.5 text-bad">error: {s.error}</p>}
+                    {(s.prUrl || s.previewUrl || s.platformUrl) && (
+                      <div className="mt-1 flex gap-3">
+                        {s.prUrl && <a href={s.prUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
+                        {s.previewUrl && <a href={s.previewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
+                        {s.platformUrl && <a href={s.platformUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Session →</a>}
+                        {s.deployedTesting && <span className="font-medium text-green-700">✓ testing</span>}
+                        {s.deployedProd && <span className="font-medium text-green-700">✓ live</span>}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -770,6 +940,8 @@ export default function Admin() {
             </div>
           )}
         </section>
+
+        <Features orgs={orgs} />
 
         <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Sessions</h2>

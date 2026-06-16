@@ -36,6 +36,7 @@ export const adminBackfillGamification = httpsCallable(functions, 'adminBackfill
 export const adminSetGithubRepo = httpsCallable(functions, 'adminSetGithubRepo');
 export const adminRunFix = httpsCallable(functions, 'adminRunFix');
 export const adminListTasks = httpsCallable(functions, 'adminListTasks');
+export const adminListFeatures = httpsCallable(functions, 'adminListFeatures');
 export const adminStopTask = httpsCallable(functions, 'adminStopTask');
 export const deployTesting = httpsCallable(functions, 'deployTesting');
 export const deployProd = httpsCallable(functions, 'deployProd');
