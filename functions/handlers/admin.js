@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
-import { DEFAULT_USD_TO_INR } from '../utils/billing.js';
+import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
 
@@ -238,7 +238,7 @@ export const adminQuoteTask = onCall({ region: REGION }, async (request) => {
 export const adminMetrics = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
   const db = getFirestore();
-  const rate = Number(process.env.USD_TO_INR) || DEFAULT_USD_TO_INR;
+  const rate = await getUsdToInrRate();
 
   const [orgsSnap, tasksSnap, creditSnap] = await Promise.all([
     db.collection('organisations').get(),

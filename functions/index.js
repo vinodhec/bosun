@@ -48,3 +48,6 @@ export {
 
 // Scheduled: finalize finished sessions → bill the org; terminate over-budget ones.
 export { pollSessions } from './handlers/pollSessions.js';
+
+// Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
+export { refreshExchangeRate } from './handlers/fxRate.js';

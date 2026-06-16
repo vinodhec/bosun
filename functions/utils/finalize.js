@@ -1,5 +1,6 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { computeCharge, priceFromCostUsd } from './billing.js';
+import { getUsdToInrRate } from './fxRate.js';
 import { applyFixAward, applyShipAward } from './gamification.js';
 
 // Gamification points ride the SAME billing transactions, so they're as atomic and
@@ -65,6 +66,9 @@ export function logBillingEvent(evt, data) {
 export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords, briefScore }) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
+  // Resolve the rate once, before the transaction — it may read Firestore / memo, and we don't
+  // want that repeated on transaction retries.
+  const rate = await getUsdToInrRate();
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(taskRef);
     if (!snap.exists) throw new Error('task_not_found');
@@ -75,7 +79,6 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const orgSnap = await tx.get(orgRef); // read before any write (Firestore tx rule)
     const requireApproval = orgSnap.exists && orgSnap.data().requireApproval === true;
 
-    const rate = Number(process.env.USD_TO_INR) || undefined;
     const totalUsd = Number(actualCostUsd) || 0;
     const prevSeenUsd = Number(task.reviewedCostUsd) || 0;
     const roundUsd = Math.max(0, totalUsd - prevSeenUsd); // COGS of THIS round
@@ -282,6 +285,7 @@ export async function awardShipPoints(taskId) {
 export async function markRoundFailure(taskId, { error, actualCostUsd } = {}) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
+  const rate = await getUsdToInrRate();
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(taskRef);
     if (!snap.exists) throw new Error('task_not_found');
@@ -290,7 +294,6 @@ export async function markRoundFailure(taskId, { error, actualCostUsd } = {}) {
     // Failures are NEVER charged (even over-budget terminations) — but we still EAT the
     // token/runtime cost, so record it as our COGS. Admin P&L then shows the fix as a pure
     // loss (paid ₹0, margin = −COGS) instead of pretending it cost nothing.
-    const rate = Number(process.env.USD_TO_INR) || undefined;
     const costUsd = Number(actualCostUsd) || Number(task.actualCostUsd) || Number(task.reviewedCostUsd) || 0;
     const costInr = computeCharge(costUsd, { rate }).actualCostInr; // raw COGS in INR (no markup)
     tx.update(taskRef, {

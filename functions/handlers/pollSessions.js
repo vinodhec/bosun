@@ -5,6 +5,7 @@ import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { priceForPlanning } from '../utils/billing.js';
+import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -37,7 +38,7 @@ async function failPlan(db, taskSnap, task, reason, client) {
 // charge the breakdown (priceForPlanning = 2× the session's real COGS), atomically. Idempotent:
 // guarded on the planning task still being 'running' so two overlapping polls can't double-charge.
 async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
-  const chargeInr = priceForPlanning(costUsd);
+  const chargeInr = priceForPlanning(costUsd, { rate: await getUsdToInrRate() });
   const featureRef = db.collection('features').doc(task.featureId);
   const orgRef = db.collection('organisations').doc(task.orgId);
   const taskRef = taskSnap.ref;
