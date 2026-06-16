@@ -547,13 +547,14 @@ function MarginLine({ paidInr, costInr, label = null, className = '' }) {
 // step's status + paid/cost/margin, and the running total for the whole feature. Operator-only:
 // the planning + step session traces deep-link to the Claude platform.
 function Features({ orgs }) {
-  const [orgId, setOrgId] = useState('*'); // '*' = all organisations
+  const [orgId, setOrgId] = useState(''); // '' = not yet selected
   const [features, setFeatures] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
 
   const load = async (id) => {
+    if (!id) return;
     setBusy(true); setErr('');
     try {
       const { data } = await adminListFeatures(id === '*' ? {} : { orgId: id });
@@ -561,7 +562,6 @@ function Features({ orgs }) {
     } catch { setErr('Failed to load features.'); }
     finally { setBusy(false); }
   };
-  useEffect(() => { load(orgId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   // Refresh while anything is mid-flight so the breakdown tracks the poller's per-minute snapshots.
   useEffect(() => {
@@ -586,12 +586,13 @@ function Features({ orgs }) {
         up front; each step is then billed like a normal fix. Totals below are planning + every step.
       </p>
       <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="">Select organisation…</option>
         <option value="*">All organisations</option>
         {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
       </select>
       {err && <p className="text-sm text-bad">{err}</p>}
       {busy && features.length === 0 && <p className="text-sm text-ink-soft">Loading…</p>}
-      {!busy && features.length === 0 && <p className="text-sm text-ink-soft">No features yet.</p>}
+      {!busy && orgId && features.length === 0 && <p className="text-sm text-ink-soft">No features yet.</p>}
 
       <ul className="space-y-3">
         {features.map((f) => (
