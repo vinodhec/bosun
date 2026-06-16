@@ -14,6 +14,9 @@
  */
 import { usdToInr, DEFAULT_USD_TO_INR } from './currency.js';
 
+/** GST rate Anthropic charges Indian customers on top of raw API cost. */
+export const ANTHROPIC_GST_RATE = 0.18;
+
 /** Minimum charge for any completed fix (INR). */
 export const MIN_CHARGE_INR = 75;
 /**
@@ -69,9 +72,10 @@ export function priceFromCostInr(costInr) {
   return Math.min(Math.ceil(price), MAX_CHARGE_INR);
 }
 
-/** Bracketed price from actual COGS (USD). Converts to INR first, then applies brackets. */
+/** Bracketed price from actual COGS (USD). Inflates by Anthropic GST before converting to INR. */
 export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
-  return priceFromCostInr(usdToInr(Number(costUsd) || 0, rate));
+  const effectiveUsd = (Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  return priceFromCostInr(usdToInr(effectiveUsd, rate));
 }
 
 /**
@@ -91,7 +95,8 @@ export const PLANNING_MULTIPLIER = 2;
  * cheap, so the charge tracks the real cost closely rather than snapping to a tier.
  */
 export function priceForPlanning(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
-  return Math.ceil(usdToInr(Math.max(0, Number(costUsd) || 0), rate) * PLANNING_MULTIPLIER);
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  return Math.ceil(usdToInr(effectiveUsd, rate) * PLANNING_MULTIPLIER);
 }
 
 /**
