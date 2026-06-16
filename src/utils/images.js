@@ -3,7 +3,7 @@
 // createTask as inline base64 — we never upload/persist them (better for privacy, no
 // cleanup). Keep these limits in sync with the server guard in functions/handlers/createTask.js.
 
-export const MAX_IMAGES = 2;
+export const MAX_IMAGES = 5;
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // source-file guard, before downscale
 const MAX_EDGE = 1568; // Anthropic downscales above this anyway — larger costs more for no gain

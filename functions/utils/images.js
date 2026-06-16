@@ -2,7 +2,7 @@ import { HttpsError } from 'firebase-functions/v2/https';
 
 // Screenshots are sent inline as base64 (we never store them — better for privacy and
 // no cleanup). Keep these limits in sync with the client-side guard in src/utils/images.js.
-export const MAX_IMAGES = 2;
+export const MAX_IMAGES = 5;
 const ALLOWED_MEDIA = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const MAX_IMAGE_B64 = 5 * 1024 * 1024; // ~3.7 MB decoded per image — well within callable limits
 
