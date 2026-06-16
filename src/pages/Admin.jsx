@@ -945,7 +945,11 @@ export default function Admin() {
         <Features orgs={orgs} />
 
         <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
-          <h2 className="font-semibold text-ink">Sessions</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="font-semibold text-ink">Sessions</h2>
+            <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+              disabled={!sessOrg} onClick={() => loadSessions(sessOrg)}>Refresh</button>
+          </div>
           <select className={field} value={sessOrg} onChange={(e) => loadSessions(e.target.value)}>
             <option value="">Select organisation…</option>
             {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
