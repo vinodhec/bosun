@@ -4,7 +4,7 @@ import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js'
 import { ANTHROPIC_API_KEY, JAM_PAT } from '../utils/secrets.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession, firebaseSAsFromSecret, platformSessionUrl } from '../utils/claudeAgent.js';
-import { tierFor } from '../utils/billing.js';
+import { tierFor, usdToInr } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
 import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
 import { advanceFeature } from '../utils/featureRun.js';
@@ -258,6 +258,141 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
       };
     }),
   };
+});
+
+// Operator: list "Plan a feature" features as their OWN group (separate from the raw fix
+// Sessions list), newest first, each with the full cost breakdown — the planning (breakdown)
+// charge + its COGS, then every step's paid/cost/margin, plus running totals (planning + steps).
+// Each step is an ordinary fix task, so we batch-fetch those (and the planning task) in one
+// round-trip and compose the view the same way listMyFeatures does, but with operator-only cost
+// + session detail. orgId is optional: omit it for an all-organisations view.
+export const adminListFeatures = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  const db = getFirestore();
+  let q = db.collection('features');
+  if (orgId) q = q.where('orgId', '==', orgId);
+  const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+  const docs = snap.docs;
+  if (!docs.length) return { features: [] };
+
+  // One batched fetch of every step task + each feature's planning task, so the per-feature
+  // breakdown costs no extra round-trips per render.
+  const taskIds = new Set();
+  for (const d of docs) {
+    const f = d.data();
+    for (const s of f.steps || []) if (s.taskId) taskIds.add(s.taskId);
+    if (f.planningTaskId) taskIds.add(f.planningTaskId);
+  }
+  const taskById = {};
+  if (taskIds.size) {
+    const ids = [...taskIds];
+    const taskSnaps = await db.getAll(...ids.map((id) => db.collection('tasks').doc(id)));
+    for (const ts of taskSnaps) if (ts.exists) taskById[ts.id] = ts.data();
+  }
+
+  // Trigger emails (who started the feature) in one batched fetch.
+  const uids = [...new Set(docs.map((d) => d.data().userId).filter(Boolean))];
+  const emailByUid = {};
+  if (uids.length) {
+    const userSnaps = await db.getAll(...uids.map((u) => db.collection('users').doc(u)));
+    for (const us of userSnaps) if (us.exists) emailByUid[us.id] = us.data().email ?? null;
+  }
+
+  const features = docs.map((d) => {
+    const f = d.data();
+    const rawSteps = Array.isArray(f.steps) ? f.steps : [];
+    // Before the plan is approved the steps are just a proposal — no tasks, no cost yet.
+    const isBuilding = f.status === 'running' || f.status === 'complete';
+
+    let paidStepsInr = 0;
+    let costStepsInr = 0;
+    let activeIndex = -1;
+    const steps = rawSteps.map((s, i) => {
+      const t = s.taskId ? taskById[s.taskId] : null;
+      const deployed = !!(t && (t.deployedTesting || t.deployedProd));
+      let status;
+      if (!isBuilding) status = 'proposed';
+      else if (!t) status = 'pending';
+      else if (deployed) status = 'done';
+      else if (t.status === 'failed') status = 'failed';
+      else if (t.status === 'complete') status = 'built'; // finished, not yet deployed
+      else status = 'running';
+      if (t) {
+        paidStepsInr += Number(t.finalCharge) || 0;
+        costStepsInr += Number(t.actualCostInr) || 0;
+      }
+      if ((status === 'running' || status === 'failed') && activeIndex === -1) activeIndex = i;
+      return {
+        title: s.title || '',
+        description: s.description || '',
+        kind: s.kind === 'dynamic' ? 'dynamic' : 'static',
+        added: s.added === true, // a follow-up change appended after the feature completed
+        status,
+        taskId: s.taskId || null,
+        taskStatus: t?.status ?? null,
+        model: t?.model ?? null,
+        paidInr: t ? Number(t.finalCharge) || 0 : 0,
+        costInr: t ? Number(t.actualCostInr) || 0 : 0,
+        costUsd: t ? Number(t.actualCostUsd) || 0 : 0,
+        currentRoundCharge: t?.currentRoundCharge ?? null,
+        pendingReview: t?.pendingReview ?? false,
+        approved: t?.approved ?? false,
+        summary: t?.resultSummary ?? null,
+        error: t?.error ?? null,
+        prUrl: t?.prUrl ?? null,
+        previewUrl: t?.previewUrl ?? null,
+        platformUrl: platformSessionUrl(t?.sessionId),
+        deployedTesting: t?.deployedTesting ?? false,
+        deployedProd: t?.deployedProd ?? false,
+        // Live progress (meaningful only while a step is running).
+        liveCostUsd: t?.liveCostUsd ?? null,
+        liveActiveSeconds: t?.liveActiveSeconds ?? null,
+        liveUpdatedAt: t?.liveUpdatedAt?.toMillis?.() ?? null,
+        maxBudgetUsd: t?.maxBudgetUsd ?? null,
+        maxSeconds: t?.maxSeconds ?? null,
+      };
+    });
+
+    const allDone = isBuilding && rawSteps.length > 0 && steps.every((st) => st.status === 'done');
+    // Lifecycle straight from the doc, upgraded running→complete once every step has shipped.
+    const status = f.status === 'running' && allDone ? 'complete' : (f.status || 'planning');
+
+    // Planning (breakdown) is the one NON-bracketed charge: 2× its own COGS, debited up front.
+    const planningChargeInr = Number(f.planningChargeInr) || 0;
+    const planningCostUsd = Number(f.planningCostUsd) || 0;
+    const planningCostInr = usdToInr(planningCostUsd);
+    const planningTask = f.planningTaskId ? taskById[f.planningTaskId] : null;
+
+    const totalPaidInr = planningChargeInr + paidStepsInr;
+    const totalCostInr = planningCostInr + costStepsInr;
+
+    return {
+      id: d.id,
+      orgId: f.orgId ?? null,
+      prompt: f.prompt || '',
+      status, // planning | plan_review | plan_failed | running | complete
+      error: f.error ?? null,
+      stepCount: rawSteps.length,
+      currentStep: activeIndex === -1 ? rawSteps.length : activeIndex,
+      // Planning (breakdown) charge + COGS + a deep link to the planning session's trace.
+      planningChargeInr,
+      planningCostUsd,
+      planningCostInr,
+      planningStatus: planningTask?.status ?? null,
+      planningSessionUrl: platformSessionUrl(planningTask?.sessionId),
+      // Per-step breakdown + running totals (planning + every step) and the blended margin.
+      steps,
+      totalPaidInr,
+      totalCostInr,
+      totalMarginInr: totalPaidInr - totalCostInr,
+      createdAt: f.createdAt?.toMillis?.() ?? null,
+      updatedAt: f.updatedAt?.toMillis?.() ?? null,
+      userEmail: f.userId ? (emailByUid[f.userId] ?? null) : null,
+    };
+  });
+
+  return { features };
 });
 
 // Deploy to TESTING = merge the PR into its base (main). The push triggers the
