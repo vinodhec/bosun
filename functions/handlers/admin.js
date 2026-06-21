@@ -171,9 +171,16 @@ export const adminListUsers = onCall({ region: REGION }, async (request) => {
   const orgId = String(request.data?.orgId ?? '').trim();
   if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
   const db = getFirestore();
-  const snap = await db.collection('users').where('orgId', '==', orgId).get();
+  // Members are those whose orgIds array contains this org (legacy single-org users were
+  // backfilled to orgIds during migration).
+  const snap = await db.collection('users').where('orgIds', 'array-contains', orgId).get();
   const users = snap.docs
-    .map((d) => ({ uid: d.id, email: d.data().email ?? null, canDeployProd: d.data().canDeployProd === true }))
+    .map((d) => ({
+      uid: d.id,
+      email: d.data().email ?? null,
+      canDeployProd: d.data().canDeployProd === true,
+      orgIds: Array.isArray(d.data().orgIds) ? d.data().orgIds : (d.data().orgId ? [d.data().orgId] : []),
+    }))
     .sort((a, b) => (a.email || '').localeCompare(b.email || ''));
   return { orgId, users };
 });
@@ -378,9 +385,17 @@ export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
   } catch {
     throw new HttpsError('not-found', 'No user with that email (have they signed in yet?).');
   }
-  await db.collection('users').doc(uid).set({ orgId }, { merge: true });
-  // Custom claim lets security rules + the app scope reads to the user's org.
-  await getAuth().setCustomUserClaims(uid, { orgId });
+  // ADD this org to the user's memberships (a user can belong to several). Keep the legacy
+  // single `orgId` as a mirror of the active org, and default the active org to this one if the
+  // user has no valid active org yet.
+  const userRef = db.collection('users').doc(uid);
+  const cur = (await userRef.get()).data() || {};
+  const orgIds = [...new Set([...(Array.isArray(cur.orgIds) ? cur.orgIds : (cur.orgId ? [cur.orgId] : [])), orgId])];
+  const activeOrgId = cur.activeOrgId && orgIds.includes(cur.activeOrgId) ? cur.activeOrgId : orgId;
+  await userRef.set({ orgId: activeOrgId, orgIds, activeOrgId }, { merge: true });
+  // Custom claim lets security rules scope reads to ALL the user's orgs (orgIds), with `orgId`
+  // kept as the active mirror for backward-compatibility.
+  await getAuth().setCustomUserClaims(uid, { orgId: activeOrgId, orgIds });
   // Seed an empty leaderboard row so this teammate shows up on the board from day one
   // (the activation nudge — see docs/GAMIFICATION.md §6.1), never overwriting existing stats.
   const name = email || userRecord.displayName; // email is the board label (unique)
@@ -391,7 +406,31 @@ export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
       { merge: true },
     );
   }
-  return { uid, email, orgId };
+  return { uid, email, orgId, orgIds, activeOrgId };
+});
+
+// Remove an org from a user's memberships. Fixes up the active org + claim if the removed org
+// was the active one. Leaderboard stats are left in place (history).
+export const adminRemoveUserOrg = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const email = String(request.data?.email ?? '').trim().toLowerCase();
+  const orgId = String(request.data?.orgId ?? '');
+  if (!email || !orgId) throw new HttpsError('invalid-argument', 'email and orgId required.');
+  const db = getFirestore();
+  let uid;
+  try {
+    uid = (await getAuth().getUserByEmail(email)).uid;
+  } catch {
+    throw new HttpsError('not-found', 'No user with that email.');
+  }
+  const userRef = db.collection('users').doc(uid);
+  const cur = (await userRef.get()).data() || {};
+  const prev = Array.isArray(cur.orgIds) ? cur.orgIds : (cur.orgId ? [cur.orgId] : []);
+  const orgIds = prev.filter((id) => id !== orgId);
+  const activeOrgId = orgIds.includes(cur.activeOrgId) ? cur.activeOrgId : (orgIds[0] || null);
+  await userRef.set({ orgIds, activeOrgId, orgId: activeOrgId }, { merge: true });
+  await getAuth().setCustomUserClaims(uid, { orgId: activeOrgId, orgIds });
+  return { uid, email, orgId, orgIds, activeOrgId };
 });
 
 // --- Gamification backfill (operator-only) -------------------------------------------------

@@ -8,7 +8,7 @@ export { ensureUser } from './handlers/ensureUser.js';
 // Customer-facing callables.
 export { classifyTask } from './handlers/classifyTask.js';   // step 1: estimate
 export { createTask } from './handlers/createTask.js';        // step 2: run
-export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes
+export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, setActiveOrg } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes + active-org switch
 // Plan a feature → code-aware breakdown, owner reviews/approves/refines, then sequential fix steps.
 export { planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from './handlers/featureTasks.js';
 
@@ -20,6 +20,7 @@ export {
   adminListTransactions,
   adminListOrgs,
   adminSetUserOrg,
+  adminRemoveUserOrg,
   adminSetOrgApproval,
   adminListUsers,
   adminSetUserDeploy,

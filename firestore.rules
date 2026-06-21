@@ -14,6 +14,15 @@ service cloud.firestore {
     function isOwner(uid) {
       return isSignedIn() && request.auth.uid == uid;
     }
+    // Membership: a user may belong to several orgs via the `orgIds` claim (an array). The
+    // legacy single `orgId` claim is still accepted so the rollout is seamless for users whose
+    // token hasn't been re-minted yet.
+    function memberOf(oid) {
+      return isSignedIn() && (
+        (request.auth.token.orgIds != null && (oid in request.auth.token.orgIds)) ||
+        request.auth.token.orgId == oid
+      );
+    }
 
     // User profile — read your own; all writes are backend-only.
     match /users/{userId} {
@@ -25,7 +34,7 @@ service cloud.firestore {
     // `orgId` custom claim the operator sets when assigning a user. Writes are
     // backend-only (admin callables + billing).
     match /organisations/{orgId} {
-      allow read:  if isSignedIn() && request.auth.token.orgId == orgId;
+      allow read:  if memberOf(orgId);
       allow write: if false;
     }
 
@@ -54,7 +63,7 @@ service cloud.firestore {
 
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
-      allow read:  if isSignedIn() && request.auth.token.orgId == resource.data.orgId;
+      allow read:  if memberOf(resource.data.orgId);
       allow write: if false;
     }
 

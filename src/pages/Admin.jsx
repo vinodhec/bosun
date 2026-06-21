@@ -6,6 +6,7 @@ import {
   adminDeductCredits,
   adminListTransactions,
   adminSetUserOrg,
+  adminRemoveUserOrg,
   adminSetOrgApproval,
   adminListUsers,
   adminSetUserDeploy,
@@ -385,10 +386,36 @@ function DeployAccess({ orgs }) {
     finally { setBusy(false); }
   };
 
+  // Org-name lookup for the membership chips.
+  const orgName = (id) => orgs.find((o) => o.id === id)?.name || id;
+
+  // Add the user to another org / remove them from one, then reload the list (a removed user may
+  // drop out of THIS org's view).
+  const addOrg = async (u, addId) => {
+    if (!addId) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminSetUserOrg({ email: u.email, orgId: addId });
+      setUsers((list) => list.map((x) => (x.uid === u.uid ? { ...x, orgIds: [...new Set([...(x.orgIds || []), addId])] } : x)));
+      setMsg(`${u.email || 'User'} added to ${orgName(addId)}.`);
+    } catch { setErr('Could not add that membership (has the user signed in?).'); }
+    finally { setBusy(false); }
+  };
+  const removeOrg = async (u, rmId) => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminRemoveUserOrg({ email: u.email, orgId: rmId });
+      if (rmId === orgId) { await load(orgId); }
+      else { setUsers((list) => list.map((x) => (x.uid === u.uid ? { ...x, orgIds: (x.orgIds || []).filter((id) => id !== rmId) } : x))); }
+      setMsg(`${u.email || 'User'} removed from ${orgName(rmId)}.`);
+    } catch { setErr('Could not remove that membership.'); }
+    finally { setBusy(false); }
+  };
+
   return (
     <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
-      <h2 className="font-semibold text-ink">Who can go live</h2>
-      <p className="text-xs text-ink-soft">Everyone in the organisation can publish to testing. Only the people you switch on here can make a fix live (production).</p>
+      <h2 className="font-semibold text-ink">People &amp; workspaces</h2>
+      <p className="text-xs text-ink-soft">Everyone in an organisation can publish to testing; only people switched on here can go live (production). A person can belong to several organisations — add/remove memberships below (they switch between them with the workspace dropdown).</p>
       <select className={field} value={orgId} onChange={(e) => load(e.target.value)}>
         <option value="">Select organisation…</option>
         {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -399,19 +426,44 @@ function DeployAccess({ orgs }) {
       {users.length > 0 && (
         <ul className="space-y-2">
           {users.map((u) => (
-            <li key={u.uid} className="flex items-center justify-between gap-3 rounded-lg border border-line p-3 text-sm">
-              <span className="truncate text-ink">{u.email || u.uid}</span>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className={`text-xs ${u.canDeployProd ? 'text-green-700' : 'text-ink-soft'}`}>
-                  {u.canDeployProd ? 'can go live' : 'testing only'}
-                </span>
-                <button
-                  className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+            <li key={u.uid} className="space-y-2 rounded-lg border border-line p-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate text-ink">{u.email || u.uid}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className={`text-xs ${u.canDeployProd ? 'text-green-700' : 'text-ink-soft'}`}>
+                    {u.canDeployProd ? 'can go live' : 'testing only'}
+                  </span>
+                  <button
+                    className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+                    disabled={busy}
+                    onClick={() => toggle(u)}
+                  >
+                    {u.canDeployProd ? 'Revoke go-live' : 'Allow go-live'}
+                  </button>
+                </div>
+              </div>
+              {/* Membership chips + add-to-another-org. */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(u.orgIds || []).map((id) => (
+                  <span key={id} className="inline-flex items-center gap-1 rounded-full bg-canvas px-2 py-0.5 text-xs text-ink ring-1 ring-line">
+                    {orgName(id)}
+                    <button
+                      className="text-ink-soft hover:text-bad disabled:opacity-60"
+                      disabled={busy || (u.orgIds || []).length <= 1}
+                      title={(u.orgIds || []).length <= 1 ? 'A user must belong to at least one organisation' : 'Remove from this organisation'}
+                      onClick={() => removeOrg(u, id)}
+                    >✕</button>
+                  </span>
+                ))}
+                <select
+                  className="rounded-lg border border-line bg-white px-2 py-0.5 text-xs text-ink-soft disabled:opacity-60"
+                  value=""
                   disabled={busy}
-                  onClick={() => toggle(u)}
+                  onChange={(e) => { addOrg(u, e.target.value); e.target.value = ''; }}
                 >
-                  {u.canDeployProd ? 'Revoke go-live' : 'Allow go-live'}
-                </button>
+                  <option value="">+ add to organisation…</option>
+                  {orgs.filter((o) => !(u.orgIds || []).includes(o.id)).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                </select>
               </div>
             </li>
           ))}
