@@ -44,6 +44,10 @@ export {
   deployProd,
   customerDeployTesting,
   customerDeployProd,
+  previewTesting,
+  revertTesting,
+  customerPreviewTesting,
+  customerRevertTesting,
 } from './handlers/adminGithub.js';
 
 // Scheduled: finalize finished sessions → bill the org; terminate over-budget ones.

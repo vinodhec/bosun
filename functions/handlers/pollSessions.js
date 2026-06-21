@@ -6,7 +6,7 @@ import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { priceForPlanning } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
-import { fetchPrPreviewUrl } from '../utils/github.js';
+import { fetchPrPreviewUrl, latestWorkflowRun } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 const BETA = 'managed-agents-2026-04-01';
@@ -222,6 +222,40 @@ export const pollSessions = onSchedule(
         }
       } catch (e) {
         console.error('pollSessions:preview', docSnap.id, e?.message || e);
+      }
+    }
+
+    // (3) Firebase-host preview/revert: a deploy was dispatched to the testing site. Watch the
+    // repo's workflow run and clear the "deploying" spinner once it finishes (record any failure).
+    const deploying = await db.collection('tasks').where('previewDeploying', '==', true).limit(20).get();
+    const orgCache = new Map();
+    for (const docSnap of deploying.docs) {
+      const t = docSnap.data();
+      try {
+        if (!t.repoFullName || !t.orgId) { await docSnap.ref.update({ previewDeploying: false }); continue; }
+        let org = orgCache.get(t.orgId);
+        if (!org) {
+          const os = await db.collection('organisations').doc(t.orgId).get();
+          org = os.exists ? os.data() : {};
+          orgCache.set(t.orgId, org);
+        }
+        const secret = await db.collection('orgSecrets').doc(t.orgId).get();
+        const token = secret.exists ? secret.data().githubToken : null;
+        const workflow = org.deploy?.firebase?.testingWorkflow || 'bosun-deploy-testing.yml';
+        if (!token) { await docSnap.ref.update({ previewDeploying: false }); continue; }
+
+        const run = await latestWorkflowRun(t.repoFullName, workflow, token, { branch: t.previewRef || undefined });
+        // Only conclude on a run that started at/after we asked (avoids reading a stale prior run).
+        const reqAt = t.previewRequestedAt?.toMillis?.() ?? 0;
+        if (run && run.status === 'completed' && run.createdAt >= reqAt - 60_000) {
+          await docSnap.ref.update({
+            previewDeploying: false,
+            previewError: run.conclusion === 'success' ? null : `deploy_${run.conclusion || 'failed'}`,
+          });
+        }
+        // else: still queued/in-progress (or no run yet) — leave the spinner; re-check next tick.
+      } catch (e) {
+        console.error('pollSessions:fbpreview', docSnap.id, e?.message || e);
       }
     }
   }

@@ -10,7 +10,7 @@ import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
 import { advanceFeature } from '../utils/featureRun.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
-import { mergePullRequest, createReleaseTag } from '../utils/github.js';
+import { mergePullRequest, createReleaseTag, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { sanitizeImages } from '../utils/images.js';
 import { requireAdmin } from '../utils/admin.js';
 
@@ -37,6 +37,30 @@ export const adminSetGithubRepo = onCall(
       throw new HttpsError('invalid-argument', 'repoFullName must look like owner/repo.');
     }
 
+    // The repo's default/integration branch — what PRs merge into and release tags are cut from.
+    // Defaults to 'main'; set to 'master' (or any branch) per repo. Bosun never assumes 'main'.
+    const baseBranch = String(request.data?.baseBranch ?? 'main').trim() || 'main';
+
+    // Deploy model. 'vercel' (default) = Vercel builds previews automatically and a merge/tag
+    // triggers the repo's Vercel+Firebase Actions (the original flow). 'firebase' = a Firebase-
+    // hosting-only repo with NO automatic preview: Bosun deploys a PR branch to the testing site
+    // on demand (preview), merges on "deploy to testing", and can redeploy the base branch (revert).
+    const deployHost = request.data?.deployHost === 'firebase' ? 'firebase' : 'vercel';
+    const fb = request.data?.firebase || {};
+    const firebaseCfg = deployHost === 'firebase'
+      ? {
+          testingProject: String(fb.testingProject ?? '').trim(),
+          prodProject: String(fb.prodProject ?? '').trim(),
+          testingUrl: String(fb.testingUrl ?? '').trim().replace(/\/$/, ''),
+          // The repo's testing workflow we dispatch for preview/revert (it also runs on a base
+          // push). Defaults to the Bosun-seeded file name.
+          testingWorkflow: String(fb.testingWorkflow ?? 'bosun-deploy-testing.yml').trim(),
+        }
+      : null;
+    if (deployHost === 'firebase' && (!firebaseCfg.testingProject || !firebaseCfg.prodProject)) {
+      throw new HttpsError('invalid-argument', 'firebase.testingProject and firebase.prodProject are required for a Firebase host.');
+    }
+
     const db = getFirestore();
     const orgRef = db.collection('organisations').doc(orgId);
     const orgSnap = await orgRef.get();
@@ -54,7 +78,10 @@ export const adminSetGithubRepo = onCall(
     }
 
     await orgRef.set(
-      { github: { repoFullName, vaultId, connectedAt: FieldValue.serverTimestamp() } },
+      {
+        github: { repoFullName, vaultId, baseBranch, connectedAt: FieldValue.serverTimestamp() },
+        deploy: { host: deployHost, ...(firebaseCfg ? { firebase: firebaseCfg } : {}) },
+      },
       { merge: true }
     );
     await db.collection('orgSecrets').doc(orgId).set(
@@ -449,7 +476,14 @@ async function deployTaskToTesting(db, taskId) {
   if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
 
   await mergePullRequest(t.repoFullName, prNum, token);
-  await ref.update({ deployedTesting: true, deployedTestingAt: FieldValue.serverTimestamp() });
+  // The merge pushes the base branch; for a Firebase host that auto-redeploys the (now merged)
+  // base to the testing site, so any branch-preview that was sitting on testing is superseded.
+  await ref.update({
+    deployedTesting: true,
+    deployedTestingAt: FieldValue.serverTimestamp(),
+    previewActive: false,
+    previewDeploying: false,
+  });
   // Credit the "went live for review" milestone to the employee (best-effort; never blocks
   // the deploy). Idempotent — guarded by the task's shipPointsAwarded flag.
   try { await awardShipPoints(taskId); } catch (e) { console.error('awardShipPoints', taskId, e?.message || e); }
@@ -468,13 +502,86 @@ async function deployTaskToProd(db, taskId) {
   if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
   const t = snap.data();
 
+  const orgSnap = await db.collection('organisations').doc(t.orgId).get();
+  const baseBranch = (orgSnap.exists && orgSnap.data().github?.baseBranch) || 'main';
+
   const secret = await db.collection('orgSecrets').doc(t.orgId).get();
   const token = secret.exists ? secret.data().githubToken : null;
   if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
 
-  const result = await createReleaseTag(t.repoFullName, 'main', token);
+  const result = await createReleaseTag(t.repoFullName, baseBranch, token);
   await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp(), releaseTag: result.tag });
   return { ok: true, ...result };
+}
+
+// --- Firebase-hosting-only: preview a PR branch on the testing site, and revert it. ---
+// These exist because a Firebase host has no automatic per-PR preview (unlike Vercel). Bosun
+// dispatches the repo's testing workflow to build + deploy a branch to the single testing site.
+
+// Load the org's Firebase deploy config + GitHub token, asserting this is a Firebase host.
+async function firebaseDeployCtx(db, task) {
+  const orgSnap = await db.collection('organisations').doc(task.orgId).get();
+  const org = orgSnap.exists ? orgSnap.data() : {};
+  if (org.deploy?.host !== 'firebase') {
+    throw new HttpsError('failed-precondition', 'PREVIEW_NOT_SUPPORTED');
+  }
+  const secret = await db.collection('orgSecrets').doc(task.orgId).get();
+  const token = secret.exists ? secret.data().githubToken : null;
+  if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
+  return {
+    token,
+    baseBranch: org.github?.baseBranch || 'main',
+    workflow: org.deploy?.firebase?.testingWorkflow || 'bosun-deploy-testing.yml',
+    testingUrl: org.deploy?.firebase?.testingUrl || null,
+  };
+}
+
+// PREVIEW = build the task's PR branch and deploy it to the testing site (without merging).
+async function previewFirebaseTesting(db, taskId) {
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = snap.data();
+  if (!t.prUrl) throw new HttpsError('failed-precondition', 'This task has no change to preview.');
+  if (t.deployedTesting || t.deployedProd) throw new HttpsError('failed-precondition', 'ALREADY_DEPLOYED');
+  const prNum = Number(String(t.prUrl).split('/').pop());
+
+  const { token, baseBranch, workflow, testingUrl } = await firebaseDeployCtx(db, t);
+  const headRef = await getPrHeadRef(t.repoFullName, prNum, token);
+  if (!headRef) throw new HttpsError('failed-precondition', 'Could not find the change to preview.');
+
+  // Dispatch the workflow FROM the base branch (where the file lives), telling it to build the
+  // PR branch. The repo's Action does `firebase deploy --only hosting -P <testing>`.
+  await dispatchWorkflow(t.repoFullName, workflow, baseBranch, { ref: headRef }, token);
+  await ref.update({
+    previewActive: true,        // a branch preview is now (being) deployed to testing
+    previewDeploying: true,     // a deploy is in flight — cleared by the poller when it finishes
+    previewRef: headRef,
+    previewUrl: testingUrl,     // the single testing URL where the preview lands
+    previewError: null,
+    previewRequestedAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, url: testingUrl };
+}
+
+// REVERT = redeploy the base branch to the testing site, discarding a branch-preview.
+async function revertFirebaseTesting(db, taskId) {
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = snap.data();
+
+  const { token, baseBranch, workflow, testingUrl } = await firebaseDeployCtx(db, t);
+  await dispatchWorkflow(t.repoFullName, workflow, baseBranch, { ref: baseBranch }, token);
+  await ref.update({
+    previewActive: false,       // testing is going back to the base branch
+    previewDeploying: true,
+    previewRef: baseBranch,
+    previewUrl: testingUrl,
+    previewError: null,
+    previewRequestedAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, url: testingUrl };
 }
 
 // Base gate for CUSTOMER self-deploy: the signed-in user must belong to the task's org, and
@@ -496,6 +603,24 @@ async function requireCustomerDeploy(db, uid, taskId) {
   if (t.status !== 'complete' || t.approved !== true) {
     throw new HttpsError('failed-precondition', 'NOT_DEPLOYABLE');
   }
+  return user;
+}
+
+// Lighter gate for PREVIEW/REVERT (Firebase host): org membership + a finished fix that has a
+// PR and isn't merged yet. Unlike deploy, this does NOT require approval — previewing on testing
+// is how the owner evaluates the fix before approving/merging. Returns the caller's user-doc.
+async function requireCustomerPreview(db, uid, taskId) {
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const userSnap = await db.collection('users').doc(uid).get();
+  const user = userSnap.exists ? userSnap.data() : null;
+  const orgId = user?.orgId || null;
+  if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
+  const taskSnap = await db.collection('tasks').doc(taskId).get();
+  if (!taskSnap.exists) throw new HttpsError('not-found', 'Task not found.');
+  const t = taskSnap.data();
+  if (t.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your task.');
+  if (t.status !== 'complete') throw new HttpsError('failed-precondition', 'NOT_READY');
   return user;
 }
 
@@ -535,4 +660,38 @@ export const customerDeployProd = onCall({ region: 'asia-south1' }, async (reque
     throw new HttpsError('permission-denied', 'PROD_DEPLOY_NOT_ALLOWED');
   }
   return deployTaskToProd(db, taskId);
+});
+
+// --- Firebase preview / revert entry points (admin + customer). No-ops for Vercel orgs:
+// the cores throw PREVIEW_NOT_SUPPORTED unless org.deploy.host === 'firebase'. ---
+
+export const previewTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  return previewFirebaseTesting(getFirestore(), taskId);
+});
+
+export const revertTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const taskId = String(request.data?.taskId ?? '');
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  return revertFirebaseTesting(getFirestore(), taskId);
+});
+
+// Customer "Preview" — deploy this fix's branch to the testing site so the owner can see it
+// live before merging. Open to any org member (preview is the review step, not a charge).
+export const customerPreviewTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  const db = getFirestore();
+  const taskId = String(request.data?.taskId ?? '');
+  await requireCustomerPreview(db, request.auth?.uid, taskId);
+  return previewFirebaseTesting(db, taskId);
+});
+
+// Customer "Undo preview" — put the testing site back to the live (base-branch) version.
+export const customerRevertTesting = onCall({ region: 'asia-south1' }, async (request) => {
+  const db = getFirestore();
+  const taskId = String(request.data?.taskId ?? '');
+  await requireCustomerPreview(db, request.auth?.uid, taskId);
+  return revertFirebaseTesting(db, taskId);
 });

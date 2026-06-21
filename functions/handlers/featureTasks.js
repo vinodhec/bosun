@@ -204,6 +204,15 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
   const userSnap = await db.collection('users').doc(uid).get();
   const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
 
+  // Org deploy config → Firebase preview/revert affordances on the active step's session view.
+  let deploy = null;
+  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  if (orgId) {
+    const os = await db.collection('organisations').doc(orgId).get();
+    const d = os.exists ? os.data().deploy : null;
+    if (d && d.host === 'firebase') deploy = { host: 'firebase', testingUrl: d.firebase?.testingUrl || null };
+  }
+
   const snap = await db
     .collection('features')
     .where('userId', '==', uid)
@@ -251,7 +260,7 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
         status,
         summary: t?.resultSummary ?? null,
         paidInr: t ? Number(t.finalCharge) || 0 : 0,
-        session: t && (status === 'running' || status === 'failed') ? sessionView(t, s.taskId, { userCanDeployProd }) : null,
+        session: t && (status === 'running' || status === 'failed') ? sessionView(t, s.taskId, { userCanDeployProd, deploy }) : null,
       };
     });
 

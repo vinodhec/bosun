@@ -4,9 +4,15 @@ import { MAX_FREE_REVISIONS } from './billing.js';
 // SHARED by listMySessions (standalone fixes) and listMyFeatures (a feature's active step) so
 // the two never drift. NEVER includes operator-only fields (PR link, model, raw API cost,
 // margin). `userCanDeployProd` is the per-user go-live grant, applied to canDeployProd.
-export function sessionView(t, id, { userCanDeployProd = false } = {}) {
+export function sessionView(t, id, { userCanDeployProd = false, deploy = null } = {}) {
   const merged = !!(t.deployedTesting || t.deployedProd);
   const pendingReview = !!t.pendingReview;
+  // Firebase-host orgs have no automatic preview — the owner deploys a branch to the testing
+  // site on demand (previewTesting) and can put it back (revertTesting). `deploy` carries the
+  // org's { host, testingUrl }. Vercel orgs ignore all of this (host defaults to 'vercel').
+  const deployHost = deploy?.host || 'vercel';
+  const isFirebase = deployHost === 'firebase';
+  const previewable = isFirebase && t.status === 'complete' && !!t.prUrl && !merged;
   return {
     id,
     problem: t.prompt ?? '',
@@ -25,7 +31,14 @@ export function sessionView(t, id, { userCanDeployProd = false } = {}) {
       ? t.filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
       : [],
     previewUrl: t.previewUrl ?? null,
-    buildingPreview: !!t.needsPreview,
+    buildingPreview: !!t.needsPreview || !!t.previewDeploying,
+    // Firebase preview/revert surface (all false/absent for Vercel orgs).
+    deployHost,
+    testingUrl: deploy?.testingUrl || null,
+    previewActive: !!t.previewActive,
+    previewError: t.previewError || null,
+    canPreview: previewable && !t.previewDeploying,
+    canRevert: isFirebase && !!t.previewActive && !merged && !t.previewDeploying,
     // Money: what they've already paid, and what tapping "Looks good" will charge now.
     paidInr: Number(t.finalCharge) || 0,
     owedInr: pendingReview ? Number(t.currentRoundCharge) || 0 : 0,

@@ -78,6 +78,9 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const orgRef = db.collection('organisations').doc(task.orgId);
     const orgSnap = await tx.get(orgRef); // read before any write (Firestore tx rule)
     const requireApproval = orgSnap.exists && orgSnap.data().requireApproval === true;
+    // Firebase-hosting orgs have no automatic Vercel preview to poll for — the owner triggers a
+    // preview deploy on demand (customerPreviewTesting). So never set needsPreview for them.
+    const deployHost = (orgSnap.exists && orgSnap.data().deploy?.host) || 'vercel';
 
     const totalUsd = Number(actualCostUsd) || 0;
     const prevSeenUsd = Number(task.reviewedCostUsd) || 0;
@@ -134,7 +137,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       idealKeywords: safeKeywords,
       prUrl: prUrl || null,
       downloadUrl: downloadUrl || null,
-      needsPreview: !!prUrl,
+      needsPreview: !!prUrl && deployHost !== 'firebase',
       previewUrl: null,
       completedAt: FieldValue.serverTimestamp(),
     };

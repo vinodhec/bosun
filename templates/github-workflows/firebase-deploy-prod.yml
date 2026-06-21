@@ -1,0 +1,37 @@
+# Firebase-HOSTING repo — deploy to PRODUCTION. For orgs whose `org.deploy.host === 'firebase'`.
+# Bosun "Go live" cuts a release tag (v*) at the base branch head; pushing it triggers this.
+#
+# EDIT for your repo: node-version, the install line, and the build+deploy command (use your
+# repo's own script — e.g. `npm run deploy:prod`).
+#
+# Required repo secret: FIREBASE_SERVICE_ACCOUNT — a service-account JSON key with the Firebase
+#   Hosting Admin role on the PRODUCTION project.
+name: Bosun — deploy production
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: bosun-firebase-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Write the Firebase service-account key
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - name: Build + deploy to the production site
+        run: npm run deploy:prod # ← your repo's build + `firebase deploy --only hosting -P <prod>`
