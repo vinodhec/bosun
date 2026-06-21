@@ -22,6 +22,18 @@ const STATUS = {
   cancelled: 'Cancelled',
 };
 const isWorking = (s) => s === 'queued' || s === 'running';
+
+// A live m:ss count-up for an in-progress test-site deploy. Anchored to the server-side start
+// (previewStartedAt) so it survives refreshes; ticks locally every second.
+function DeployTimer({ since }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const secs = Math.max(0, Math.floor((now - (since || now)) / 1000));
+  return <span className="tabular-nums font-medium">{Math.floor(secs / 60)}:{String(secs % 60).padStart(2, '0')}</span>;
+}
 // States that change on their own (operator quoting, agent running) — keep polling for them.
 const isLive = (s) => isWorking(s) || s === 'needs_quote' || s === 'quoted';
 
@@ -98,7 +110,7 @@ export default function Dashboard() {
     refreshAll();
     const id = setInterval(() => {
       let live = false;
-      setSessions((prev) => { if (prev?.some((s) => isLive(s.status))) live = true; return prev; });
+      setSessions((prev) => { if (prev?.some((s) => isLive(s.status) || s.buildingPreview)) live = true; return prev; });
       setFeatures((prev) => { if (prev?.some((f) => f.status === 'running' || f.status === 'planning')) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
@@ -454,7 +466,10 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
               // opens it; "Undo preview" puts the test site back; "Merge to testing" (below) keeps it.
               <>
                 {s.buildingPreview ? (
-                  <span className="text-sm text-ink-soft">Putting it on your test site… (about a minute)</span>
+                  <span className="inline-flex items-center gap-2 text-sm text-ink-soft">
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-brand-600 border-t-transparent" />
+                    Putting it on your test site… <DeployTimer since={s.previewStartedAt} /> <span className="text-ink-soft/70">(usually 1–2 min)</span>
+                  </span>
                 ) : s.previewActive && s.previewUrl ? (
                   <>
                     <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
@@ -557,7 +572,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
               )
             )}
 
-            {s.deployedTesting && !s.deployedProd && <span className="text-sm font-medium text-ink-soft">✓ on testing</span>}
+            {s.deployedTesting && !s.deployedProd && !s.buildingPreview && <span className="text-sm font-medium text-ink-soft">✓ on testing</span>}
             {s.deployedProd && <span className="text-sm font-medium text-good">Live ✓</span>}
           </div>
 

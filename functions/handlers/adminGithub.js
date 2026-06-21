@@ -477,13 +477,20 @@ async function deployTaskToTesting(db, taskId) {
   if (!token) throw new HttpsError('failed-precondition', 'No GitHub token for this organisation.');
 
   await mergePullRequest(t.repoFullName, prNum, token);
-  // The merge pushes the base branch; for a Firebase host that auto-redeploys the (now merged)
-  // base to the testing site, so any branch-preview that was sitting on testing is superseded.
+  // The merge pushes the base branch. For a Firebase host that push auto-redeploys the (now
+  // merged) base to the testing site — which takes a minute or two — so mark a deploy as in
+  // flight: the poller watches the base-branch run and clears `previewDeploying` when it lands,
+  // driving the dashboard's "deploying… (timer)". For Vercel hosts there's nothing to watch.
+  const orgSnap = await db.collection('organisations').doc(t.orgId).get();
+  const isFirebase = orgSnap.exists && orgSnap.data().deploy?.host === 'firebase';
+  const baseBranch = (orgSnap.exists && orgSnap.data().github?.baseBranch) || 'main';
   await ref.update({
     deployedTesting: true,
     deployedTestingAt: FieldValue.serverTimestamp(),
-    previewActive: false,
-    previewDeploying: false,
+    previewActive: false, // the branch-preview is superseded by the merged base
+    ...(isFirebase
+      ? { previewDeploying: true, previewRef: baseBranch, previewError: null, previewRequestedAt: FieldValue.serverTimestamp() }
+      : { previewDeploying: false }),
   });
   // Credit the "went live for review" milestone to the employee (best-effort; never blocks
   // the deploy). Idempotent — guarded by the task's shipPointsAwarded flag.

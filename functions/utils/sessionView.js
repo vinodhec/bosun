@@ -39,6 +39,8 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
     testingUrl: deploy?.testingUrl || null,
     previewActive: !!t.previewActive,
     previewError: t.previewError || null,
+    previewStartedAt: t.previewRequestedAt?.toMillis?.() ?? null, // anchors the "deploying" timer
+
     canPreview: previewable && !t.previewDeploying,
     canRevert: isFirebase && !!t.previewActive && !merged && !t.previewDeploying,
     // Money: what they've already paid, and what tapping "Looks good" will charge now.
