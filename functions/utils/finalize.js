@@ -138,6 +138,9 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       prUrl: prUrl || null,
       downloadUrl: downloadUrl || null,
       needsPreview: !!prUrl && deployHost !== 'firebase',
+      // Firebase host: auto-deploy this fix's branch to the testing site the moment it's ready
+      // (the poller dispatches it) — the owner sees it on testing without lifting a finger.
+      needsAutoDeploy: !!prUrl && deployHost === 'firebase',
       previewUrl: null,
       completedAt: FieldValue.serverTimestamp(),
     };

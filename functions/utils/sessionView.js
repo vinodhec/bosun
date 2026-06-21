@@ -31,7 +31,9 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
       ? t.filesChanged.map((f) => String(f?.description || '')).filter(Boolean).slice(0, 12)
       : [],
     previewUrl: t.previewUrl ?? null,
-    buildingPreview: !!t.needsPreview || !!t.previewDeploying,
+    // "deploying" covers the Vercel preview poll, an in-flight Firebase deploy, and the brief
+    // window after a Firebase fix is ready but before the poller has dispatched the auto-deploy.
+    buildingPreview: !!t.needsPreview || !!t.previewDeploying || !!t.needsAutoDeploy,
     // Firebase preview/revert surface (all false/absent for Vercel orgs).
     deployHost,
     testingUrl: deploy?.testingUrl || null,

@@ -450,8 +450,8 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {s.deployHost === 'firebase' ? (
-              // No automatic preview here — the owner asks for one, which puts this change on
-              // the test site so they can see it; "Undo preview" puts the test site back.
+              // The fix is deployed to the test site AUTOMATICALLY when it's ready. The owner just
+              // opens it; "Undo preview" puts the test site back; "Merge to testing" (below) keeps it.
               <>
                 {s.buildingPreview ? (
                   <span className="text-sm text-ink-soft">Putting it on your test site… (about a minute)</span>
@@ -467,11 +467,16 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                     )}
                   </>
                 ) : s.canPreview ? (
+                  // Fallback (auto-deploy failed / not yet active): let them trigger it manually.
                   <button onClick={() => act(customerPreviewTesting)} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
-                    {busy ? 'Preparing…' : 'See it on your test site'}
+                    {busy ? 'Deploying…' : 'Show it on your test site'}
                   </button>
                 ) : null}
-                {s.previewError && <span className="text-sm text-bad">That didn’t finish — please try again.</span>}
+                {s.previewError && !s.buildingPreview && (
+                  <button onClick={() => act(customerPreviewTesting)} disabled={busy} className="text-sm font-medium text-bad underline disabled:opacity-60">
+                    Test-site deploy failed — try again
+                  </button>
+                )}
               </>
             ) : s.previewUrl ? (
               <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
@@ -497,7 +502,30 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
             {/* Self-deploy. Publishing to testing is open to everyone in the organisation;
                 going live (production) shows only for people the operator has allowed. */}
             {showDeploy && !open && (
-              deployOpen ? (
+              s.deployHost === 'firebase' ? (
+                // Firebase: the fix is already on the test site automatically; "Merge to testing"
+                // makes it part of the project (so it sticks and can go live). No picker needed.
+                <>
+                  {canDeployTesting && (
+                    <button
+                      onClick={() => act(customerDeployTesting)}
+                      disabled={busy}
+                      className="rounded-xl bg-teal-600 px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                    >
+                      {busy ? 'Merging…' : 'Merge to testing'}
+                    </button>
+                  )}
+                  {canGoLive && (
+                    <button
+                      onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
+                      disabled={busy}
+                      className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                    >
+                      {busy ? 'Publishing…' : 'Go live'}
+                    </button>
+                  )}
+                </>
+              ) : deployOpen ? (
                 <>
                   <span className="text-sm text-ink-soft">Deploy to:</span>
                   {canDeployTesting && (

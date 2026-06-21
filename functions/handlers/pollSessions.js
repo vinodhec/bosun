@@ -6,7 +6,7 @@ import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { priceForPlanning } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
-import { fetchPrPreviewUrl, latestWorkflowRun } from '../utils/github.js';
+import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 const BETA = 'managed-agents-2026-04-01';
@@ -222,6 +222,47 @@ export const pollSessions = onSchedule(
         }
       } catch (e) {
         console.error('pollSessions:preview', docSnap.id, e?.message || e);
+      }
+    }
+
+    // (2b) Firebase-host AUTO-DEPLOY: a fix just became ready — deploy its PR branch to the
+    // testing site automatically (no owner action), so testing always shows the latest fix.
+    const autoDeploy = await db.collection('tasks').where('needsAutoDeploy', '==', true).limit(20).get();
+    const autoOrgCache = new Map();
+    for (const docSnap of autoDeploy.docs) {
+      const t = docSnap.data();
+      try {
+        const prNum = t.prUrl ? Number(String(t.prUrl).split('/').pop()) : null;
+        if (!prNum || !t.repoFullName || !t.orgId) { await docSnap.ref.update({ needsAutoDeploy: false }); continue; }
+        let org = autoOrgCache.get(t.orgId);
+        if (!org) {
+          const os = await db.collection('organisations').doc(t.orgId).get();
+          org = os.exists ? os.data() : {};
+          autoOrgCache.set(t.orgId, org);
+        }
+        if (org.deploy?.host !== 'firebase') { await docSnap.ref.update({ needsAutoDeploy: false }); continue; }
+        const secret = await db.collection('orgSecrets').doc(t.orgId).get();
+        const token = secret.exists ? secret.data().githubToken : null;
+        if (!token) { await docSnap.ref.update({ needsAutoDeploy: false }); continue; }
+
+        const baseBranch = org.github?.baseBranch || 'main';
+        const workflow = org.deploy?.firebase?.testingWorkflow || 'bosun-deploy-testing.yml';
+        const testingUrl = org.deploy?.firebase?.testingUrl || null;
+        const headRef = await getPrHeadRef(t.repoFullName, prNum, token);
+        if (!headRef) { await docSnap.ref.update({ needsAutoDeploy: false }); continue; }
+
+        await dispatchWorkflow(t.repoFullName, workflow, baseBranch, { ref: headRef }, token);
+        await docSnap.ref.update({
+          needsAutoDeploy: false,
+          previewActive: true,
+          previewDeploying: true,
+          previewRef: headRef,
+          previewUrl: testingUrl,
+          previewError: null,
+          previewRequestedAt: FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        console.error('pollSessions:autodeploy', docSnap.id, e?.message || e);
       }
     }
 
