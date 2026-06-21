@@ -1,0 +1,53 @@
+# Firebase-HOSTING repo — deploy to TESTING. For orgs whose `org.deploy.host === 'firebase'`
+# (a Firebase Hosting site with NO automatic Vercel preview). Unlike the Vercel template, the
+# preview/revert flow runs THROUGH this workflow:
+#
+#   Bosun "See a preview"        → workflow_dispatch(ref = PR branch) → deploy branch to testing site
+#   Bosun "Deploy to testing"    → merges PR → base branch push      → deploy base to testing site
+#   Bosun "Undo preview"         → workflow_dispatch(ref = base)      → redeploy base to testing site
+#
+# One testing site; whatever was last deployed wins. Bosun dispatches the workflow by file name
+# (default `bosun-deploy-testing.yml`, configurable via org.deploy.firebase.testingWorkflow).
+#
+# EDIT for your repo: the base branch in `on.push.branches`, node-version, the install line, and
+# the build+deploy command (use your repo's own script — e.g. `npm run deploy:test`).
+#
+# Required repo secret: FIREBASE_SERVICE_ACCOUNT — a service-account JSON key with the Firebase
+#   Hosting Admin role on the TESTING project.
+name: Bosun — deploy testing
+
+on:
+  push:
+    branches: [main] # ← set to your base branch (e.g. master)
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or SHA to build and deploy to the testing site (defaults to the base branch)
+        required: false
+        default: ''
+
+concurrency:
+  group: bosun-firebase-testing
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Write the Firebase service-account key
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+      - name: Build + deploy to the testing site
+        run: npm run deploy:test # ← your repo's build + `firebase deploy --only hosting -P <testing>`

@@ -12,6 +12,9 @@ export const confirmQuote = httpsCallable(functions, 'confirmQuote');
 export const declineQuote = httpsCallable(functions, 'declineQuote');
 export const customerDeployTesting = httpsCallable(functions, 'customerDeployTesting');
 export const customerDeployProd = httpsCallable(functions, 'customerDeployProd');
+// Firebase-hosting orgs only: deploy a fix's branch to the testing site to see it, then undo.
+export const customerPreviewTesting = httpsCallable(functions, 'customerPreviewTesting');
+export const customerRevertTesting = httpsCallable(functions, 'customerRevertTesting');
 // "Plan a feature": code-aware breakdown → review/approve/refine → ordered steps, billed per step.
 export const planFeature = httpsCallable(functions, 'planFeature');
 export const approveFeaturePlan = httpsCallable(functions, 'approveFeaturePlan');
@@ -40,5 +43,7 @@ export const adminListFeatures = httpsCallable(functions, 'adminListFeatures');
 export const adminStopTask = httpsCallable(functions, 'adminStopTask');
 export const deployTesting = httpsCallable(functions, 'deployTesting');
 export const deployProd = httpsCallable(functions, 'deployProd');
+export const previewTesting = httpsCallable(functions, 'previewTesting');
+export const revertTesting = httpsCallable(functions, 'revertTesting');
 export const adminConnectFigma = httpsCallable(functions, 'adminConnectFigma');
 export const adminDisconnectFigma = httpsCallable(functions, 'adminDisconnectFigma');

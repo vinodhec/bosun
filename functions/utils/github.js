@@ -117,6 +117,51 @@ function releaseTagName() {
   return `v${date}-${time}-${crypto.randomBytes(2).toString('hex')}`;
 }
 
+// The PR's head branch name (e.g. `claude/123-fix`). Needed to deploy a PR branch as a
+// Firebase preview without merging it. Null if the PR can't be read.
+export async function getPrHeadRef(repoFullName, prNumber, token) {
+  const pr = await ghGet(repoFullName, `/pulls/${prNumber}`, token);
+  return pr?.head?.ref || null;
+}
+
+// Trigger a `workflow_dispatch` GitHub Action in the customer's repo. Used for the Firebase
+// hosting path: the repo's own workflow does the Angular build + `firebase deploy`, Bosun just
+// kicks it off. `gitRef` is the branch the workflow FILE is read from (must be the default
+// branch, where the file lives); `inputs.ref` tells that workflow which branch/sha to build
+// (the PR branch for a preview, the base branch for a revert). Returns true on success (204).
+export async function dispatchWorkflow(repoFullName, workflowFile, gitRef, inputs, token) {
+  const res = await fetch(
+    `https://api.github.com/repos/${repoFullName}/actions/workflows/${encodeURIComponent(workflowFile)}/dispatches`,
+    {
+      method: 'POST',
+      headers: GH_HEADERS(token),
+      body: JSON.stringify({ ref: gitRef, inputs: inputs || {} }),
+    }
+  );
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`workflow dispatch failed: ${res.status} ${t}`);
+  }
+  return true; // 204 No Content
+}
+
+// The most recent run of a given workflow (optionally filtered to one head branch). Used by the
+// poller to tell when a dispatched Firebase preview/revert deploy has finished. Returns
+// { status, conclusion, headBranch, createdAt(ms), url } or null.
+export async function latestWorkflowRun(repoFullName, workflowFile, token, { branch } = {}) {
+  const q = `?per_page=10${branch ? `&branch=${encodeURIComponent(branch)}` : ''}`;
+  const data = await ghGet(repoFullName, `/actions/workflows/${encodeURIComponent(workflowFile)}/runs${q}`, token);
+  const run = Array.isArray(data?.workflow_runs) ? data.workflow_runs[0] : null;
+  if (!run) return null;
+  return {
+    status: run.status, // queued | in_progress | completed
+    conclusion: run.conclusion, // success | failure | cancelled | null
+    headBranch: run.head_branch || null,
+    createdAt: run.created_at ? Date.parse(run.created_at) : 0,
+    url: run.html_url || null,
+  };
+}
+
 // Create a lightweight git tag at `fromBranch`'s current head. Pushing the tag triggers the
 // customer's deploy-prod GitHub Action (which runs on `tags: ['v*']`). Bosun only moves the
 // ref — the repo's own Action does the actual production deploy. Returns the tag name + sha.

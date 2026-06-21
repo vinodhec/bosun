@@ -677,7 +677,7 @@ export default function Admin() {
   const [credit, setCredit] = useState({ orgId: '', amount: '' });
   const [deduct, setDeduct] = useState({ orgId: '', amount: '', description: '' });
   const [assign, setAssign] = useState({ email: '', orgId: '' });
-  const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '' });
+  const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '', baseBranch: 'main', deployHost: 'vercel', testingProject: '', prodProject: '', testingUrl: '' });
   const [test, setTest] = useState({ orgId: '', prompt: '', asCustomer: true, model: 'auto' });
   const [taskId, setTaskId] = useState(null);
   const [task, setTask] = useState(null);
@@ -867,14 +867,42 @@ export default function Admin() {
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Connect GitHub repo</h2>
-          <p className="text-xs text-ink-soft">owner/repo + a token (Contents RW + Pull requests RW). Stored backend-only; sets up the org’s MCP vault.</p>
+          <p className="text-xs text-ink-soft">owner/repo + a token (Contents RW + Pull requests RW; add Workflows RW for a Firebase host). Stored backend-only; sets up the org’s MCP vault.</p>
           <select className={field} value={gh.orgId} onChange={(e) => setGh({ ...gh, orgId: e.target.value })}>
             <option value="">Select organisation…</option>
             {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}{o.repo ? ` — ${o.repo}` : ''}</option>)}
           </select>
           <input className={field} value={gh.repoFullName} onChange={(e) => setGh({ ...gh, repoFullName: e.target.value })} placeholder="owner/repo" />
           <input className={field} value={gh.token} onChange={(e) => setGh({ ...gh, token: e.target.value })} placeholder="GitHub token (github_pat_… / ghp_…)" />
-          <button className={btn} disabled={busy || !gh.orgId || !gh.repoFullName || !gh.token} onClick={() => run(() => adminSetGithubRepo({ orgId: gh.orgId.trim(), repoFullName: gh.repoFullName.trim(), token: gh.token.trim() }).then(() => setGh({ orgId: '', repoFullName: '', token: '' })), 'GitHub repo connected.')}>Connect repo</button>
+          <div className="flex gap-2">
+            <input className={field} value={gh.baseBranch} onChange={(e) => setGh({ ...gh, baseBranch: e.target.value })} placeholder="base branch (default main)" />
+            <select className={field} value={gh.deployHost} onChange={(e) => setGh({ ...gh, deployHost: e.target.value })}>
+              <option value="vercel">Vercel host (auto preview)</option>
+              <option value="firebase">Firebase host (preview/revert)</option>
+            </select>
+          </div>
+          {gh.deployHost === 'firebase' && (
+            <div className="space-y-2 rounded-xl bg-canvas p-3">
+              <p className="text-xs text-ink-soft">Firebase Hosting: project ids the repo’s workflow deploys to, and the testing site URL shown to the owner. Seed <code>bosun-deploy-testing.yml</code> + <code>bosun-deploy-prod.yml</code> and a <code>FIREBASE_SERVICE_ACCOUNT</code> secret into the repo.</p>
+              <div className="flex gap-2">
+                <input className={field} value={gh.testingProject} onChange={(e) => setGh({ ...gh, testingProject: e.target.value })} placeholder="testing project id" />
+                <input className={field} value={gh.prodProject} onChange={(e) => setGh({ ...gh, prodProject: e.target.value })} placeholder="production project id" />
+              </div>
+              <input className={field} value={gh.testingUrl} onChange={(e) => setGh({ ...gh, testingUrl: e.target.value })} placeholder="testing site URL (https://…web.app)" />
+            </div>
+          )}
+          <button
+            className={btn}
+            disabled={busy || !gh.orgId || !gh.repoFullName || !gh.token || (gh.deployHost === 'firebase' && (!gh.testingProject.trim() || !gh.prodProject.trim()))}
+            onClick={() => run(() => adminSetGithubRepo({
+              orgId: gh.orgId.trim(),
+              repoFullName: gh.repoFullName.trim(),
+              token: gh.token.trim(),
+              baseBranch: (gh.baseBranch.trim() || 'main'),
+              deployHost: gh.deployHost,
+              ...(gh.deployHost === 'firebase' ? { firebase: { testingProject: gh.testingProject.trim(), prodProject: gh.prodProject.trim(), testingUrl: gh.testingUrl.trim() } } : {}),
+            }).then(() => setGh({ orgId: '', repoFullName: '', token: '', baseBranch: 'main', deployHost: 'vercel', testingProject: '', prodProject: '', testingUrl: '' })), 'GitHub repo connected.')}
+          >Connect repo</button>
         </section>
 
 

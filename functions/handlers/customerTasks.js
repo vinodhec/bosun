@@ -24,6 +24,9 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
   const userSnap = await db.collection('users').doc(uid).get();
   const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
 
+  // The org's deploy config drives the Firebase preview/revert buttons (null host → Vercel flow).
+  const deploy = await orgDeployConfig(db, userSnap.exists ? userSnap.data().orgId : null);
+
   const snap = await db
     .collection('tasks')
     .where('userId', '==', uid)
@@ -37,9 +40,20 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     // view projection used by both this list and a feature's active step.
     sessions: snap.docs
       .filter((d) => !d.data().featureId)
-      .map((d) => sessionView(d.data(), d.id, { userCanDeployProd })),
+      .map((d) => sessionView(d.data(), d.id, { userCanDeployProd, deploy })),
   };
 });
+
+// The org's deploy surface for the customer view: { host, testingUrl }, or null for a Vercel
+// org / no org. Shared by listMySessions and listMyFeatures so the two never drift.
+async function orgDeployConfig(db, orgId) {
+  if (!orgId) return null;
+  const snap = await db.collection('organisations').doc(orgId).get();
+  if (!snap.exists) return null;
+  const d = snap.data().deploy;
+  if (!d || d.host !== 'firebase') return null;
+  return { host: 'firebase', testingUrl: d.firebase?.testingUrl || null };
+}
 
 // Approve a finished fix ("Looks good"). THIS is when money moves: we charge the flat tier
 // price owed for the current cycle (0 for a free re-fix cycle) and unlock going live.

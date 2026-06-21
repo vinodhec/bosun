@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -412,7 +412,31 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
           )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {s.previewUrl ? (
+            {s.deployHost === 'firebase' ? (
+              // No automatic preview here — the owner asks for one, which puts this change on
+              // the test site so they can see it; "Undo preview" puts the test site back.
+              <>
+                {s.buildingPreview ? (
+                  <span className="text-sm text-ink-soft">Putting it on your test site… (about a minute)</span>
+                ) : s.previewActive && s.previewUrl ? (
+                  <>
+                    <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
+                      Open your test site →
+                    </a>
+                    {s.canRevert && (
+                      <button onClick={() => act(customerRevertTesting)} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-canvas disabled:opacity-60">
+                        {busy ? 'Undoing…' : 'Undo preview'}
+                      </button>
+                    )}
+                  </>
+                ) : s.canPreview ? (
+                  <button onClick={() => act(customerPreviewTesting)} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+                    {busy ? 'Preparing…' : 'See it on your test site'}
+                  </button>
+                ) : null}
+                {s.previewError && <span className="text-sm text-bad">That didn’t finish — please try again.</span>}
+              </>
+            ) : s.previewUrl ? (
               <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
                 Test the preview →
               </a>

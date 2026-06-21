@@ -46,3 +46,25 @@ So the Actions only do what Vercel's native integration doesn't:
 `FIREBASE_TOKEN` comes from `firebase login:ci` (a CI refresh token tied to your
 account, which owns both projects). The Vercel project id selects which environment the
 build targets.
+
+## Firebase-Hosting orgs (no Vercel)
+
+For a repo hosted entirely on Firebase Hosting (`org.deploy.host === 'firebase'`), use
+`firebase-deploy-testing.yml` + `firebase-deploy-prod.yml` instead of the Vercel pair. There's
+no automatic per-PR preview, so Bosun drives preview/revert through `workflow_dispatch`:
+
+```
+"See a preview"     → workflow_dispatch(ref = PR branch) → deploy branch to the testing site
+"Deploy to testing" → merge PR → base push              → deploy base to the testing site
+"Undo preview"      → workflow_dispatch(ref = base)      → redeploy base to the testing site
+"Go live"           → tag v* at base head               → firebase-deploy-prod.yml
+```
+
+Setup per repo:
+1. Copy both `firebase-deploy-*.yml` into `.github/workflows/` (edit base branch, node version,
+   install, and the build+deploy command — usually your repo's own `deploy:test` / `deploy:prod`).
+2. Add a `FIREBASE_SERVICE_ACCOUNT` repo secret — a service-account JSON key with **Firebase
+   Hosting Admin** on **both** the testing and production projects.
+3. Connect the repo in the Admin panel with **Deploy host = Firebase**, the base branch, the two
+   project ids, and the testing site URL. The GitHub token needs **Workflows RW** (to dispatch).
+
