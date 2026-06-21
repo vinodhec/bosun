@@ -7,6 +7,7 @@ import { designContextFromText } from '../utils/figma.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // Operational caps for a planning session — exploration, not a build, so it should be quick and
@@ -83,7 +84,7 @@ export const planFeature = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_A
 
   const db = getFirestore();
   const userSnap = await db.collection('users').doc(uid).get();
-  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
   if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
   const { org, gh, secretData } = await loadOrgCtx(db, orgId);
 
@@ -204,18 +205,20 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
   const userSnap = await db.collection('users').doc(uid).get();
   const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
 
+  // Scope to the user's active (or requested) org — features are shown per-org.
+  const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
+  if (!orgId) return { features: [] };
+
   // Org deploy config → Firebase preview/revert affordances on the active step's session view.
   let deploy = null;
-  const orgId = userSnap.exists ? userSnap.data().orgId : null;
-  if (orgId) {
-    const os = await db.collection('organisations').doc(orgId).get();
-    const d = os.exists ? os.data().deploy : null;
-    if (d && d.host === 'firebase') deploy = { host: 'firebase', testingUrl: d.firebase?.testingUrl || null };
-  }
+  const os = await db.collection('organisations').doc(orgId).get();
+  const d = os.exists ? os.data().deploy : null;
+  if (d && d.host === 'firebase') deploy = { host: 'firebase', testingUrl: d.firebase?.testingUrl || null };
 
   const snap = await db
     .collection('features')
     .where('userId', '==', uid)
+    .where('orgId', '==', orgId)
     .orderBy('createdAt', 'desc')
     .limit(10)
     .get();

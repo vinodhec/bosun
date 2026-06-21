@@ -6,6 +6,7 @@ import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js'
 import { designContextFromText } from '../utils/figma.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // Validate balance + the org's connected repo, create the task, and start a managed-agent
@@ -31,9 +32,10 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
 
   const db = getFirestore();
 
-  // The user's organisation holds both the credits and the connected repo.
+  // The user's organisation holds both the credits and the connected repo. A user may belong to
+  // several orgs; the fix targets the one the client passes (their active org), verified here.
   const userSnap = await db.collection('users').doc(uid).get();
-  const orgId = userSnap.exists ? userSnap.data().orgId : null;
+  const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
   if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
 
   const orgSnap = await db.collection('organisations').doc(orgId).get();

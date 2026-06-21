@@ -7,6 +7,7 @@ import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/b
 import { sanitizeImages } from '../utils/images.js';
 import { chargeApprovedFix } from '../utils/finalize.js';
 import { sessionView } from '../utils/sessionView.js';
+import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // Customer-facing view of their fix sessions. Returns ONLY safe fields — never the PR
@@ -24,12 +25,17 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
   const userSnap = await db.collection('users').doc(uid).get();
   const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
 
+  // Scope the list to the user's active (or requested) org — each fix belongs to one org.
+  const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
+  if (!orgId) return { sessions: [] };
+
   // The org's deploy config drives the Firebase preview/revert buttons (null host → Vercel flow).
-  const deploy = await orgDeployConfig(db, userSnap.exists ? userSnap.data().orgId : null);
+  const deploy = await orgDeployConfig(db, orgId);
 
   const snap = await db
     .collection('tasks')
     .where('userId', '==', uid)
+    .where('orgId', '==', orgId)
     .orderBy('createdAt', 'desc')
     .limit(20)
     .get();
@@ -42,6 +48,25 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
       .filter((d) => !d.data().featureId)
       .map((d) => sessionView(d.data(), d.id, { userCanDeployProd, deploy })),
   };
+});
+
+// Switch the user's ACTIVE organisation (the one the dashboard scopes to). Verifies the user is
+// a member, then updates `users.activeOrgId` (+ the legacy `orgId` mirror). No claim re-mint is
+// needed — firestore.rules gate on the `orgIds` membership claim, not the active selection.
+export const setActiveOrg = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+
+  const db = getFirestore();
+  const userRef = db.collection('users').doc(uid);
+  const snap = await userRef.get();
+  if (!isMember(snap.exists ? snap.data() : null, orgId)) {
+    throw new HttpsError('permission-denied', 'Not a member of that organisation.');
+  }
+  await userRef.update({ activeOrgId: orgId, orgId, activeOrgAt: FieldValue.serverTimestamp() });
+  return { ok: true, orgId };
 });
 
 // The org's deploy surface for the customer view: { host, testingUrl }, or null for a Vercel

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
-import { useOrg } from '../hooks/useOrg.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from '../firebase/functions.js';
+import { useOrgs } from '../hooks/useOrgs.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, setActiveOrg } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
@@ -38,8 +38,14 @@ function friendlyError(e) {
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const org = useOrg(user);
-  const { members, meId } = useOrgStats(user);
+  // A user can belong to several orgs; the dropdown picks the active one and everything below —
+  // wallet, fixes, features, board — is scoped to it.
+  const { orgs, activeOrgId, loading: orgsLoading } = useOrgs(user);
+  const [selectedOrgId, setSelectedOrgId] = useState(null);
+  useEffect(() => { if (activeOrgId && !selectedOrgId) setSelectedOrgId(activeOrgId); }, [activeOrgId, selectedOrgId]);
+  const orgId = selectedOrgId || activeOrgId || null;
+  const org = orgsLoading ? undefined : (orgs.find((o) => o.id === orgId) || null);
+  const { members, meId } = useOrgStats(user, orgId);
   const [mode, setMode] = useState('fix'); // 'fix' = one-off fix · 'feature' = plan a feature as steps
   const [problem, setProblem] = useState('');
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
@@ -51,31 +57,44 @@ export default function Dashboard() {
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
 
-  const refresh = useCallback(async () => {
+  // Lists are scoped to an org; callers may pass an explicit id (used when switching, so the
+  // fetch doesn't race the state update).
+  const refresh = useCallback(async (oid = orgId) => {
+    if (!oid) { setSessions([]); return; }
     try {
-      const { data } = await listMySessions();
+      const { data } = await listMySessions({ orgId: oid });
       setSessions(data?.sessions ?? []);
     } catch {
       setSessions((prev) => prev ?? []);
     }
-  }, []);
-  const refreshFeatures = useCallback(async () => {
+  }, [orgId]);
+  const refreshFeatures = useCallback(async (oid = orgId) => {
+    if (!oid) { setFeatures([]); return; }
     try {
-      const { data } = await listMyFeatures();
+      const { data } = await listMyFeatures({ orgId: oid });
       setFeatures(data?.features ?? []);
     } catch {
       setFeatures((prev) => prev ?? []);
     }
-  }, []);
-  const refreshAll = useCallback(async () => {
-    await Promise.all([refresh(), refreshFeatures()]);
-  }, [refresh, refreshFeatures]);
+  }, [orgId]);
+  const refreshAll = useCallback(async (oid = orgId) => {
+    await Promise.all([refresh(oid), refreshFeatures(oid)]);
+  }, [refresh, refreshFeatures, orgId]);
+
+  // Switch the active org: optimistic local select, clear the lists, persist the choice, reload.
+  const switchOrg = useCallback(async (id) => {
+    if (!id || id === orgId) return;
+    setSelectedOrgId(id);
+    setSessions(null); setFeatures(null);
+    try { await setActiveOrg({ orgId: id }); } catch { /* selection still applies locally */ }
+    refreshAll(id);
+  }, [orgId, refreshAll]);
 
   // Initial load + light polling while anything is in progress — a live fix, or a feature whose
   // steps are still running / advancing. Latest state is read via functional setState so the
   // interval never closes over stale values.
   useEffect(() => {
-    if (!user) return undefined;
+    if (!user || !orgId) return undefined;
     refreshAll();
     const id = setInterval(() => {
       let live = false;
@@ -84,13 +103,14 @@ export default function Dashboard() {
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
-  }, [user, refreshAll]);
+  }, [user, orgId, refreshAll]);
 
   const onFix = async () => {
     if (!problem.trim()) return;
     setBusy(true); setErr('');
     try {
       await createTask({
+        orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       });
@@ -108,6 +128,7 @@ export default function Dashboard() {
     setBusy(true); setErr('');
     try {
       await planFeature({
+        orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
       });
@@ -140,6 +161,22 @@ export default function Dashboard() {
         <div className="lg:hidden">
           <Leaderboard members={members} meId={meId} compact />
         </div>
+
+        {/* Workspace switcher — only when the user belongs to more than one. Switching re-scopes
+            the wallet, fixes, features and board to the chosen workspace. */}
+        {orgs.length > 1 && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-ink-soft">Workspace</span>
+            <select
+              value={orgId || ''}
+              onChange={(e) => switchOrg(e.target.value)}
+              disabled={busy}
+              className="rounded-lg border border-line bg-white px-3 py-1.5 font-semibold text-ink disabled:opacity-60"
+            >
+              {orgs.map((o) => <option key={o.id} value={o.id}>{o.name || 'Untitled'}</option>)}
+            </select>
+          </div>
+        )}
 
         {org === null && (
           <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200">

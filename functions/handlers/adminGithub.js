@@ -11,6 +11,7 @@ import { advanceFeature } from '../utils/featureRun.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
 import { mergePullRequest, createReleaseTag, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
+import { isMember } from '../utils/orgs.js';
 import { sanitizeImages } from '../utils/images.js';
 import { requireAdmin } from '../utils/admin.js';
 
@@ -594,12 +595,11 @@ async function requireCustomerDeploy(db, uid, taskId) {
   if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
   const userSnap = await db.collection('users').doc(uid).get();
   const user = userSnap.exists ? userSnap.data() : null;
-  const orgId = user?.orgId || null;
-  if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
   const taskSnap = await db.collection('tasks').doc(taskId).get();
   if (!taskSnap.exists) throw new HttpsError('not-found', 'Task not found.');
   const t = taskSnap.data();
-  if (t.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your task.');
+  // The task must belong to one of the user's organisations (any of them, not just the active).
+  if (!isMember(user, t.orgId)) throw new HttpsError('permission-denied', 'Not your task.');
   if (t.status !== 'complete' || t.approved !== true) {
     throw new HttpsError('failed-precondition', 'NOT_DEPLOYABLE');
   }
@@ -614,12 +614,10 @@ async function requireCustomerPreview(db, uid, taskId) {
   if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
   const userSnap = await db.collection('users').doc(uid).get();
   const user = userSnap.exists ? userSnap.data() : null;
-  const orgId = user?.orgId || null;
-  if (!orgId) throw new HttpsError('failed-precondition', 'NO_ORG');
   const taskSnap = await db.collection('tasks').doc(taskId).get();
   if (!taskSnap.exists) throw new HttpsError('not-found', 'Task not found.');
   const t = taskSnap.data();
-  if (t.orgId !== orgId) throw new HttpsError('permission-denied', 'Not your task.');
+  if (!isMember(user, t.orgId)) throw new HttpsError('permission-denied', 'Not your task.');
   if (t.status !== 'complete') throw new HttpsError('failed-precondition', 'NOT_READY');
   return user;
 }
