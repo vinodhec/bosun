@@ -456,6 +456,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
             s.paidInr > 0 && (
               <p className="mt-3 text-sm">
                 Total charged: <span className="font-semibold">{formatINR(s.paidInr)}</span>
+                {s.ciChargeInr > 0 && <span className="text-ink-soft"> (incl. {formatINR(s.ciChargeInr)} test-site hosting)</span>}
               </p>
             )
           )}

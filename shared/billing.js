@@ -79,6 +79,22 @@ export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
 }
 
 /**
+ * CI / deploy infrastructure cost (Firebase-hosted repos only). Such repos build + deploy
+ * through their own GitHub Action on every test-site deploy (auto-preview, merge-to-testing,
+ * undo, go-live) — roughly CI_COST_USD_PER_RUN per run. We pass this through to the customer at
+ * COST (no markup, no GST — it's flat infra, not effort): a flat allowance of CI_RUNS_PER_FIX
+ * runs is added ONCE per fix, on top of the bracketed token price. Vercel repos deploy via
+ * Vercel's own Git integration and are NOT charged this.
+ */
+export const CI_COST_USD_PER_RUN = 0.10;
+export const CI_RUNS_PER_FIX = 2; // ~ one auto-preview + one merge-to-testing
+
+/** Flat CI pass-through (INR) added once per Firebase fix — at cost, rounded up to whole rupees. */
+export function ciPassThroughInr({ rate = DEFAULT_USD_TO_INR, runs = CI_RUNS_PER_FIX } = {}) {
+  return Math.ceil(usdToInr(CI_COST_USD_PER_RUN * runs, rate));
+}
+
+/**
  * Feature planning (breakdown) charge. A "feature" is one larger request the owner makes; a
  * single Sonnet call breaks it into an ordered list of fix-sized steps. UNLIKE a fix — whose
  * price is the bracketed cost-plus on the run's COGS (priceFromCostUsd, applied in
