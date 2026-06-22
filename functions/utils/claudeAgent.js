@@ -171,7 +171,7 @@ export async function startFixSession({ prompt, images = [], imageFileIds = [], 
  * environment + GitHub auth, so the agent updates the SAME branch/PR. Usage accrues on
  * the same session, so the cost we read later is cumulative across rounds.
  */
-export async function continueFixSession({ sessionId, changes, images = [], figmaDesign = null }) {
+export async function continueFixSession({ sessionId, changes, images = [], figmaDesign = null, instruction = null }) {
   if (!sessionId) throw new Error('missing sessionId');
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
@@ -187,12 +187,15 @@ export async function continueFixSession({ sessionId, changes, images = [], figm
   const figmaImageBlock = figmaDesign?.image
     ? [{ type: 'image', source: { type: 'base64', media_type: figmaDesign.image.mediaType, data: figmaDesign.image.data } }]
     : [];
+  // `instruction`, when given (e.g. a design clarify reply), is the COMPLETE follow-up text and
+  // replaces the fix-revision prompt — the caller has folded in whatever framing it needs.
+  const text = instruction || buildRevisePrompt(changes, imageBlocks.length, figmaDesign);
   await client.beta.sessions.events.send(sessionId, {
     events: [
       {
         type: 'user.message',
         content: [
-          { type: 'text', text: buildRevisePrompt(changes, imageBlocks.length, figmaDesign) },
+          { type: 'text', text },
           ...imageBlocks,
           ...figmaImageBlock,
         ],

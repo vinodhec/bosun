@@ -22,6 +22,13 @@ service firebase.storage {
       allow write: if false; // backend only
     }
 
+    // mockshots/{designId}/... — rendered "design a screen" mockups. Written by the Admin SDK and
+    // served to the owner via unguessable download-token URLs (both bypass these rules), so no
+    // direct client access is needed. Covered by the default-deny below; listed here for clarity.
+    match /mockshots/{allPaths=**} {
+      allow read, write: if false;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

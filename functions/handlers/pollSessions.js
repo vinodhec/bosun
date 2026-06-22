@@ -4,7 +4,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure, chargeCiRun } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
-import { priceForPlanning } from '../utils/billing.js';
+import { extractDesignTurn } from '../utils/designSession.js';
+import { saveMockHtml } from '../utils/mockStore.js';
+import { priceForPlanning, priceForDesign, computeCharge } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -38,7 +40,8 @@ async function failPlan(db, taskSnap, task, reason, client) {
 // charge the breakdown (priceForPlanning = 2× the session's real COGS), atomically. Idempotent:
 // guarded on the planning task still being 'running' so two overlapping polls can't double-charge.
 async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
-  const chargeInr = priceForPlanning(costUsd, { rate: await getUsdToInrRate() });
+  const rate = await getUsdToInrRate();
+  const chargeInr = priceForPlanning(costUsd, { rate });
   const featureRef = db.collection('features').doc(task.featureId);
   const orgRef = db.collection('organisations').doc(task.orgId);
   const taskRef = taskSnap.ref;
@@ -63,8 +66,101 @@ async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
       planningCostUsd: costUsd,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    tx.update(taskRef, { status: 'complete', actualCostUsd: costUsd, reviewedCostUsd: costUsd });
+    // Stamp planning revenue + COGS on the task so adminMetrics counts the planning business too.
+    tx.update(taskRef, {
+      status: 'complete',
+      actualCostUsd: costUsd,
+      reviewedCostUsd: costUsd,
+      finalCharge: chargeInr,
+      billed: chargeInr > 0,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+    });
   });
+  await deleteSessionFiles(client, task);
+}
+
+// ===== "Design a screen" session finalizers =====
+// The design session is multi-turn: it goes idle after EVERY turn. A question turn pauses the task
+// (status 'awaiting') until the owner replies; a mock turn charges priceForPlanning on the cost since
+// the last charge and opens the design for review. Failed/over-cap → design failed, never charged.
+
+// A design turn produced clarifying questions (no mock) → show them and pause until the owner answers.
+async function finalizeDesignQuestions(db, taskSnap, task, questions) {
+  await db.collection('designs').doc(task.designId).update({
+    status: 'clarifying',
+    awaitingOwner: true,
+    turns: FieldValue.arrayUnion({ role: 'agent', text: String(questions || 'Could you tell me a little more about what you want?').slice(0, 2000), at: Date.now() }),
+    updatedAt: FieldValue.serverTimestamp(),
+  }).catch((e) => console.warn('finalizeDesignQuestions', task.designId, e?.message || e));
+  await taskSnap.ref.update({ status: 'awaiting' }); // paused; replyToClarify flips it back to running
+}
+
+// A design turn produced a mock → store the HTML, charge the design phase (bracketed cost-plus like
+// a fix, on the cost since the last charge — covers exploration + this mock; a refine charges only
+// its new cost), and open the design for review. Idempotent: guarded on the task still 'running'.
+async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
+  const mockUrl = await saveMockHtml(task.designId, turn.mockHtml); // network — before the tx
+  const rate = await getUsdToInrRate();
+  const designRef = db.collection('designs').doc(task.designId);
+  const orgRef = db.collection('organisations').doc(task.orgId);
+  const taskRef = taskSnap.ref;
+  await db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(taskRef);
+    if (!tSnap.exists || tSnap.data().status !== 'running') return; // already finalized
+    const dSnap = await tx.get(designRef);
+    if (!dSnap.exists) return;
+    const oSnap = await tx.get(orgRef);
+    const reviewed = Number(tSnap.data().reviewedCostUsd) || 0;
+    const roundUsd = Math.max(0, costUsd - reviewed);
+    // The first mock is the priced deliverable (high markup); a refine (the design already has a
+    // charge) is cheap iteration. Both on the cost since the last charge — a refine only pays for
+    // its new work. See priceForDesign in shared/billing.js.
+    const isRefine = (Number(dSnap.data().designChargeInr) || 0) > 0;
+    const chargeInr = priceForDesign(roundUsd, { rate, isRefine });
+    if (chargeInr > 0) {
+      const balance = oSnap.exists ? Number(oSnap.data().balance ?? 0) : 0;
+      tx.update(orgRef, { balance: balance - chargeInr });
+      tx.set(db.collection('transactions').doc(), {
+        orgId: task.orgId, userId: task.userId, type: 'debit', amount: chargeInr,
+        designId: task.designId, kind: 'design', createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(designRef, {
+      status: 'mockup_review',
+      awaitingOwner: false,
+      mockUrl: mockUrl || dSnap.data().mockUrl || null,
+      // The approved mock markup + scope are handed to the builder so it reproduces what was
+      // approved and changes ONLY what was asked (see designRun.buildAgentPrompt).
+      mockHtml: turn.mockHtml || dSnap.data().mockHtml || null,
+      scope: turn.scope || dSnap.data().scope || 'new_page',
+      changeSummary: turn.changeSummary || dSnap.data().changeSummary || '',
+      keepUnchanged: turn.keepUnchanged || dSnap.data().keepUnchanged || '',
+      brief: turn.brief || dSnap.data().brief || '',
+      turns: FieldValue.arrayUnion({ role: 'agent', text: (turn.questions || 'Here’s how your screen will look.').slice(0, 2000), at: Date.now() }),
+      designChargeInr: (Number(dSnap.data().designChargeInr) || 0) + chargeInr,
+      designCostUsd: costUsd,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Stamp the design-phase revenue + COGS on the session task so adminMetrics (which sums
+    // task.finalCharge / actualCostInr across all tasks) counts the design business, not just builds.
+    const prevFinal = Number(tSnap.data().finalCharge) || 0;
+    tx.update(taskRef, {
+      status: 'awaiting',
+      reviewedCostUsd: costUsd,
+      finalCharge: prevFinal + chargeInr,
+      billed: prevFinal + chargeInr > 0,
+      actualCostUsd: costUsd,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+    });
+  });
+}
+
+// A design session failed / blew its cap → mark the design failed. NEVER charged (same as a fix).
+async function failDesign(db, taskSnap, task, reason, client) {
+  await taskSnap.ref.update({ status: 'failed', error: reason });
+  if (task.designId) {
+    await db.collection('designs').doc(task.designId).update({ status: 'failed', error: reason }).catch(() => {});
+  }
   await deleteSessionFiles(client, task);
 }
 
@@ -134,6 +230,26 @@ export const pollSessions = onSchedule(
             if (overSec || overUsd) {
               try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
               await failPlan(db, docSnap, task, overSec ? 'timeout' : 'over_budget', client);
+            }
+            continue;
+          }
+
+          // Design sessions are multi-turn: idle = a turn finished. A mock turn charges + opens
+          // review; a question turn pauses for the owner. Same cap guards (cumulative, like planning).
+          if (task.kind === 'design') {
+            if (DONE.has(status)) {
+              const turn = await extractDesignTurn(client, task.sessionId);
+              if (turn.ready) await finalizeDesignMock(db, docSnap, task, turn, costUsd);
+              else await finalizeDesignQuestions(db, docSnap, task, turn.questions);
+              continue;
+            }
+            if (FAILED.has(status)) { await failDesign(db, docSnap, task, 'agent_failed', client); continue; }
+            await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            const overSecD = activeSec > (Number(task.maxSeconds) || 1800);
+            const overUsdD = costUsd > (Number(task.maxBudgetUsd) || 1.5);
+            if (overSecD || overUsdD) {
+              try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
+              await failDesign(db, docSnap, task, overSecD ? 'timeout' : 'over_budget', client);
             }
             continue;
           }

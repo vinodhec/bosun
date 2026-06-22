@@ -61,6 +61,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Designs — a "design a screen" request: the clarify chat, the rendered mock image URLs, and
+    // (after approval) the build task. Owner-read; all writes backend-only (the session finalizer
+    // debits the wallet for the design phase and stores the mock URLs). The customer UI reads
+    // designs via the listMyDesigns callable, not directly.
+    match /designs/{designId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
       allow read:  if memberOf(resource.data.orgId);
