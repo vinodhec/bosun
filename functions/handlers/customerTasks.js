@@ -41,11 +41,11 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     .get();
 
   return {
-    // Feature steps are filtered out here — they belong to a feature and are shown inside its
-    // card (listMyFeatures), never as standalone fixes. sessionView is the shared task → safe-
-    // view projection used by both this list and a feature's active step.
+    // Feature steps AND design builds are filtered out here — they belong to a feature/design and
+    // are shown inside that card (listMyFeatures / listMyDesigns), never as standalone fixes.
+    // sessionView is the shared task → safe-view projection used by all three.
     sessions: snap.docs
-      .filter((d) => !d.data().featureId)
+      .filter((d) => !d.data().featureId && !d.data().designId)
       .map((d) => sessionView(d.data(), d.id, { userCanDeployProd, deploy })),
   };
 });

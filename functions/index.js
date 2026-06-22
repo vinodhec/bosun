@@ -11,6 +11,8 @@ export { createTask } from './handlers/createTask.js';        // step 2: run
 export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, setActiveOrg } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes + active-org switch
 // Plan a feature → code-aware breakdown, owner reviews/approves/refines, then sequential fix steps.
 export { planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from './handlers/featureTasks.js';
+// Design a screen → clarify chat + a live HTML mock the owner approves before a real build runs.
+export { planDesign, replyToClarify, refineMockup, approveDesign, listMyDesigns } from './handlers/designTasks.js';
 
 // Operator-only admin callables — credits live at the organisation level.
 export {

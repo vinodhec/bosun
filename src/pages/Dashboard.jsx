@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrgs } from '../hooks/useOrgs.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, setActiveOrg } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, setActiveOrg } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
+import DesignCard from '../components/DesignCard.jsx';
 import Leaderboard from '../components/Leaderboard.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
@@ -65,6 +66,7 @@ export default function Dashboard() {
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
   const [features, setFeatures] = useState(null);
+  const [designs, setDesigns] = useState(null);
 
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
@@ -89,15 +91,24 @@ export default function Dashboard() {
       setFeatures((prev) => prev ?? []);
     }
   }, [orgId]);
+  const refreshDesigns = useCallback(async (oid = orgId) => {
+    if (!oid) { setDesigns([]); return; }
+    try {
+      const { data } = await listMyDesigns({ orgId: oid });
+      setDesigns(data?.designs ?? []);
+    } catch {
+      setDesigns((prev) => prev ?? []);
+    }
+  }, [orgId]);
   const refreshAll = useCallback(async (oid = orgId) => {
-    await Promise.all([refresh(oid), refreshFeatures(oid)]);
-  }, [refresh, refreshFeatures, orgId]);
+    await Promise.all([refresh(oid), refreshFeatures(oid), refreshDesigns(oid)]);
+  }, [refresh, refreshFeatures, refreshDesigns, orgId]);
 
   // Switch the active org: optimistic local select, clear the lists, persist the choice, reload.
   const switchOrg = useCallback(async (id) => {
     if (!id || id === orgId) return;
     setSelectedOrgId(id);
-    setSessions(null); setFeatures(null);
+    setSessions(null); setFeatures(null); setDesigns(null);
     try { await setActiveOrg({ orgId: id }); } catch { /* selection still applies locally */ }
     refreshAll(id);
   }, [orgId, refreshAll]);
@@ -112,6 +123,8 @@ export default function Dashboard() {
       let live = false;
       setSessions((prev) => { if (prev?.some((s) => isLive(s.status) || s.buildingPreview)) live = true; return prev; });
       setFeatures((prev) => { if (prev?.some((f) => f.status === 'running' || f.status === 'planning')) live = true; return prev; });
+      // A design is live while the agent is designing (not while it's waiting on the owner) or building.
+      setDesigns((prev) => { if (prev?.some((d) => (d.status === 'clarifying' && !d.awaitingOwner) || d.status === 'building')) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
@@ -152,6 +165,25 @@ export default function Dashboard() {
       setBusy(false);
     }
   };
+
+  const onDesign = async () => {
+    if (!problem.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await planDesign({
+        orgId,
+        prompt: problem.trim(),
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
+      setProblem(''); resetImages();
+      await refreshAll();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const onSubmit = mode === 'feature' ? onPlan : mode === 'design' ? onDesign : onFix;
 
   const tabCls = (active) =>
     `rounded-lg px-3 py-1.5 text-sm font-semibold transition ${active ? 'bg-white text-ink shadow-sm ring-1 ring-line' : 'text-ink-soft hover:text-ink'}`;
@@ -205,10 +237,15 @@ export default function Dashboard() {
             <button type="button" onClick={() => { setMode('feature'); setErr(''); }} className={tabCls(mode === 'feature')}>
               Plan a feature
             </button>
+            <button type="button" onClick={() => { setMode('design'); setErr(''); }} className={tabCls(mode === 'design')}>
+              Design a screen
+            </button>
           </div>
 
           <h1 className="text-xl font-bold text-ink">
-            {mode === 'feature' ? 'What would you like to add to your website?' : 'What’s broken on your website?'}
+            {mode === 'feature' ? 'What would you like to add to your website?'
+              : mode === 'design' ? 'What screen would you like us to design?'
+              : 'What’s broken on your website?'}
           </h1>
           {connected && (
             <p className="mt-1 text-sm text-ink-soft">
@@ -221,6 +258,8 @@ export default function Dashboard() {
               onChange={setProblem}
               placeholder={mode === 'feature'
                 ? 'Example: Let customers book an appointment and get an email confirmation'
+                : mode === 'design'
+                ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
                 : 'Example: My menu disappears on mobile phone'}
               images={images}
               imgErr={imgErr}
@@ -235,15 +274,19 @@ export default function Dashboard() {
           </p>
           {err && <p className="mt-2 text-sm text-bad">{err}</p>}
           <button
-            onClick={mode === 'feature' ? onPlan : onFix}
+            onClick={onSubmit}
             disabled={busy || !problem.trim() || !connected}
             className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-brand-600 px-5 py-3 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60 sm:w-auto"
           >
-            {busy ? (mode === 'feature' ? 'Planning…' : 'Starting…') : (mode === 'feature' ? 'Plan My Feature →' : 'Fix My Website →')}
+            {busy
+              ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : 'Starting…')
+              : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : 'Fix My Website →')}
           </button>
           <p className="mt-2 text-xs text-ink-soft">
             {mode === 'feature'
               ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
+              : mode === 'design'
+              ? 'We’ll ask a couple of quick questions, then show you how your screen will look — on your real site — before anything is built. There’s a small charge to design it; the build is priced separately when you approve.'
               : 'You’re only charged after the fix is done.'}
           </p>
         </section>
@@ -253,6 +296,24 @@ export default function Dashboard() {
             <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your features</h2>
             {features.map((f) => (
               <FeatureCard key={f.id} feature={f} onChanged={refreshAll} />
+            ))}
+          </section>
+        )}
+
+        {Array.isArray(designs) && designs.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your designs</h2>
+            {designs.map((d) => (
+              // While designing / reviewing the mock → the design card. Once approved + building, the
+              // build is a normal fix, so reuse the fix card (deploy / go-live work unchanged).
+              (d.status === 'building' || d.status === 'complete') && d.session ? (
+                <div key={d.id} className="space-y-2">
+                  <p className="px-1 text-sm text-ink-soft">“{d.prompt}”</p>
+                  <SessionCard session={d.session} onRevised={refreshAll} hideGoLive={!d.canGoLive} />
+                </div>
+              ) : (
+                <DesignCard key={d.id} design={d} onChanged={refreshAll} />
+              )
             ))}
           </section>
         )}

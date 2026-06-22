@@ -23,6 +23,12 @@ export const reviseFeaturePlan = httpsCallable(functions, 'reviseFeaturePlan');
 export const addFeatureChange = httpsCallable(functions, 'addFeatureChange');
 export const listMyFeatures = httpsCallable(functions, 'listMyFeatures');
 export const retryFeatureStep = httpsCallable(functions, 'retryFeatureStep');
+// "Design a screen": clarify chat + a live HTML mock the owner approves before a real build runs.
+export const planDesign = httpsCallable(functions, 'planDesign');
+export const replyToClarify = httpsCallable(functions, 'replyToClarify');
+export const refineMockup = httpsCallable(functions, 'refineMockup');
+export const approveDesign = httpsCallable(functions, 'approveDesign');
+export const listMyDesigns = httpsCallable(functions, 'listMyDesigns');
 
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
