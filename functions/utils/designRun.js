@@ -10,16 +10,47 @@ import { tierFor } from './billing.js';
 // from a standalone fix is the instruction — it adds the agreed NEW screen rather than fixing a bug —
 // and that listMySessions hides it (it shows inside the design card). Mirrors featureRun.startFeatureStep.
 
-function buildAgentPrompt(design) {
+// The build instruction. Hands the agent EVERYTHING from the design phase so it builds exactly what
+// was approved and ONLY what was asked: the owner's original words, the full clarify conversation, the
+// agreed brief, the scope (new page vs change-in-place + what must stay untouched), the APPROVED mock
+// markup as the visual target, and any extra build notes the owner added at approval.
+function buildAgentPrompt(design, { mockHtml = '', notes = '' } = {}) {
+  const turns = Array.isArray(design.turns) ? design.turns : [];
+  const convo = turns.length
+    ? `The conversation while we agreed the design (full context):\n` +
+      turns.map((t) => `${t.role === 'owner' ? 'Owner' : 'Designer'}: ${t.text}`).join('\n') + '\n\n'
+    : '';
+  const scopeNote = design.scope === 'modify'
+    ? `IMPORTANT — this is a CHANGE to something that ALREADY exists on the site, NOT a new page.\n` +
+      `Change ONLY this: ${design.changeSummary || design.brief}\n` +
+      (design.keepUnchanged
+        ? `Leave everything else EXACTLY as it is — in particular: ${design.keepUnchanged}.\n`
+        : `Do NOT redesign, restructure or restyle anything beyond what's asked.\n`) +
+      `Find the EXISTING component/section in the repo and edit it IN PLACE. Do NOT create a new page or ` +
+      `rebuild the surrounding page.\n`
+    : `Add this as a NEW page/screen and wire it into the site's navigation/routing where it belongs.\n`;
+  const mockNote = mockHtml
+    ? `\nThe owner APPROVED this exact mockup. Reproduce its look — layout, spacing, colours, fonts, ` +
+      `proportions — faithfully, but built in the repo's REAL framework, components and design tokens (do ` +
+      `NOT paste this HTML into the app; it is a VISUAL REFERENCE only).` +
+      (design.scope === 'modify' ? ` The mock may show surrounding context — only apply the CHANGED part.` : ``) +
+      `\nAPPROVED MOCKUP:\n\`\`\`html\n${String(mockHtml).slice(0, 20000)}\n\`\`\`\n`
+    : '';
+  const notesNote = notes
+    ? `\nThe owner added these extra instructions for the build — follow them:\n"${notes}"\n`
+    : '';
   return (
-    `A website owner approved a design for a NEW screen to add to their site. Build it for real.\n\n` +
-    `What to build:\n"${design.brief || design.prompt}"\n\n` +
-    `Add this as a new screen/page in the project at /workspace/repo, built in the repo's EXISTING ` +
-    `framework, components, design tokens and styling — it must look like it belongs on the site (the ` +
-    `owner already approved a mockup in that style). Wire it into the site's navigation/routing where it ` +
-    `naturally belongs. Read AGENTS.md first if present. Do NOT add new dependencies or a separate style ` +
-    `system. If any screenshots or a design image are attached, use them as the reference for how the ` +
-    `screen should look. Commit to a new branch, push it, and open a pull request.\n\n` +
+    `A website owner approved a design with us. Build it for real in their repo at /workspace/repo.\n\n` +
+    `What the owner originally asked for:\n"${design.prompt || ''}"\n\n` +
+    convo +
+    `The agreed result:\n"${design.brief || design.prompt}"\n\n` +
+    scopeNote +
+    mockNote +
+    notesNote +
+    `\nBuild it in the repo's EXISTING framework, components, design tokens and styling — read AGENTS.md ` +
+    `first if present. Do NOT add new dependencies or a separate style system. If screenshots or a design ` +
+    `image are attached, use them as reference too. Make the SMALLEST change that delivers the agreed ` +
+    `result. Commit to a new branch, push it, and open a pull request.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). On the VERY LAST ` +
     `line, append a machine-readable result (the user won't see it):\n` +
     `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>"}`
@@ -43,7 +74,7 @@ async function loadRepoContext(db, orgId) {
  * task id. Flows through the NORMAL fix finalize path (pollSessions → markRoundReady, bracketed
  * charge). On dispatch failure the task is marked failed and the error rethrown.
  */
-export async function startDesignBuild(db, designId) {
+export async function startDesignBuild(db, designId, { notes = '' } = {}) {
   const designRef = db.collection('designs').doc(designId);
   const dSnap = await designRef.get();
   if (!dSnap.exists) throw new Error('design_not_found');
@@ -56,10 +87,17 @@ export async function startDesignBuild(db, designId) {
   const figmaDesign = await designContextFromText({ org, secretData, text: design.prompt || '' });
   const imageFileIds = Array.isArray(design.screenshotFileIds) ? design.screenshotFileIds : [];
 
-  // The owner sees the design card; the agent gets the build framing. Classify on the brief.
+  // The exact mock the owner approved, handed to the builder as the visual target. Stored on the doc
+  // for new designs; fetched from the Storage URL for older ones (best-effort).
+  let mockHtml = String(design.mockHtml || '');
+  if (!mockHtml && design.mockUrl) {
+    try { mockHtml = await (await fetch(design.mockUrl)).text(); } catch { /* best-effort — brief still drives it */ }
+  }
+
+  // The owner sees the design card; the agent gets the full build framing. Classify on what's changing.
   const displayPrompt = design.brief || design.prompt || '';
-  const agentPrompt = buildAgentPrompt(design);
-  const { complexity: raw } = await classifyComplexity(displayPrompt);
+  const agentPrompt = buildAgentPrompt(design, { mockHtml, notes });
+  const { complexity: raw } = await classifyComplexity(design.changeSummary || displayPrompt);
   const complexity = raw === 'large' ? 'complex' : raw; // a scoped screen always runs, never parks
   const tier = tierFor(complexity);
   const model = modelForComplexity(complexity);

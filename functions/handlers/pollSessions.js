@@ -120,6 +120,12 @@ async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
       status: 'mockup_review',
       awaitingOwner: false,
       mockUrl: mockUrl || dSnap.data().mockUrl || null,
+      // The approved mock markup + scope are handed to the builder so it reproduces what was
+      // approved and changes ONLY what was asked (see designRun.buildAgentPrompt).
+      mockHtml: turn.mockHtml || dSnap.data().mockHtml || null,
+      scope: turn.scope || dSnap.data().scope || 'new_page',
+      changeSummary: turn.changeSummary || dSnap.data().changeSummary || '',
+      keepUnchanged: turn.keepUnchanged || dSnap.data().keepUnchanged || '',
       brief: turn.brief || dSnap.data().brief || '',
       turns: FieldValue.arrayUnion({ role: 'agent', text: (turn.questions || 'Here’s how your screen will look.').slice(0, 2000), at: Date.now() }),
       designChargeInr: (Number(dSnap.data().designChargeInr) || 0) + chargeInr,

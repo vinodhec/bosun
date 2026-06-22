@@ -10,6 +10,7 @@ import { formatINR } from '@shared/currency.js';
 export default function DesignCard({ design: d, onChanged }) {
   const [answer, setAnswer] = useState('');
   const [changes, setChanges] = useState('');
+  const [notes, setNotes] = useState('');
   const [showChanges, setShowChanges] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -89,9 +90,20 @@ export default function DesignCard({ design: d, onChanged }) {
             </a>
           )}
 
+          <div className="mt-3">
+            <label className="block text-xs font-medium text-ink-soft">Anything to add before we build? <span className="font-normal">(optional)</span></label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              placeholder="Example: make sure the phone number is clickable, and keep the same page title"
+              className="mt-1 w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+            />
+          </div>
+
           <div className="mt-3 flex flex-wrap gap-2">
             <button
-              onClick={() => run(() => approveDesign({ designId: d.id }))}
+              onClick={() => run(() => approveDesign({ designId: d.id, notes: notes.trim() }))}
               disabled={busy}
               className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
             >

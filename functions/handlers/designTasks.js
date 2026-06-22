@@ -198,6 +198,8 @@ export const approveDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
   const designId = String(request.data?.designId ?? '').trim();
   if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
+  // The owner may add extra build instructions when approving — these ride into the build handoff.
+  const notes = String(request.data?.notes ?? '').trim().slice(0, 1500);
 
   const db = getFirestore();
   const designRef = db.collection('designs').doc(designId);
@@ -209,8 +211,8 @@ export const approveDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC
   if (!d.brief) throw new HttpsError('failed-precondition', 'NO_MOCK');
 
   try {
-    const buildTaskId = await startDesignBuild(db, designId);
-    await designRef.update({ status: 'building', buildTaskId });
+    const buildTaskId = await startDesignBuild(db, designId, { notes });
+    await designRef.update({ status: 'building', buildTaskId, buildNotes: notes || null });
     // The design session task is done with its job (clarify + mock); stop polling it.
     if (d.designTaskId) await db.collection('tasks').doc(d.designTaskId).update({ status: 'complete' }).catch(() => {});
   } catch (e) {
