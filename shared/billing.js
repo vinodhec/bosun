@@ -80,17 +80,15 @@ export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
 
 /**
  * CI / deploy infrastructure cost (Firebase-hosted repos only). Such repos build + deploy
- * through their own GitHub Action on every test-site deploy (auto-preview, merge-to-testing,
- * undo, go-live) — roughly CI_COST_USD_PER_RUN per run. We pass this through to the customer at
- * COST (no markup, no GST — it's flat infra, not effort): a flat allowance of CI_RUNS_PER_FIX
- * runs is added ONCE per fix, on top of the bracketed token price. Vercel repos deploy via
- * Vercel's own Git integration and are NOT charged this.
+ * through their own GitHub Action on every test-site deploy. We meter this PER ACTUAL RUN —
+ * each auto-preview, manual preview, undo, merge-to-testing, and go-live debits the org at COST
+ * (no markup, no GST — it's flat infra, not effort) the moment the run is triggered. Vercel
+ * repos deploy via Vercel's own Git integration and are NOT charged this.
  */
 export const CI_COST_USD_PER_RUN = 0.10;
-export const CI_RUNS_PER_FIX = 2; // ~ one auto-preview + one merge-to-testing
 
-/** Flat CI pass-through (INR) added once per Firebase fix — at cost, rounded up to whole rupees. */
-export function ciPassThroughInr({ rate = DEFAULT_USD_TO_INR, runs = CI_RUNS_PER_FIX } = {}) {
+/** Cost (INR) of one CI/deploy run — at cost, rounded up to whole rupees. */
+export function ciRunInr({ rate = DEFAULT_USD_TO_INR, runs = 1 } = {}) {
   return Math.ceil(usdToInr(CI_COST_USD_PER_RUN * runs, rate));
 }
 

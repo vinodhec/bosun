@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFixSession, firebaseSAsFromSecret, platformSessionUrl } from '../utils/claudeAgent.js';
 import { tierFor, usdToInr } from '../utils/billing.js';
 import { classifyComplexity } from '../utils/classify.js';
-import { markRoundFailure, awardShipPoints } from '../utils/finalize.js';
+import { markRoundFailure, awardShipPoints, chargeCiRun } from '../utils/finalize.js';
 import { advanceFeature } from '../utils/featureRun.js';
 import { sessionCostUsd } from '../utils/agentResult.js';
 import { resolveModel, agentIdForModel, OVERRIDABLE_MODELS } from '../utils/routeModel.js';
@@ -492,6 +492,11 @@ async function deployTaskToTesting(db, taskId) {
       ? { previewDeploying: true, previewRef: baseBranch, previewError: null, previewRequestedAt: FieldValue.serverTimestamp() }
       : { previewDeploying: false }),
   });
+  // Firebase merge → base push runs the testing CI build; meter that run (best-effort).
+  if (isFirebase) {
+    try { await chargeCiRun(db, { orgId: t.orgId, taskId, userId: t.userId, runKind: 'merge_testing' }); }
+    catch (e) { console.error('deployTaskToTesting:ci', taskId, e?.message || e); }
+  }
   // Credit the "went live for review" milestone to the employee (best-effort; never blocks
   // the deploy). Idempotent — guarded by the task's shipPointsAwarded flag.
   try { await awardShipPoints(taskId); } catch (e) { console.error('awardShipPoints', taskId, e?.message || e); }
@@ -512,6 +517,7 @@ async function deployTaskToProd(db, taskId) {
 
   const orgSnap = await db.collection('organisations').doc(t.orgId).get();
   const baseBranch = (orgSnap.exists && orgSnap.data().github?.baseBranch) || 'main';
+  const isFirebase = orgSnap.exists && orgSnap.data().deploy?.host === 'firebase';
 
   const secret = await db.collection('orgSecrets').doc(t.orgId).get();
   const token = secret.exists ? secret.data().githubToken : null;
@@ -519,6 +525,11 @@ async function deployTaskToProd(db, taskId) {
 
   const result = await createReleaseTag(t.repoFullName, baseBranch, token);
   await ref.update({ deployedProd: true, deployedProdAt: FieldValue.serverTimestamp(), releaseTag: result.tag });
+  // Firebase tag → prod CI build runs; meter it (best-effort).
+  if (isFirebase) {
+    try { await chargeCiRun(db, { orgId: t.orgId, taskId, userId: t.userId, runKind: 'go_live' }); }
+    catch (e) { console.error('deployTaskToProd:ci', taskId, e?.message || e); }
+  }
   return { ok: true, ...result };
 }
 
@@ -569,6 +580,8 @@ async function previewFirebaseTesting(db, taskId) {
     previewError: null,
     previewRequestedAt: FieldValue.serverTimestamp(),
   });
+  try { await chargeCiRun(db, { orgId: t.orgId, taskId, userId: t.userId, runKind: 'preview' }); }
+  catch (e) { console.error('previewFirebaseTesting:ci', taskId, e?.message || e); }
   return { ok: true, url: testingUrl };
 }
 
@@ -589,6 +602,8 @@ async function revertFirebaseTesting(db, taskId) {
     previewError: null,
     previewRequestedAt: FieldValue.serverTimestamp(),
   });
+  try { await chargeCiRun(db, { orgId: t.orgId, taskId, userId: t.userId, runKind: 'revert' }); }
+  catch (e) { console.error('revertFirebaseTesting:ci', taskId, e?.message || e); }
   return { ok: true, url: testingUrl };
 }
 

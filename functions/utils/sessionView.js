@@ -46,7 +46,8 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
     // Money: what they've already paid, and what tapping "Looks good" will charge now.
     paidInr: Number(t.finalCharge) || 0,
     owedInr: pendingReview ? Number(t.currentRoundCharge) || 0 : 0,
-    ciChargeInr: Number(t.ciChargeInr) || 0, // flat test-site/CI pass-through baked into the charge
+    ciChargeInr: Number(t.ciChargeInr) || 0, // at-cost test-site/CI run charges, metered per run
+    ciRunCount: Number(t.ciRunCount) || 0,
 
     priceInr: t.priceInr ?? null,
     // Approval state (approve-before-charge): a finished round waits for the customer.

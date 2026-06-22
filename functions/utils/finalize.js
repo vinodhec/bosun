@@ -1,5 +1,5 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { computeCharge, priceFromCostUsd, ciPassThroughInr } from './billing.js';
+import { computeCharge, priceFromCostUsd, ciRunInr } from './billing.js';
 import { getUsdToInrRate } from './fxRate.js';
 import { applyFixAward, applyShipAward } from './gamification.js';
 
@@ -93,11 +93,6 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const isFreeRound = pr.kind === 'unresolved';
     const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate });
 
-    // Firebase repos build + deploy through their own CI on every test-site deploy; pass that
-    // infra cost through ONCE per fix (flat, no markup), guarded by `ciCharged` so a revision
-    // never re-adds it. Vercel repos deploy via Vercel's integration and aren't charged this.
-    const ciInr = (deployHost === 'firebase' && !task.ciCharged) ? ciPassThroughInr({ rate }) : 0;
-
     const safeKeywords = Array.isArray(idealKeywords)
       ? idealKeywords
           .map((k) => ({
@@ -150,17 +145,14 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       completedAt: FieldValue.serverTimestamp(),
     };
 
-    // Accrue this round's price (+ any one-time CI pass-through) on top of anything unapproved
-    // from prior rounds (which happens when the customer revises before approving the previous).
-    const owedAfter = Math.max(0, Math.round((Number(task.currentRoundCharge) || 0) + roundPriceInr + ciInr));
-    const ciUpdate = ciInr > 0
-      ? { ciCharged: true, ciChargeInr: (Number(task.ciChargeInr) || 0) + ciInr }
-      : {};
+    // Accrue this round's price on top of anything unapproved from prior rounds (which
+    // happens when the customer revises before approving the previous round).
+    const owedAfter = Math.max(0, Math.round((Number(task.currentRoundCharge) || 0) + roundPriceInr));
 
     const analytics = {
       taskId, orgId: task.orgId, complexity: task.complexity || null, model: task.model || null,
       kind: pr.kind, reason: pr.reason || null, round: priorRounds.length + 1,
-      roundCostUsd: roundUsd, roundCostInr, roundPriceInr, ciInr, owedInr: owedAfter,
+      roundCostUsd: roundUsd, roundCostInr, roundPriceInr, owedInr: owedAfter,
       freeRevisionsUsed: Number(task.freeRevisionsUsed) || 0, requireApproval,
     };
 
@@ -168,7 +160,6 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       // Wait for the customer to approve — no money moves yet, but record what'll be owed.
       tx.update(taskRef, {
         ...baseUpdate,
-        ...ciUpdate,
         pendingReview: true,
         approved: false,
         currentRoundCharge: owedAfter,
@@ -204,7 +195,6 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
 
     tx.update(taskRef, {
       ...baseUpdate,
-      ...ciUpdate,
       pendingReview: false,
       approved: true,
       billed: newFinalCharge > 0,
@@ -217,6 +207,40 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     logBillingEvent('round_ready', { ...analytics, outcome: 'auto_charged', chargedInr: owed, finalChargeInr: newFinalCharge });
     return { ready: true, charged: owed };
   });
+}
+
+// Meter ONE Firebase CI/deploy run: debit the org the flat at-cost run price (no markup) and
+// record it as a ledger line, the moment a run is triggered (auto-preview, manual preview, undo,
+// merge-to-testing, go-live). Best-effort + non-blocking — a billing hiccup must never stop a
+// deploy, so callers wrap this and ignore failures. `runKind` labels the ledger entry. The org
+// may go negative (same policy as fixes); the operator reconciles. Returns the amount debited.
+export async function chargeCiRun(db, { orgId, taskId = null, userId = null, runKind = null }) {
+  if (!orgId) return 0;
+  const rate = await getUsdToInrRate();
+  const amount = ciRunInr({ rate });
+  if (amount <= 0) return 0;
+  await db.runTransaction(async (tx) => {
+    const orgRef = db.collection('organisations').doc(orgId);
+    const taskRef = taskId ? db.collection('tasks').doc(taskId) : null;
+    // Reads before writes (Firestore tx rule).
+    const orgSnap = await tx.get(orgRef);
+    if (!orgSnap.exists) return;
+    const taskSnap = taskRef ? await tx.get(taskRef) : null;
+
+    tx.update(orgRef, { balance: Number(orgSnap.data().balance ?? 0) - amount });
+    tx.set(db.collection('transactions').doc(), {
+      orgId, userId, type: 'debit', kind: 'ci', runKind,
+      amount, taskId, createdAt: FieldValue.serverTimestamp(),
+    });
+    if (taskSnap && taskSnap.exists) {
+      tx.update(taskRef, {
+        ciChargeInr: (Number(taskSnap.data().ciChargeInr) || 0) + amount,
+        ciRunCount: (Number(taskSnap.data().ciRunCount) || 0) + 1,
+      });
+    }
+  });
+  logBillingEvent('ci_run', { orgId, taskId, runKind, ciInr: amount });
+  return amount;
 }
 
 // Charge the flat tier price owed for the current cycle, on the customer's approval (only
