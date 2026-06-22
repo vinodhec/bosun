@@ -1,7 +1,7 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
-import { markRoundReady, markRoundFailure } from '../utils/finalize.js';
+import { markRoundReady, markRoundFailure, chargeCiRun } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { priceForPlanning } from '../utils/billing.js';
@@ -261,6 +261,9 @@ export const pollSessions = onSchedule(
           previewError: null,
           previewRequestedAt: FieldValue.serverTimestamp(),
         });
+        // Meter this CI run (best-effort — never undo the deploy over a billing hiccup).
+        try { await chargeCiRun(db, { orgId: t.orgId, taskId: docSnap.id, userId: t.userId, runKind: 'preview' }); }
+        catch (e) { console.error('pollSessions:ci', docSnap.id, e?.message || e); }
       } catch (e) {
         console.error('pollSessions:autodeploy', docSnap.id, e?.message || e);
       }
