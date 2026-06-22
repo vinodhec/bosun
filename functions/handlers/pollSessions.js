@@ -6,7 +6,7 @@ import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { extractDesignTurn } from '../utils/designSession.js';
 import { saveMockHtml } from '../utils/mockStore.js';
-import { priceForPlanning, priceFromCostUsd } from '../utils/billing.js';
+import { priceForPlanning, priceForDesign } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -103,9 +103,11 @@ async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
     const oSnap = await tx.get(orgRef);
     const reviewed = Number(tSnap.data().reviewedCostUsd) || 0;
     const roundUsd = Math.max(0, costUsd - reviewed);
-    // Design phase is priced like a FIX — the bracketed cost-plus curve (4.5x/3x/2x, capped
-    // MAX_CHARGE_INR), on the cost since the last charge (so a refine only pays for its new work).
-    const chargeInr = priceFromCostUsd(roundUsd, { rate });
+    // The first mock is the priced deliverable (high markup); a refine (the design already has a
+    // charge) is cheap iteration. Both on the cost since the last charge — a refine only pays for
+    // its new work. See priceForDesign in shared/billing.js.
+    const isRefine = (Number(dSnap.data().designChargeInr) || 0) > 0;
+    const chargeInr = priceForDesign(roundUsd, { rate, isRefine });
     if (chargeInr > 0) {
       const balance = oSnap.exists ? Number(oSnap.data().balance ?? 0) : 0;
       tx.update(orgRef, { balance: balance - chargeInr });

@@ -114,6 +114,23 @@ export function priceForPlanning(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
 }
 
 /**
+ * "Design a screen" phase pricing. The FIRST mock is the priced deliverable (a complete, on-brand
+ * screen the owner approves), so it carries a high markup; a REFINE ("Ask for changes") is cheap
+ * iteration, charged a small multiple of its own incremental cost so owners can tweak freely.
+ * Both are a flat multiple of actual COGS (inflated by Anthropic GST), rounded UP to whole rupees,
+ * no floor/cap. Tune the multipliers here and nowhere else.
+ *   initial: DESIGN_INITIAL_MULTIPLIER × COGS  (≈ ₹384 for a ~$0.63 design)
+ *   refine : DESIGN_REFINE_MULTIPLIER  × COGS
+ */
+export const DESIGN_INITIAL_MULTIPLIER = 5.5;
+export const DESIGN_REFINE_MULTIPLIER = 2;
+export function priceForDesign(costUsd, { rate = DEFAULT_USD_TO_INR, isRefine = false } = {}) {
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  const mult = isRefine ? DESIGN_REFINE_MULTIPLIER : DESIGN_INITIAL_MULTIPLIER;
+  return Math.ceil(usdToInr(effectiveUsd, rate) * mult);
+}
+
+/**
  * Canonical charge for a completed task.
  * @param {number} actualCostUsd  cost reported by the agent run
  * @param {{rate?: number}} [opts]
