@@ -291,15 +291,6 @@ export default function Dashboard() {
           </p>
         </section>
 
-        {Array.isArray(features) && features.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your features</h2>
-            {features.map((f) => (
-              <FeatureCard key={f.id} feature={f} onChanged={refreshAll} />
-            ))}
-          </section>
-        )}
-
         {Array.isArray(designs) && designs.length > 0 && (
           <section className="space-y-3">
             <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your designs</h2>
@@ -314,6 +305,15 @@ export default function Dashboard() {
               ) : (
                 <DesignCard key={d.id} design={d} onChanged={refreshAll} />
               )
+            ))}
+          </section>
+        )}
+
+        {Array.isArray(features) && features.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your features</h2>
+            {features.map((f) => (
+              <FeatureCard key={f.id} feature={f} onChanged={refreshAll} />
             ))}
           </section>
         )}
