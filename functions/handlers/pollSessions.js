@@ -6,7 +6,7 @@ import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { extractDesignTurn } from '../utils/designSession.js';
 import { saveMockHtml } from '../utils/mockStore.js';
-import { priceForPlanning, priceForDesign } from '../utils/billing.js';
+import { priceForPlanning, priceForDesign, computeCharge } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -40,7 +40,8 @@ async function failPlan(db, taskSnap, task, reason, client) {
 // charge the breakdown (priceForPlanning = 2× the session's real COGS), atomically. Idempotent:
 // guarded on the planning task still being 'running' so two overlapping polls can't double-charge.
 async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
-  const chargeInr = priceForPlanning(costUsd, { rate: await getUsdToInrRate() });
+  const rate = await getUsdToInrRate();
+  const chargeInr = priceForPlanning(costUsd, { rate });
   const featureRef = db.collection('features').doc(task.featureId);
   const orgRef = db.collection('organisations').doc(task.orgId);
   const taskRef = taskSnap.ref;
@@ -65,7 +66,15 @@ async function finalizePlanReady(db, taskSnap, task, steps, costUsd, client) {
       planningCostUsd: costUsd,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    tx.update(taskRef, { status: 'complete', actualCostUsd: costUsd, reviewedCostUsd: costUsd });
+    // Stamp planning revenue + COGS on the task so adminMetrics counts the planning business too.
+    tx.update(taskRef, {
+      status: 'complete',
+      actualCostUsd: costUsd,
+      reviewedCostUsd: costUsd,
+      finalCharge: chargeInr,
+      billed: chargeInr > 0,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+    });
   });
   await deleteSessionFiles(client, task);
 }
@@ -132,7 +141,17 @@ async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
       designCostUsd: costUsd,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    tx.update(taskRef, { status: 'awaiting', reviewedCostUsd: costUsd });
+    // Stamp the design-phase revenue + COGS on the session task so adminMetrics (which sums
+    // task.finalCharge / actualCostInr across all tasks) counts the design business, not just builds.
+    const prevFinal = Number(tSnap.data().finalCharge) || 0;
+    tx.update(taskRef, {
+      status: 'awaiting',
+      reviewedCostUsd: costUsd,
+      finalCharge: prevFinal + chargeInr,
+      billed: prevFinal + chargeInr > 0,
+      actualCostUsd: costUsd,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+    });
   });
 }
 

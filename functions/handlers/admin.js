@@ -323,7 +323,9 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       today.freeRetriesGiven++;
     }
 
-    if (t.status === 'complete') { totals.fixesDone++; bump(t.orgId, (s) => s.fixesDone++); }
+    // A design/planning SESSION carries revenue but isn't a "fix delivered" — only real
+    // builds/fixes (and feature steps) count toward fixesDone.
+    if (t.status === 'complete' && t.kind !== 'design' && t.kind !== 'planning') { totals.fixesDone++; bump(t.orgId, (s) => s.fixesDone++); }
     else if (t.status === 'failed') { totals.failedRuns++; bump(t.orgId, (s) => s.failedRuns++); }
     else if (t.status === 'queued' || t.status === 'running') { totals.inProgress++; bump(t.orgId, (s) => s.inProgress++); }
 
