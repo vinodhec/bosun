@@ -16,6 +16,7 @@ import {
   adminRunFix,
   adminListTasks,
   adminListFeatures,
+  adminListDesigns,
   adminMetrics,
   confirmQuote,
   approveFix,
@@ -718,6 +719,140 @@ function Features({ orgs }) {
   );
 }
 
+// Plain-English lifecycle labels for a "Design a screen" design + the badge tones.
+// After mock approval a design is handed off to a feature, so its later lifecycle mirrors the
+// feature's (plan_review → running → complete).
+const DESIGN_STATUS = {
+  clarifying: 'Clarifying…',
+  mockup_review: 'Awaiting mock approval',
+  plan_review: 'Awaiting plan approval',
+  running: 'Building',
+  complete: 'Complete ✅',
+  failed: 'Failed',
+};
+const DESIGN_TONE = {
+  clarifying: 'bg-blue-50 text-blue-700',
+  mockup_review: 'bg-amber-50 text-amber-700',
+  plan_review: 'bg-amber-50 text-amber-700',
+  running: 'bg-blue-50 text-blue-700',
+  complete: 'bg-green-50 text-green-700',
+  failed: 'bg-rose-50 text-rose-700',
+};
+
+// "Design a screen" — its OWN group in the admin, separate from the raw fix Sessions list (mirrors
+// Plan a feature). Pick an org (or all). Each design shows its lifecycle, the design-phase charge +
+// COGS (priceForDesign, charged when a mock is ready), and — once approved — the build's
+// paid/cost/margin, plus a running total. Operator-only: the clarify + build session traces + mock.
+function Designs({ orgs }) {
+  const [orgId, setOrgId] = useState(''); // '' = not yet selected
+  const [designs, setDesigns] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+
+  const load = async (id) => {
+    if (!id) return;
+    setBusy(true); setErr('');
+    try {
+      const { data } = await adminListDesigns(id === '*' ? {} : { orgId: id });
+      setDesigns(data.designs || []);
+    } catch (e) {
+      console.error('adminListDesigns failed:', e);
+      setErr(`Failed to load designs.${e?.message ? ` (${e.message})` : ''}`);
+    }
+    finally { setBusy(false); }
+  };
+
+  // Refresh while anything is mid-flight so the breakdown tracks the poller's per-minute snapshots.
+  useEffect(() => {
+    const inFlight = designs.some((d) => ['clarifying', 'running'].includes(d.status));
+    if (!inFlight) return undefined;
+    const t = setInterval(() => load(orgId), 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [designs, orgId]);
+
+  const pick = (id) => { setOrgId(id); load(id); };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-ink">Design a screen</h2>
+        <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+          disabled={busy} onClick={() => load(orgId)}>Refresh</button>
+      </div>
+      <p className="text-xs text-ink-soft">
+        A new screen previewed as a live mock the owner approves before any build. The design phase is
+        charged when the mock is ready; the build after approval is billed like a normal fix. Totals
+        below are the design phase + the build.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="">Select organisation…</option>
+        <option value="*">All organisations</option>
+        {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {busy && designs.length === 0 && <p className="text-sm text-ink-soft">Loading…</p>}
+      {!busy && orgId && designs.length === 0 && <p className="text-sm text-ink-soft">No designs yet.</p>}
+
+      <ul className="space-y-3">
+        {designs.map((d) => (
+          <li key={d.id} className="rounded-xl border border-line p-3">
+            <div className="flex items-start justify-between gap-3">
+              <span className="font-medium text-ink">{d.prompt}</span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${DESIGN_TONE[d.status] || 'bg-slate-100 text-slate-600'}`}>
+                {DESIGN_STATUS[d.status] || d.status}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-ink-soft">
+              {orgId === '*' && d.orgId ? `${orgName[d.orgId] || d.orgId} · ` : ''}
+              {d.createdAt ? new Date(d.createdAt).toLocaleString('en-IN') : ''}
+              {d.userEmail ? ` · ${d.userEmail}` : ''}
+            </div>
+            {d.error && <p className="mt-1 text-xs text-bad">error: {d.error}</p>}
+
+            {/* Design total — the headline P&L for the whole design (design phase + build). */}
+            <div className="mt-2 rounded-lg bg-canvas/50 p-2">
+              <MarginLine label="Total" paidInr={d.totalPaidInr} costInr={d.totalCostInr} />
+              <div className="mt-1 text-[11px] text-ink-soft">
+                Design phase: paid <span className="font-semibold text-ink">{formatINR(d.designChargeInr)}</span>
+                {' · '}cost <span className="font-semibold text-ink">{inrPrecise(d.designCostInr)}</span>
+                {' '}({fmtUSD(d.designCostUsd)})
+                {d.designSessionUrl && (
+                  <a href={d.designSessionUrl} target="_blank" rel="noreferrer" className="ml-2 font-semibold text-brand-600">design session →</a>
+                )}
+                {d.mockUrl && (
+                  <a href={d.mockUrl} target="_blank" rel="noreferrer" className="ml-2 font-semibold text-brand-600">mock →</a>
+                )}
+              </div>
+            </div>
+
+            {/* The build only exists once the owner approved the mock — a normal bracketed fix. */}
+            {d.buildStatus && (
+              <div className="mt-2 rounded-lg border border-line/70 p-2 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-medium text-ink">Build</span>
+                  <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">{d.buildStatus}</span>
+                </div>
+                <MarginLine paidInr={d.buildPaidInr} costInr={d.buildCostInr} className="mt-1" />
+                {(d.buildPrUrl || d.buildPreviewUrl || d.buildSessionUrl) && (
+                  <div className="mt-1 flex gap-3">
+                    {d.buildPrUrl && <a href={d.buildPrUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
+                    {d.buildPreviewUrl && <a href={d.buildPreviewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
+                    {d.buildSessionUrl && <a href={d.buildSessionUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Session →</a>}
+                    {d.deployedTesting && <span className="font-medium text-green-700">✓ testing</span>}
+                    {d.deployedProd && <span className="font-medium text-green-700">✓ live</span>}
+                  </div>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -817,6 +952,12 @@ export default function Admin() {
   };
 
   const connectedOrgs = orgs.filter((o) => o.repo);
+
+  // Sessions = standalone fixes only. Design clarify/planning sessions and the design build, plus
+  // feature steps, get their own groups above (Design a screen / Plan a feature), so drop them here.
+  const fixSessions = sessions.filter(
+    (t) => t.kind !== 'design' && t.kind !== 'planning' && !t.designId && !t.featureId,
+  );
 
   return (
     <div className="min-h-screen">
@@ -1024,6 +1165,8 @@ export default function Admin() {
 
         <Features orgs={orgs} />
 
+        <Designs orgs={orgs} />
+
         <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
           <div className="flex items-center justify-between gap-3">
             <h2 className="font-semibold text-ink">Sessions</h2>
@@ -1034,9 +1177,10 @@ export default function Admin() {
             <option value="">Select organisation…</option>
             {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
           </select>
-          {sessOrg && sessions.length === 0 && <p className="text-sm text-ink-soft">No sessions yet.</p>}
+          <p className="text-xs text-ink-soft">Standalone fixes. Designs and feature steps live in their own groups above.</p>
+          {sessOrg && fixSessions.length === 0 && <p className="text-sm text-ink-soft">No sessions yet.</p>}
           <ul className="space-y-2">
-            {sessions.map((t) => (
+            {fixSessions.map((t) => (
               <li key={t.id} className="rounded-lg border border-line p-3 text-sm">
                 <div className="flex items-start justify-between gap-3">
                   <span className="font-medium text-ink">{t.prompt}</span>

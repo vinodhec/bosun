@@ -5,8 +5,10 @@ import { markRoundReady, markRoundFailure, chargeCiRun } from '../utils/finalize
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { extractDesignTurn } from '../utils/designSession.js';
+import { extractCompareTurn, renderReportHtml } from '../utils/compareSession.js';
+import { saveReportHtml } from '../utils/compareShots.js';
 import { saveMockHtml } from '../utils/mockStore.js';
-import { priceForPlanning, priceForDesign, computeCharge } from '../utils/billing.js';
+import { priceForPlanning, priceForDesign, priceForCompare, computeCharge } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -135,8 +137,16 @@ async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
       scope: turn.scope || dSnap.data().scope || 'new_page',
       changeSummary: turn.changeSummary || dSnap.data().changeSummary || '',
       keepUnchanged: turn.keepUnchanged || dSnap.data().keepUnchanged || '',
+      // The proposed build breakdown — prepopulated into the feature on approval (no re-plan, no
+      // planning charge). Latest mock wins; a refine re-emits its own steps.
+      steps: Array.isArray(turn.steps) && turn.steps.length ? turn.steps : (dSnap.data().steps || []),
+      // Optional "make it even better" extras the owner can opt into on review. Latest mock is
+      // authoritative — a refine re-emits its own list (empty once the screen is strong).
+      suggestions: Array.isArray(turn.suggestions) ? turn.suggestions : [],
       brief: turn.brief || dSnap.data().brief || '',
-      turns: FieldValue.arrayUnion({ role: 'agent', text: (turn.questions || 'Here’s how your screen will look.').slice(0, 2000), at: Date.now() }),
+      // Show the PLAIN brief on a mock turn, not the agent's freeform reply — the reply can carry
+      // technical narrative (file names, CSS, build steps) that must never reach the owner.
+      turns: FieldValue.arrayUnion({ role: 'agent', text: (turn.brief || 'Here’s how your screen will look.').slice(0, 2000), at: Date.now() }),
       designChargeInr: (Number(dSnap.data().designChargeInr) || 0) + chargeInr,
       designCostUsd: costUsd,
       updatedAt: FieldValue.serverTimestamp(),
@@ -153,6 +163,87 @@ async function finalizeDesignMock(db, taskSnap, task, turn, costUsd) {
       actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
     });
   });
+}
+
+// ===== "Size up the competition" session finalizers =====
+// Same multi-turn shape as design: a question turn pauses the comparison (awaitingOwner) until the
+// owner replies; a report turn charges priceForCompare and opens the report. Failed/over-cap → failed.
+
+// A comparison turn produced questions (no report) → show them and pause until the owner answers.
+async function finalizeCompareQuestions(db, taskSnap, task, questions) {
+  await db.collection('comparisons').doc(task.comparisonId).update({
+    status: 'analysing',
+    awaitingOwner: true,
+    turns: FieldValue.arrayUnion({ role: 'agent', text: String(questions || 'Could you tell me a little more so I can compare properly?').slice(0, 2000), at: Date.now() }),
+    updatedAt: FieldValue.serverTimestamp(),
+  }).catch((e) => console.warn('finalizeCompareQuestions', task.comparisonId, e?.message || e));
+  await taskSnap.ref.update({ status: 'awaiting' }); // paused; replyToComparison flips it back to running
+}
+
+// A comparison turn produced a report → store it, charge the phase (priceForCompare on the cost since
+// the last charge; a refine pays only its new cost), and open the report. Idempotent: guarded on the
+// task still 'running'.
+async function finalizeCompareReady(db, taskSnap, task, report, costUsd) {
+  const rate = await getUsdToInrRate();
+  const comparisonRef = db.collection('comparisons').doc(task.comparisonId);
+  const orgRef = db.collection('organisations').doc(task.orgId);
+  const taskRef = taskSnap.ref;
+  // Render the shareable report HTML + persist it to Storage BEFORE the tx (network), same as the
+  // design mock. Read prompt/repo first for the page; best-effort (reportUrl may be null).
+  const cPre = await comparisonRef.get();
+  const reportUrl = cPre.exists
+    ? await saveReportHtml(task.comparisonId, renderReportHtml(report, { prompt: cPre.data().prompt || '', repoFullName: cPre.data().repoFullName || '' }))
+    : null;
+  await db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(taskRef);
+    if (!tSnap.exists || tSnap.data().status !== 'running') return; // already finalized
+    const cSnap = await tx.get(comparisonRef);
+    if (!cSnap.exists) return;
+    const oSnap = await tx.get(orgRef);
+    const reviewed = Number(tSnap.data().reviewedCostUsd) || 0;
+    const roundUsd = Math.max(0, costUsd - reviewed);
+    // First report = priced deliverable (higher markup); a "look again" is a cheap refine. Both on
+    // the cost since the last charge, so a refine only pays for its new work.
+    const isRefine = (Number(cSnap.data().compareChargeInr) || 0) > 0;
+    const chargeInr = priceForCompare(roundUsd, { rate, isRefine });
+    if (chargeInr > 0) {
+      const balance = oSnap.exists ? Number(oSnap.data().balance ?? 0) : 0;
+      tx.update(orgRef, { balance: balance - chargeInr });
+      tx.set(db.collection('transactions').doc(), {
+        orgId: task.orgId, userId: task.userId, type: 'debit', amount: chargeInr,
+        comparisonId: task.comparisonId, kind: 'compare', createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(comparisonRef, {
+      status: 'report_ready',
+      awaitingOwner: false,
+      report,
+      reportUrl: reportUrl || cSnap.data().reportUrl || null, // durable, shareable HTML in Storage
+      turns: FieldValue.arrayUnion({ role: 'agent', text: (report.summary || 'Here’s how you compare.').slice(0, 2000), at: Date.now() }),
+      compareChargeInr: (Number(cSnap.data().compareChargeInr) || 0) + chargeInr,
+      compareCostUsd: costUsd,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Stamp the comparison-phase revenue + COGS on the task so adminMetrics counts this business too.
+    const prevFinal = Number(tSnap.data().finalCharge) || 0;
+    tx.update(taskRef, {
+      status: 'awaiting',
+      reviewedCostUsd: costUsd,
+      finalCharge: prevFinal + chargeInr,
+      billed: prevFinal + chargeInr > 0,
+      actualCostUsd: costUsd,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+    });
+  });
+}
+
+// A comparison session failed / blew its cap → mark it failed. NEVER charged (same as a fix).
+async function failCompare(db, taskSnap, task, reason, client) {
+  await taskSnap.ref.update({ status: 'failed', error: reason });
+  if (task.comparisonId) {
+    await db.collection('comparisons').doc(task.comparisonId).update({ status: 'failed', error: reason }).catch(() => {});
+  }
+  await deleteSessionFiles(client, task);
 }
 
 // A design session failed / blew its cap → mark the design failed. NEVER charged (same as a fix).
@@ -250,6 +341,26 @@ export const pollSessions = onSchedule(
             if (overSecD || overUsdD) {
               try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
               await failDesign(db, docSnap, task, overSecD ? 'timeout' : 'over_budget', client);
+            }
+            continue;
+          }
+
+          // Comparison sessions are multi-turn like design: a question turn pauses for the owner;
+          // a report turn charges + opens the report. Same cap guards (cumulative).
+          if (task.kind === 'compare') {
+            if (DONE.has(status)) {
+              const turn = await extractCompareTurn(client, task.sessionId);
+              if (turn.ready) await finalizeCompareReady(db, docSnap, task, turn.report, costUsd);
+              else await finalizeCompareQuestions(db, docSnap, task, turn.questions);
+              continue;
+            }
+            if (FAILED.has(status)) { await failCompare(db, docSnap, task, 'agent_failed', client); continue; }
+            await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            const overSecC = activeSec > (Number(task.maxSeconds) || 1800);
+            const overUsdC = costUsd > (Number(task.maxBudgetUsd) || 1.5);
+            if (overSecC || overUsdC) {
+              try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
+              await failCompare(db, docSnap, task, overSecC ? 'timeout' : 'over_budget', client);
             }
             continue;
           }

@@ -8,11 +8,14 @@ export { ensureUser } from './handlers/ensureUser.js';
 // Customer-facing callables.
 export { classifyTask } from './handlers/classifyTask.js';   // step 1: estimate
 export { createTask } from './handlers/createTask.js';        // step 2: run
-export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, setActiveOrg } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes + active-org switch
+export { listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, setActiveOrg, shareSession, unshareSession, getSharedSession } from './handlers/customerTasks.js'; // view + revise + approve + big-job quotes + active-org switch + share
 // Plan a feature → code-aware breakdown, owner reviews/approves/refines, then sequential fix steps.
-export { planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep } from './handlers/featureTasks.js';
+export { planFeature, approveFeaturePlan, reviseFeaturePlan, editFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, shareFeature, unshareFeature, getSharedFeature, forkFeature } from './handlers/featureTasks.js';
 // Design a screen → clarify chat + a live HTML mock the owner approves before a real build runs.
-export { planDesign, replyToClarify, refineMockup, approveDesign, listMyDesigns } from './handlers/designTasks.js';
+export { planDesign, replyToClarify, refineMockup, approveDesign, listMyDesigns, getDesignMockHtml, shareDesign, unshareDesign, getSharedDesign, forkDesign } from './handlers/designTasks.js';
+// Size up the competition → code-aware comparison vs competitors, a two-sided scorecard + scoped
+// actions that route into Fix / Design / Plan. Clarify-first; charged when the report is ready.
+export { startComparison, replyToComparison, refineComparison, listMyComparisons } from './handlers/compareTasks.js';
 
 // Operator-only admin callables — credits live at the organisation level.
 export {
@@ -42,6 +45,7 @@ export {
   adminRunFix,
   adminListTasks,
   adminListFeatures,
+  adminListDesigns,
   adminStopTask,
   deployTesting,
   deployProd,

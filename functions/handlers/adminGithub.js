@@ -283,6 +283,10 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         maxSeconds: t.maxSeconds ?? null,
         createdAt: t.createdAt?.toMillis?.() ?? null,
         userEmail: t.userId ? (emailByUid[t.userId] ?? null) : null,
+        // Lets the admin Sessions list drop design / planning tasks (shown in their own groups).
+        kind: t.kind ?? null,
+        designId: t.designId ?? null,
+        featureId: t.featureId ?? null,
       };
     }),
   };
@@ -421,6 +425,114 @@ export const adminListFeatures = onCall({ region: 'asia-south1' }, async (reques
   });
 
   return { features };
+});
+
+// "Design a screen" — its OWN admin group, separate from the raw fix Sessions list (mirrors the
+// Features group). Pick an org (or all). Each design shows its lifecycle, the design-phase charge +
+// COGS (priceForDesign, debited when a mock is ready), and — once approved — the build's paid/cost/
+// margin, plus a running total for the whole design. Operator-only: deep links to the clarify/build
+// session traces on the Claude platform, plus the live mock URL.
+export const adminListDesigns = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  const db = getFirestore();
+  let q = db.collection('designs');
+  if (orgId) q = q.where('orgId', '==', orgId);
+  const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+  const docs = snap.docs;
+  if (!docs.length) return { designs: [] };
+
+  // Once approved, a design is handed off to a feature and the build runs there as steps. Batch-fetch
+  // every design's clarify-session task + its feature (and that feature's step tasks) so each P&L row
+  // costs no extra round-trips.
+  const featureIds = new Set();
+  for (const d of docs) { const x = d.data(); if (x.featureId) featureIds.add(x.featureId); }
+  const featureById = {};
+  if (featureIds.size) {
+    const ids = [...featureIds];
+    const fSnaps = await db.getAll(...ids.map((id) => db.collection('features').doc(id)));
+    for (const fs of fSnaps) if (fs.exists) featureById[fs.id] = fs.data();
+  }
+
+  const taskIds = new Set();
+  for (const d of docs) {
+    const x = d.data();
+    if (x.designTaskId) taskIds.add(x.designTaskId);
+    const feature = x.featureId ? featureById[x.featureId] : null;
+    for (const s of feature?.steps || []) if (s.taskId) taskIds.add(s.taskId);
+  }
+  const taskById = {};
+  if (taskIds.size) {
+    const ids = [...taskIds];
+    const taskSnaps = await db.getAll(...ids.map((id) => db.collection('tasks').doc(id)));
+    for (const ts of taskSnaps) if (ts.exists) taskById[ts.id] = ts.data();
+  }
+
+  // Trigger emails (who started the design) in one batched fetch.
+  const uids = [...new Set(docs.map((d) => d.data().userId).filter(Boolean))];
+  const emailByUid = {};
+  if (uids.length) {
+    const userSnaps = await db.getAll(...uids.map((u) => db.collection('users').doc(u)));
+    for (const us of userSnaps) if (us.exists) emailByUid[us.id] = us.data().email ?? null;
+  }
+
+  const designs = docs.map((d) => {
+    const x = d.data();
+    const designTask = x.designTaskId ? taskById[x.designTaskId] : null;
+    const feature = x.featureId ? featureById[x.featureId] : null;
+    // Build phase now runs as the linked feature's steps — sum their paid/cost. The last step with a
+    // session carries the trace fields (PR/preview/session) for a quick deep link.
+    const stepTasks = (feature?.steps || []).map((s) => (s.taskId ? taskById[s.taskId] : null)).filter(Boolean);
+    const lastStep = stepTasks.filter((t) => t.sessionId).slice(-1)[0] || null;
+    // Lifecycle: clarifying | mockup_review | failed from the design doc; once handed off, mirror the
+    // feature's own lifecycle (plan_review | running | complete).
+    const status = x.status === 'handed_off' && feature ? (feature.status || 'plan_review') : (x.status || 'clarifying');
+
+    // Design phase: paid = the charged design phase; cost = what the clarify/mock session ate.
+    const designChargeInr = Number(x.designChargeInr) || 0;
+    const designCostUsd = Number(x.designCostUsd) || 0;
+    const designCostInr = designTask ? Number(designTask.actualCostInr) || 0 : usdToInr(designCostUsd);
+    // Build phase (after approval): the bracketed charges + COGS across every feature step.
+    const buildPaidInr = stepTasks.reduce((a, t) => a + (Number(t.finalCharge) || 0), 0);
+    const buildCostInr = stepTasks.reduce((a, t) => a + (Number(t.actualCostInr) || 0), 0);
+
+    const totalPaidInr = designChargeInr + buildPaidInr;
+    const totalCostInr = designCostInr + buildCostInr;
+
+    return {
+      id: d.id,
+      orgId: x.orgId ?? null,
+      prompt: x.prompt || '',
+      status, // clarifying | mockup_review | plan_review | running | complete | failed
+      error: x.error ?? null,
+      mockUrl: x.mockUrl || null,
+      featureId: x.featureId ?? null,
+      // Design phase charge + COGS + a deep link to the clarify/mock session's trace.
+      designChargeInr,
+      designCostInr,
+      designCostUsd,
+      designStatus: designTask?.status ?? null,
+      designSessionUrl: platformSessionUrl(designTask?.sessionId),
+      // Build phase (after approval): summed paid/cost + the latest step's session trace, PR, preview.
+      buildPaidInr,
+      buildCostInr,
+      buildStepCount: stepTasks.length,
+      buildStatus: feature?.status ?? null,
+      buildSessionUrl: platformSessionUrl(lastStep?.sessionId),
+      buildPrUrl: lastStep?.prUrl ?? null,
+      buildPreviewUrl: lastStep?.previewUrl ?? null,
+      deployedTesting: stepTasks.some((t) => t.deployedTesting),
+      deployedProd: stepTasks.some((t) => t.deployedProd),
+      // Running totals (design phase + build) and the blended margin.
+      totalPaidInr,
+      totalCostInr,
+      totalMarginInr: totalPaidInr - totalCostInr,
+      createdAt: x.createdAt?.toMillis?.() ?? null,
+      userEmail: x.userId ? (emailByUid[x.userId] ?? null) : null,
+    };
+  });
+
+  return { designs };
 });
 
 // Deploy to TESTING = merge the PR into its base (main). The push triggers the

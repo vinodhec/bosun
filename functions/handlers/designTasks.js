@@ -1,13 +1,12 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { startDesignSession, replyDesignSession, MAX_CLARIFY_TURNS } from '../utils/designSession.js';
-import { startDesignBuild } from '../utils/designRun.js';
-import { sessionView } from '../utils/sessionView.js';
+import { randomUUID } from 'node:crypto';
+import { startDesignSession, replyDesignSession, buildForkSeedAsk, MAX_CLARIFY_TURNS } from '../utils/designSession.js';
 import { designContextFromText } from '../utils/figma.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
-import { resolveOrgId } from '../utils/orgs.js';
+import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // "Design a screen" — a clarify-first flow that previews a NEW screen as a live HTML mock the owner
@@ -38,7 +37,7 @@ async function loadOrgCtx(db, orgId) {
 
 // Start (or restart, after a fresh prompt) the design session and record it as a kind:'design' task
 // pollSessions will finalize. Returns the task id. `ask` is the text the mock is based on.
-async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0 }) {
+async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, images = [] }) {
   const figmaDesign = await designContextFromText({ org, secretData, text: ask });
   const firebaseSAs = firebaseSAsFromSecret(secretData);
   const { sessionId, firebaseFileIds } = await startDesignSession({
@@ -51,6 +50,7 @@ async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, sec
     figmaDesign,
     imageFileIds,
     screenshotCount,
+    images, // freshly attached marked-up screenshots (base64), in addition to persisted ones
   });
   const taskRef = db.collection('tasks').doc();
   await taskRef.set({
@@ -164,8 +164,10 @@ export const refineMockup = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
   const designId = String(request.data?.designId ?? '').trim();
   const changes = String(request.data?.changes ?? '').trim();
+  // The owner may attach marked-up screenshots showing the change they want — base64, validated/capped.
+  const images = sanitizeImages(request.data?.images);
   if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
-  if (!changes) throw new HttpsError('invalid-argument', 'Please describe the change you want.');
+  if (!changes && images.length === 0) throw new HttpsError('invalid-argument', 'Please describe the change you want.');
 
   const db = getFirestore();
   const designRef = db.collection('designs').doc(designId);
@@ -174,16 +176,42 @@ export const refineMockup = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_
   const d = snap.data();
   if (d.userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
   if (d.status !== 'mockup_review') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
-  if (!d.sessionId || !d.designTaskId) throw new HttpsError('failed-precondition', 'NO_SESSION');
+
+  // A FORKED design (a teammate's copy of a shared design) has the approved mock + chat but no live
+  // session — resuming the original's session would entangle two owners on one thread. So its first
+  // change starts a FRESH session seeded from the mock + prior chat. A normal design (and a fork that
+  // has already refined once) has a session and simply resumes it.
+  const isFork = !d.sessionId || !d.designTaskId;
+
+  // The change as plain text (the marked-up screenshots, if any, carry the rest of the meaning).
+  const changeText = changes || 'See the attached marked-up screenshot(s) for the change I want.';
+  const turnText = changes
+    ? changes.slice(0, 1000)
+    : `🖼️ ${images.length} marked-up screenshot${images.length > 1 ? 's' : ''}`;
 
   await designRef.update({
     status: 'clarifying',
     awaitingOwner: false,
-    turns: FieldValue.arrayUnion({ role: 'owner', text: changes.slice(0, 1000), at: Date.now() }),
+    turns: FieldValue.arrayUnion({ role: 'owner', text: turnText, at: Date.now() }),
   });
   try {
-    await replyDesignSession({ sessionId: d.sessionId, answer: `Please change the mockup: ${changes}` });
-    await db.collection('tasks').doc(d.designTaskId).update({ status: 'running' });
+    if (isFork) {
+      const { org, gh, secretData } = await loadOrgCtx(db, d.orgId);
+      // A fork's fresh session must NOT re-reference old Files-API IDs (they may have been deleted —
+      // that terminates the session). The approved mock HTML (in buildForkSeedAsk) is the visual
+      // reference; only freshly attached marked-up screenshots ride along, as inline base64.
+      const { taskId, sessionId } = await dispatchDesignSession(db, {
+        designId, userId: uid, orgId: d.orgId, org, gh, secretData,
+        ask: buildForkSeedAsk(d, changeText),
+        imageFileIds: [],
+        screenshotCount: images.length,
+        images,
+      });
+      await designRef.update({ designTaskId: taskId, sessionId });
+    } else {
+      await replyDesignSession({ sessionId: d.sessionId, answer: `Please change the mockup: ${changeText}`, images });
+      await db.collection('tasks').doc(d.designTaskId).update({ status: 'running' });
+    }
   } catch (e) {
     console.error('refineMockup', designId, e?.message || e);
     await designRef.update({ status: 'mockup_review' }); // leave the existing mock intact to retry
@@ -192,7 +220,164 @@ export const refineMockup = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_
   return { ok: true };
 });
 
-// Owner approves the mock → build the screen for real (a normal bracketed fix carrying designId).
+// Return the mock's raw HTML to its OWNER only. The browser shows the mock in a cross-origin,
+// sandboxed iframe (from Storage), which it cannot draw onto a canvas — so to let the owner mark it
+// up and capture a screenshot, we re-render this HTML same-origin in the browser. Read-only,
+// owner-gated; kept OUT of listMyDesigns so that projection stays lean (the HTML is tens of KB).
+export const getDesignMockHtml = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const designId = String(request.data?.designId ?? '').trim();
+  if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
+
+  const db = getFirestore();
+  const snap = await db.collection('designs').doc(designId).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Design not found.');
+  if (snap.data().userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
+  return { mockHtml: snap.data().mockHtml || '' };
+});
+
+// ─── Share & fork a design ──────────────────────────────────────────────────────────────────────
+// A teammate can SHARE a finished design (the approved mock + the chat) with another member of the
+// SAME organisation, who FORKS it into their own design and builds their own version from there.
+// Same org ⇒ same repo + same wallet, so a fork is just a working copy — no new billing. All
+// cross-member access goes through these callables (Admin SDK) returning a safe projection; we never
+// open the owner-only design doc to other members via rules.
+
+// A signed-in member of the design's org (read from their own users doc). Throws if not a member.
+async function requireOrgMember(db, uid, orgId) {
+  const userSnap = await db.collection('users').doc(uid).get();
+  if (!isMember(userSnap.exists ? userSnap.data() : null, orgId)) {
+    throw new HttpsError('permission-denied', 'NOT_A_MEMBER');
+  }
+}
+
+// Load a shared design and verify the requester may see it (member of its org + sharing on + token
+// matches). Returns { ref, d }. The token is an unguessable capability so designIds can't be probed.
+async function loadSharedDesign(db, uid, designId, shareToken) {
+  if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
+  const ref = db.collection('designs').doc(designId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'NOT_FOUND');
+  const d = snap.data();
+  if (!d.shared || !d.shareToken || d.shareToken !== String(shareToken || '')) {
+    throw new HttpsError('permission-denied', 'NOT_SHARED');
+  }
+  await requireOrgMember(db, uid, d.orgId);
+  return { ref, d };
+}
+
+// Owner turns sharing ON for a finished design (a real mock exists). Mints a capability token for the
+// link (reused if already shared). Returns the token so the client can build the share URL.
+export const shareDesign = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const designId = String(request.data?.designId ?? '').trim();
+  if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
+
+  const db = getFirestore();
+  const ref = db.collection('designs').doc(designId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Design not found.');
+  const d = snap.data();
+  if (d.userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
+  if (!['mockup_review', 'handed_off'].includes(d.status)) {
+    throw new HttpsError('failed-precondition', 'NOT_SHAREABLE'); // nothing to share until a mock exists
+  }
+  const shareToken = d.shareToken || randomUUID();
+  await ref.update({ shared: true, shareToken, sharedBy: uid, sharedAt: FieldValue.serverTimestamp() });
+  return { ok: true, shareToken };
+});
+
+// Owner turns sharing OFF — existing links stop working (the token check still passes but `shared`
+// is false, so loadSharedDesign rejects).
+export const unshareDesign = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const designId = String(request.data?.designId ?? '').trim();
+  if (!designId) throw new HttpsError('invalid-argument', 'designId required.');
+
+  const db = getFirestore();
+  const ref = db.collection('designs').doc(designId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Design not found.');
+  if (snap.data().userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
+  await ref.update({ shared: false });
+  return { ok: true };
+});
+
+// A teammate opens a share link — read-only view of the mock + chat. Strips all operator/internal
+// fields (session, task, cost). Same projection discipline as listMyDesigns.
+export const getSharedDesign = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+  const { d } = await loadSharedDesign(db, uid, String(request.data?.designId ?? '').trim(), request.data?.shareToken);
+  return {
+    design: {
+      prompt: d.prompt || '',
+      brief: d.brief || '',
+      mockUrl: d.mockUrl || null,
+      // The raw mock HTML so the teammate can mark it up: the displayed iframe is cross-origin and
+      // can't be drawn onto, so the markup tool re-renders this same-origin to screenshot it.
+      mockHtml: d.mockHtml || '',
+      turns: Array.isArray(d.turns) ? d.turns : [],
+      status: d.status || 'mockup_review',
+      forkable: true,
+      isOwn: d.userId === uid, // the owner opening their own link — no point forking
+    },
+  };
+});
+
+// A teammate forks the shared design into their OWN design (same org/repo). Instant + free: we copy
+// the approved mock + chat + design context; no managed-agent session starts here. The fork lands in
+// mockup_review so they can approve it as-is or request changes (refineMockup's fork path starts a
+// fresh session on the first change). Returns the new designId.
+export const forkDesign = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+  const sourceId = String(request.data?.designId ?? '').trim();
+  const { d } = await loadSharedDesign(db, uid, sourceId, request.data?.shareToken);
+  if (d.userId === uid) throw new HttpsError('failed-precondition', 'ALREADY_YOURS'); // your own design
+
+  const forkRef = db.collection('designs').doc();
+  await forkRef.set({
+    userId: uid,
+    orgId: d.orgId,
+    prompt: `(Building on a shared design) ${d.prompt || ''}`.slice(0, 1000),
+    repoFullName: d.repoFullName,
+    status: 'mockup_review',
+    awaitingOwner: false,
+    turns: Array.isArray(d.turns) ? d.turns : [],
+    brief: d.brief || '',
+    mockUrl: d.mockUrl || null,
+    mockHtml: d.mockHtml || null,
+    scope: d.scope || 'new_page',
+    changeSummary: d.changeSummary || '',
+    keepUnchanged: d.keepUnchanged || '',
+    steps: Array.isArray(d.steps) ? d.steps : [],
+    // Deliberately DO NOT carry the original's screenshotFileIds: those Anthropic Files-API IDs were
+    // uploaded at the original's plan time and may no longer exist — re-referencing them in the fork's
+    // fresh session terminates it ("a file referenced in this conversation no longer exists"). The fork
+    // carries the approved mock HTML as its visual reference instead; the owner can attach fresh ones.
+    screenshotFileIds: [],
+    imageCount: 0,
+    designChargeInr: 0,
+    designCostUsd: 0,
+    sessionId: null,
+    designTaskId: null,
+    forkedFromDesignId: sourceId,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, designId: forkRef.id };
+});
+
+// Owner approves the mock → HAND OFF into the "Plan a feature" pipeline, PREPOPULATED from the design
+// (no re-plan, no planning charge): a features/{id} is created in plan_review with the proposed steps
+// (the design session already broke the build down) shown for the owner to edit, while the full design
+// context (approved mock, scope, the whole clarify Q&A, build notes) rides behind the scenes into each
+// build step. Returns { featureId } so the client can redirect to it.
 export const approveDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
@@ -210,35 +395,72 @@ export const approveDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC
   if (d.status !== 'mockup_review') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
   if (!d.brief) throw new HttpsError('failed-precondition', 'NO_MOCK');
 
+  // Prepopulate the steps from what the design session proposed. If none parsed (older designs / a
+  // parse miss), fall back to a single whole-screen step so the screen always builds.
+  const proposed = Array.isArray(d.steps) && d.steps.length
+    ? d.steps
+    : [{ title: 'Build the screen', description: d.brief || d.prompt || '', kind: 'static' }];
+  const steps = proposed.map((s) => ({
+    title: s.title || '',
+    description: s.description || '',
+    kind: s.kind === 'dynamic' ? 'dynamic' : 'static',
+    status: 'proposed',
+    taskId: null,
+  }));
+
   try {
-    const buildTaskId = await startDesignBuild(db, designId, { notes });
-    await designRef.update({ status: 'building', buildTaskId, buildNotes: notes || null });
+    const featureRef = db.collection('features').doc();
+    await featureRef.set({
+      userId: uid,
+      orgId: d.orgId,
+      prompt: d.brief || d.prompt || '',
+      repoFullName: d.repoFullName,
+      status: 'plan_review',
+      currentStep: 0,
+      steps,
+      // Carried so every step keeps the owner's original screenshots (persisted at design time).
+      screenshotFileIds: Array.isArray(d.screenshotFileIds) ? d.screenshotFileIds : [],
+      imageCount: Number(d.imageCount) || 0,
+      planningChargeInr: 0, // no planning session ran — the design phase already did (and was paid for) the thinking
+      // Where this feature came from + the behind-the-scenes build context (mock, scope, full Q&A,
+      // notes) handed to each step's agent (see featureRun.buildAgentPrompt → designRun.buildDesignHandoff).
+      fromDesign: true,
+      designId,
+      design: {
+        mockHtml: d.mockHtml || '',
+        mockUrl: d.mockUrl || '',
+        scope: d.scope || 'new_page',
+        changeSummary: d.changeSummary || '',
+        keepUnchanged: d.keepUnchanged || '',
+        brief: d.brief || '',
+        originalPrompt: d.prompt || '',
+        turns: Array.isArray(d.turns) ? d.turns : [],
+        buildNotes: notes || '',
+      },
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    // Link the design to its feature and mark it handed off — the design card now points at the feature.
+    await designRef.update({ status: 'handed_off', featureId: featureRef.id, buildNotes: notes || null });
     // The design session task is done with its job (clarify + mock); stop polling it.
     if (d.designTaskId) await db.collection('tasks').doc(d.designTaskId).update({ status: 'complete' }).catch(() => {});
+    return { ok: true, featureId: featureRef.id };
   } catch (e) {
     console.error('approveDesign', designId, e?.message || e);
-    throw new HttpsError('internal', 'We could not start building. You were not charged for a build.');
+    throw new HttpsError('internal', 'We could not hand this off to a feature. You were not charged.');
   }
-  return { ok: true };
 });
 
-// Customer-facing view of their designs, newest first: the clarify chat, the live mock URL (for the
-// iframe), the running total paid, and — while building — the build's session view (so the dashboard
-// reuses the normal fix card for deploy/go-live). Strips operator-only fields.
+// Customer-facing view of their designs, newest first: the clarify chat and the live mock URL (for
+// the iframe) through review, then — once approved — a pointer to the feature it was handed off to
+// (the build lives there, step by step). Strips operator-only fields.
 export const listMyDesigns = onCall({ region: 'asia-south1' }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
   const db = getFirestore();
 
   const userSnap = await db.collection('users').doc(uid).get();
-  const userCanDeployProd = userSnap.exists && userSnap.data().canDeployProd === true;
   const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
   if (!orgId) return { designs: [] };
-
-  let deploy = null;
-  const os = await db.collection('organisations').doc(orgId).get();
-  const dep = os.exists ? os.data().deploy : null;
-  if (dep && dep.host === 'firebase') deploy = { host: 'firebase', testingUrl: dep.firebase?.testingUrl || null };
 
   const snap = await db
     .collection('designs')
@@ -249,36 +471,28 @@ export const listMyDesigns = onCall({ region: 'asia-south1' }, async (request) =
     .get();
   if (snap.empty) return { designs: [] };
 
-  // Fetch build tasks to surface the active build card + derive completion from its deploy state.
-  const buildIds = snap.docs.map((d) => d.data().buildTaskId).filter(Boolean);
-  const taskById = {};
-  if (buildIds.length) {
-    const taskSnaps = await db.getAll(...buildIds.map((id) => db.collection('tasks').doc(id)));
-    for (const ts of taskSnaps) if (ts.exists) taskById[ts.id] = ts.data();
-  }
-
   const designs = snap.docs.map((doc) => {
     const d = doc.data();
-    const build = d.buildTaskId ? taskById[d.buildTaskId] : null;
-    const buildPaidInr = build ? Number(build.finalCharge) || 0 : 0;
-    const deployed = !!(build && (build.deployedTesting || build.deployedProd));
-    // Lifecycle straight from the doc, but upgrade building→complete once the build is on testing.
-    let status = d.status || 'clarifying';
-    if (status === 'building' && deployed) status = 'complete';
-
     return {
       id: doc.id,
       prompt: d.prompt || '',
-      status, // clarifying | mockup_review | building | complete | failed
+      status: d.status || 'clarifying', // clarifying | mockup_review | handed_off | failed
       awaitingOwner: !!d.awaitingOwner,
       turns: Array.isArray(d.turns) ? d.turns : [],
       brief: d.brief || '',
       mockUrl: d.mockUrl || null,
+      // Explained, opt-in "make it even better" enhancements shown under the mock while reviewing.
+      // Only surface ones that carry a real "why" — the explanation is the whole point (older/partial
+      // entries without one are hidden rather than shown as a bare title).
+      suggestions: (Array.isArray(d.suggestions) ? d.suggestions : []).filter((s) => s && s.title && s.why && s.change),
       designChargeInr: Number(d.designChargeInr) || 0,
-      totalPaidInr: (Number(d.designChargeInr) || 0) + buildPaidInr,
-      session: build ? sessionView(build, d.buildTaskId, { userCanDeployProd, deploy }) : null,
-      canGoLive: status === 'complete' && userCanDeployProd && !!d.buildTaskId,
-      goLiveTaskId: status === 'complete' ? d.buildTaskId : null,
+      totalPaidInr: Number(d.designChargeInr) || 0,
+      // Once approved, the build runs as a feature — the card links across to it.
+      featureId: d.featureId || null,
+      // Sharing state for the "Share with my team" control (token builds the link).
+      shared: !!d.shared,
+      shareToken: d.shareToken || null,
+      forkedFromDesignId: d.forkedFromDesignId || null,
       createdAt: d.createdAt?.toMillis?.() ?? null,
     };
   });
