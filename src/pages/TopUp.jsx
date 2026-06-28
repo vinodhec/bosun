@@ -30,11 +30,11 @@ export default function TopUp() {
         key: data.keyId,
         amount: amount * 100,
         currency: 'INR',
-        name: 'Fix My Website',
+        name: 'Bosun',
         description: `${formatINR(amount)} credits`,
         order_id: data.orderId,
         prefill: { email: user?.email || '' },
-        theme: { color: '#1d4ed8' },
+        theme: { color: '#4f46e5' },
         handler: () => {
           setBusy(0);
           setMsg(`${formatINR(amount)} added! Your balance will update in a few seconds.`);
@@ -49,9 +49,9 @@ export default function TopUp() {
   };
 
   return (
-    <div className="min-h-screen">
+    <div className="page-bg min-h-screen">
       <Navbar balance={balance} />
-      <main className="mx-auto max-w-3xl px-4 py-6">
+      <main className="container-app mx-auto px-4 py-10">
         <h1 className="text-xl font-bold text-ink">Add Credits</h1>
         {state?.message && (
           <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
@@ -67,9 +67,8 @@ export default function TopUp() {
           {PACKAGES.map((p) => (
             <div
               key={p.amount}
-              className={`relative rounded-2xl border bg-white p-5 text-center ${
-                p.popular ? 'border-brand-500 ring-1 ring-brand-500' : 'border-line'
-              }`}
+              className={`relative rounded-2xl border bg-white p-5 text-center ${p.popular ? 'border-brand-500 ring-1 ring-brand-500' : 'border-line'
+                }`}
             >
               {p.popular && (
                 <span className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full bg-brand-600 px-2.5 py-0.5 text-xs font-semibold text-white">

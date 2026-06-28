@@ -8,7 +8,7 @@ import { formatINR } from '@shared/currency.js';
 import { isLowBalance } from '@shared/billing.js';
 
 function Centered({ children }) {
-  return <div className="flex min-h-screen items-center justify-center px-4 text-ink-soft">{children}</div>;
+  return <div className="page-bg min-h-screen flex items-center justify-center px-4 text-ink-soft">{children}</div>;
 }
 
 export default function Result() {
@@ -27,20 +27,33 @@ export default function Result() {
   }, [taskId]);
 
   if (task === undefined) return <Centered>Loading…</Centered>;
-  if (!task) return <Centered>We couldn’t find that fix.</Centered>;
+
+  if (!task) return (
+    <div className="page-bg min-h-screen">
+      <div className="container-app mx-auto flex min-h-screen items-center justify-center px-4 py-10">
+        <div className="rounded-3xl border border-line bg-white p-8 shadow-sm text-center">
+          <p className="text-lg font-semibold text-ink">We couldn’t find that fix.</p>
+          <button onClick={() => navigate('/dashboard')} className="mt-6 btn btn-primary">Back to dashboard</button>
+        </div>
+      </div>
+    </div>
+  );
 
   if (task.status === 'failed') {
     return (
-      <div className="flex min-h-screen items-center justify-center px-4">
-        <div className="w-full max-w-md rounded-2xl border border-line bg-white p-6 text-center shadow-sm">
-          <h1 className="text-xl font-bold text-ink">Something went wrong 😔</h1>
-          <p className="mt-2 text-ink-soft">No charges were applied.</p>
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="mt-5 w-full rounded-xl bg-brand-600 px-4 py-3 font-semibold text-white transition hover:bg-brand-700"
-          >
-            Try Again
-          </button>
+      <div className="page-bg min-h-screen">
+        <div className="container-app mx-auto flex min-h-screen items-center justify-center px-4 py-10">
+          <div className="w-full max-w-md rounded-3xl border border-line bg-white p-8 text-center shadow-sm">
+            <div className="text-4xl">😔</div>
+            <h1 className="mt-4 text-2xl font-semibold text-ink">Something went wrong</h1>
+            <p className="mt-3 text-sm text-ink-soft">No charges were applied.</p>
+            <button
+              onClick={() => navigate('/dashboard')}
+              className="mt-6 btn btn-primary w-full"
+            >
+              Back to dashboard
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -54,79 +67,80 @@ export default function Result() {
   const low = balance != null && isLowBalance(balance);
 
   return (
-    <div className="flex min-h-screen items-start justify-center px-4 py-10">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-white p-6 shadow-sm">
-        <h1 className="text-xl font-bold text-ink">Your fix is ready! ✅</h1>
-        {task.resultSummary && <p className="mt-2 text-ink-soft">{task.resultSummary}</p>}
+    <div className="page-bg min-h-screen">
+      <div className="container-app mx-auto flex min-h-screen items-start justify-center px-4 py-10">
+        <div className="w-full max-w-md rounded-3xl border border-line bg-white p-8 shadow-sm">
+          <h1 className="text-xl font-bold text-ink">Your fix is ready! ✅</h1>
+          {task.resultSummary && <p className="mt-2 text-ink-soft">{task.resultSummary}</p>}
 
-        <dl className="mt-5 space-y-2 rounded-xl bg-canvas p-4 text-sm">
-          <div className="flex items-center justify-between">
-            <dt className="text-ink-soft">Cost charged</dt>
-            <dd className="font-semibold text-ink">{formatINR(task.finalCharge)}</dd>
-          </div>
-          <div className="flex items-center justify-between">
-            <dt className="text-ink-soft">Remaining balance</dt>
-            <dd className="font-semibold text-ink">{balance == null ? '…' : formatINR(balance)}</dd>
-          </div>
-        </dl>
+          <dl className="mt-5 space-y-2 rounded-xl bg-canvas p-4 text-sm">
+            <div className="flex items-center justify-between">
+              <dt className="text-ink-soft">Cost charged</dt>
+              <dd className="font-semibold text-ink">{formatINR(task.finalCharge)}</dd>
+            </div>
+            <div className="flex items-center justify-between">
+              <dt className="text-ink-soft">Remaining balance</dt>
+              <dd className="font-semibold text-ink">{balance == null ? '…' : formatINR(balance)}</dd>
+            </div>
+          </dl>
 
-        {files.length > 0 && (
-          <div className="mt-4">
+          {files.length > 0 && (
+            <div className="mt-4">
+              <button
+                onClick={() => setOpen((o) => !o)}
+                className="flex w-full items-center justify-between rounded-xl border border-line px-4 py-3 text-left font-medium text-ink hover:bg-canvas"
+              >
+                See what changed
+                <span aria-hidden>{open ? '−' : '+'}</span>
+              </button>
+              {open && (
+                <ul className="mt-2 space-y-2">
+                  {files.map((f, i) => (
+                    <li key={i} className="rounded-xl bg-canvas p-3 text-sm">
+                      <p className="font-medium text-ink">{f.fileName}</p>
+                      {f.description && <p className="mt-0.5 text-ink-soft">{f.description}</p>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <IdealPromptTip text={task.idealDescription} keywords={task.idealKeywords} />
+
+          <div className="mt-5 space-y-3">
+            {task.prUrl && (
+              <a
+                href={task.prUrl} target="_blank" rel="noreferrer"
+                className="block rounded-xl bg-brand-600 px-4 py-3 text-center font-semibold text-white transition hover:bg-brand-700"
+              >
+                See your fix online
+              </a>
+            )}
+            {task.downloadUrl && (
+              <a
+                href={task.downloadUrl}
+                className="block rounded-xl border border-line px-4 py-3 text-center font-semibold text-ink transition hover:bg-canvas"
+              >
+                Download fixed files
+              </a>
+            )}
             <button
-              onClick={() => setOpen((o) => !o)}
-              className="flex w-full items-center justify-between rounded-xl border border-line px-4 py-3 text-left font-medium text-ink hover:bg-canvas"
+              onClick={() => navigate('/dashboard')}
+              className="block w-full rounded-xl border border-line px-4 py-3 text-center font-semibold text-ink transition hover:bg-canvas"
             >
-              See what changed
-              <span aria-hidden>{open ? '−' : '+'}</span>
+              Fix Something Else
             </button>
-            {open && (
-              <ul className="mt-2 space-y-2">
-                {files.map((f, i) => (
-                  <li key={i} className="rounded-xl bg-canvas p-3 text-sm">
-                    <p className="font-medium text-ink">{f.fileName}</p>
-                    {f.description && <p className="mt-0.5 text-ink-soft">{f.description}</p>}
-                  </li>
-                ))}
-              </ul>
+            {low && (
+              <button
+                onClick={() => navigate('/topup')}
+                className="block w-full rounded-xl bg-amber-100 px-4 py-3 text-center font-semibold text-amber-800 transition hover:bg-amber-200"
+              >
+                Top Up Credits
+              </button>
             )}
           </div>
-        )}
-
-        <IdealPromptTip text={task.idealDescription} keywords={task.idealKeywords} />
-
-        <div className="mt-5 space-y-3">
-          {task.prUrl && (
-            <a
-              href={task.prUrl} target="_blank" rel="noreferrer"
-              className="block rounded-xl bg-brand-600 px-4 py-3 text-center font-semibold text-white transition hover:bg-brand-700"
-            >
-              See your fix online
-            </a>
-          )}
-          {task.downloadUrl && (
-            <a
-              href={task.downloadUrl}
-              className="block rounded-xl border border-line px-4 py-3 text-center font-semibold text-ink transition hover:bg-canvas"
-            >
-              Download fixed files
-            </a>
-          )}
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="block w-full rounded-xl border border-line px-4 py-3 text-center font-semibold text-ink transition hover:bg-canvas"
-          >
-            Fix Something Else
-          </button>
-          {low && (
-            <button
-              onClick={() => navigate('/topup')}
-              className="block w-full rounded-xl bg-amber-100 px-4 py-3 text-center font-semibold text-amber-800 transition hover:bg-amber-200"
-            >
-              Top Up Credits
-            </button>
-          )}
         </div>
       </div>
-    </div>
-  );
+      );
 }

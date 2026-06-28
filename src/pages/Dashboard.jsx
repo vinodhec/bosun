@@ -252,155 +252,167 @@ export default function Dashboard() {
       {/* Two columns on large screens: a sticky left rail holds the team board (always in
           view to drive activation); the main column keeps the existing fix flow unchanged.
           On small screens the board collapses to a compact strip above the fix box. */}
-      <main className="mx-auto w-full max-w-6xl px-4 py-6 lg:grid lg:grid-cols-[18rem_minmax(0,42rem)] lg:gap-6 lg:justify-center">
+      <main className="container-app mx-auto grid gap-6 px-4 py-8 lg:grid-cols-[18rem_minmax(0,42rem)] lg:justify-center">
         <aside className="hidden lg:block">
-          <div className="lg:sticky lg:top-[4.5rem]">
+          <div className="lg:sticky lg:top-[5rem]">
             <Leaderboard members={members} meId={meId} />
           </div>
         </aside>
 
         <div className="space-y-6">
-        <div className="lg:hidden">
-          <Leaderboard members={members} meId={meId} compact />
-        </div>
-
-        {/* Workspace switcher — only when the user belongs to more than one. Switching re-scopes
-            the wallet, fixes, features and board to the chosen workspace. */}
-        {orgs.length > 1 && (
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-ink-soft">Workspace</span>
-            <select
-              value={orgId || ''}
-              onChange={(e) => switchOrg(e.target.value)}
-              disabled={busy}
-              className="select disabled:opacity-60"
-            >
-              {orgs.map((o) => <option key={o.id} value={o.id}>{o.name || 'Untitled'}</option>)}
-            </select>
-          </div>
-        )}
-
-        {org === null && (
-          <div className="alert-warn">
-            Your account isn’t set up yet — the Bosun team will connect your website and add credits.
-          </div>
-        )}
-
-        <section className="card p-5 sm:p-6">
-          <div className="mb-5 tab-group">
-            <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
-              Fix something
-            </button>
-            <button type="button" onClick={() => { setMode('feature'); setErr(''); }} className={tabCls(mode === 'feature')}>
-              Plan a feature
-            </button>
-            <button type="button" onClick={() => { setMode('design'); setErr(''); }} className={tabCls(mode === 'design')}>
-              Design a screen
-            </button>
-            <button type="button" onClick={() => { setMode('compare'); setErr(''); }} className={tabCls(mode === 'compare')}>
-              Size up rivals
-            </button>
+          <div className="lg:hidden">
+            <Leaderboard members={members} meId={meId} compact />
           </div>
 
-          <h1 className="text-xl font-bold tracking-tight text-ink">
-            {mode === 'feature' ? 'What would you like to add to your website?'
-              : mode === 'design' ? 'What screen would you like us to design?'
-              : mode === 'compare' ? 'Who would you like to compare against?'
-              : 'What’s broken on your website?'}
-          </h1>
-          {connected && (
-            <p className="mt-1 text-sm text-ink-soft">
-              Connected: <span className="font-medium text-ink">{org.github.repoFullName}</span>
-            </p>
+          <section className="section-panel-strong p-5 sm:p-6">
+            <div className="section-header">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-brand-700">Workspace</p>
+                <h1 className="mt-3 text-3xl font-semibold text-ink">Get your website fixed, designed, or improved faster.</h1>
+                <p className="section-subtitle">Describe the issue in plain language, attach a screenshot, and we’ll turn it into a working change.</p>
+              </div>
+              <div className="flex flex-col gap-2 sm:items-end">
+                <span className="badge badge-brand">Balance {balance == null ? '…' : formatINR(balance)}</span>
+                {orgs.length > 1 && (
+                  <select
+                    value={orgId || ''}
+                    onChange={(e) => switchOrg(e.target.value)}
+                    disabled={busy}
+                    className="select mt-1 min-w-[12rem]"
+                  >
+                    {orgs.map((o) => <option key={o.id} value={o.id}>{o.name || 'Untitled'}</option>)}
+                  </select>
+                )}
+              </div>
+            </div>
+          </section>
+
+          {org === null && (
+            <div className="alert-warn">
+              Your account isn’t set up yet — the Bosun team will connect your website and add credits.
+            </div>
           )}
-          <div className="mt-4">
-            <ScreenshotComposer
-              value={problem}
-              onChange={setProblem}
-              placeholder={mode === 'feature'
-                ? 'Example: Let customers book an appointment and get an email confirmation'
+
+          <section className="card p-5 sm:p-6">
+            <div className="mb-5 tab-group">
+              <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
+                Fix something
+              </button>
+              <button type="button" onClick={() => { setMode('feature'); setErr(''); }} className={tabCls(mode === 'feature')}>
+                Plan a feature
+              </button>
+              <button type="button" onClick={() => { setMode('design'); setErr(''); }} className={tabCls(mode === 'design')}>
+                Design a screen
+              </button>
+              <button type="button" onClick={() => { setMode('compare'); setErr(''); }} className={tabCls(mode === 'compare')}>
+                Size up rivals
+              </button>
+            </div>
+
+            <h1 className="text-xl font-bold tracking-tight text-ink">
+              {mode === 'feature' ? 'What would you like to add to your website?'
+                : mode === 'design' ? 'What screen would you like us to design?'
+                  : mode === 'compare' ? 'Who would you like to compare against?'
+                    : 'What’s broken on your website?'}
+            </h1>
+            {connected && (
+              <p className="mt-1 text-sm text-ink-soft">
+                Connected: <span className="font-medium text-ink">{org.github.repoFullName}</span>
+              </p>
+            )}
+            <div className="mt-4">
+              <ScreenshotComposer
+                value={problem}
+                onChange={setProblem}
+                placeholder={mode === 'feature'
+                  ? 'Example: Let customers book an appointment and get an email confirmation'
+                  : mode === 'design'
+                    ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
+                    : mode === 'compare'
+                      ? 'Example: Compare us to our main competitors — paste their website links'
+                      : 'Example: My menu disappears on mobile phone'}
+                images={images}
+                imgErr={imgErr}
+                dragging={dragging}
+                setDragging={setDragging}
+                addFiles={addFiles}
+                removeImage={removeImage}
+              />
+            </div>
+            <p className="mt-1.5 text-sm text-ink-soft">
+              📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
+            </p>
+            {err && <p className="mt-3 text-sm text-bad">{err}</p>}
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <button
+                onClick={onSubmit}
+                disabled={busy || !problem.trim() || !connected}
+                className="btn btn-primary w-full sm:w-auto"
+              >
+                {busy
+                  ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
+                  : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
+              </button>
+              {connected ? null : (
+                <span className="text-sm text-ink-soft">Connect a repository to start.</span>
+              )}
+            </div>
+            <p className="mt-3 text-sm text-ink-soft">
+              {mode === 'feature'
+                ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
                 : mode === 'design'
-                ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
-                : mode === 'compare'
-                ? 'Example: Compare us to our main competitors — paste their website links'
-                : 'Example: My menu disappears on mobile phone'}
-              images={images}
-              imgErr={imgErr}
-              dragging={dragging}
-              setDragging={setDragging}
-              addFiles={addFiles}
-              removeImage={removeImage}
-            />
-          </div>
-          <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
-            📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
-          </p>
-          {err && <p className="mt-2 text-sm text-bad">{err}</p>}
-          <button
-            onClick={onSubmit}
-            disabled={busy || !problem.trim() || !connected}
-            className="btn btn-primary mt-4 w-full sm:mt-3 sm:w-auto"
-          >
-            {busy
-              ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
-              : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
-          </button>
-          <p className="mt-2 text-xs text-ink-soft">
-            {mode === 'feature'
-              ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
-              : mode === 'design'
-              ? 'We’ll ask a couple of quick questions, then show you how your screen will look — on your real site — before anything is built. There’s a small charge to design it; the build is priced separately when you approve.'
-              : mode === 'compare'
-              ? 'We’ll look at your site and the competitors and show you where you’re ahead and behind — with things you can act on in one tap. There’s a small charge for the comparison; anything you choose to do is priced separately.'
-              : 'You’re only charged after the fix is done.'}
-          </p>
-        </section>
+                  ? 'We’ll ask a couple of quick questions, then show you how your screen will look — on your real site — before anything is built. There’s a small charge to design it; the build is priced separately when you approve.'
+                  : mode === 'compare'
+                    ? 'We’ll look at your site and the competitors and show you where you’re ahead and behind — with things you can act on in one tap. There’s a small charge for the comparison; anything you choose to do is priced separately.'
+                    : 'You’re only charged after the fix is done.'}
+            </p>
+          </section>
 
-        {/* Each tab shows only its own list, so what's below stays relevant to what you're doing:
+          {/* Each tab shows only its own list, so what's below stays relevant to what you're doing:
             Design a screen → your designs · Plan a feature → your features · Fix something → fixes. */}
-        {mode === 'design' && Array.isArray(designs) && designs.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="section-label">Your designs</h2>
-            {designs.map((d) => (
-              // The design card hosts the clarify chat + mock review. Once approved it's handed off to a
-              // feature (the build lives there), and the card shows a link across to it.
-              <div key={d.id} ref={focus?.mode === 'design' && focus.id === d.id ? focusRef : null}>
-                <DesignCard design={d} onChanged={refreshAll} onGoToFeature={(fid) => goTo('feature', fid)} />
-              </div>
-            ))}
-          </section>
-        )}
+          {mode === 'design' && Array.isArray(designs) && designs.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="section-label">Your designs</h2>
+              {designs.map((d) => (
+                // The design card hosts the clarify chat + mock review. Once approved it's handed off to a
+                // feature (the build lives there), and the card shows a link across to it.
+                <div key={d.id} ref={focus?.mode === 'design' && focus.id === d.id ? focusRef : null}>
+                  <DesignCard design={d} onChanged={refreshAll} onGoToFeature={(fid) => goTo('feature', fid)} />
+                </div>
+              ))}
+            </section>
+          )}
 
-        {mode === 'compare' && Array.isArray(comparisons) && comparisons.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="section-label">Your comparisons</h2>
-            {comparisons.map((c) => (
-              <div key={c.id} ref={focus?.mode === 'compare' && focus.id === c.id ? focusRef : null}>
-                <ComparisonCard comparison={c} onChanged={refreshAll} onRoute={routeFinding} />
-              </div>
-            ))}
-          </section>
-        )}
+          {mode === 'compare' && Array.isArray(comparisons) && comparisons.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="section-label">Your comparisons</h2>
+              {comparisons.map((c) => (
+                <div key={c.id} ref={focus?.mode === 'compare' && focus.id === c.id ? focusRef : null}>
+                  <ComparisonCard comparison={c} onChanged={refreshAll} onRoute={routeFinding} />
+                </div>
+              ))}
+            </section>
+          )}
 
-        {mode === 'feature' && Array.isArray(features) && features.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="section-label">Your features</h2>
-            {features.map((f) => (
-              <div key={f.id} ref={focus?.mode === 'feature' && focus.id === f.id ? focusRef : null}>
-                <FeatureCard feature={f} onChanged={refreshAll} onGoToDesign={(did) => goTo('design', did)} />
-              </div>
-            ))}
-          </section>
-        )}
+          {mode === 'feature' && Array.isArray(features) && features.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="section-label">Your features</h2>
+              {features.map((f) => (
+                <div key={f.id} ref={focus?.mode === 'feature' && focus.id === f.id ? focusRef : null}>
+                  <FeatureCard feature={f} onChanged={refreshAll} onGoToDesign={(did) => goTo('design', did)} />
+                </div>
+              ))}
+            </section>
+          )}
 
-        {mode === 'fix' && Array.isArray(sessions) && sessions.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="section-label">Your fixes</h2>
-            {sessions.map((s) => (
-              <SessionCard key={s.id} session={s} onRevised={refreshAll} />
-            ))}
-          </section>
-        )}
+          {mode === 'fix' && Array.isArray(sessions) && sessions.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="section-label">Your fixes</h2>
+              {sessions.map((s) => (
+                <SessionCard key={s.id} session={s} onRevised={refreshAll} />
+              ))}
+            </section>
+          )}
         </div>
       </main>
     </div>
@@ -742,8 +754,8 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
               <p className="mt-2 text-xs text-ink-soft">
                 {reason === 'unresolved'
                   ? (noFreeLeft
-                      ? 'No free re-fixes left — please approve what you have, or choose “something new”.'
-                      : `Free re-fix — ${s.freeRevisionsLeft} left.`)
+                    ? 'No free re-fixes left — please approve what you have, or choose “something new”.'
+                    : `Free re-fix — ${s.freeRevisionsLeft} left.`)
                   : 'A new change is priced based on the work needed — you’ll see the amount and approve before paying.'}
               </p>
               <div className="mt-2">

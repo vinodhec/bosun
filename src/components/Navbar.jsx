@@ -17,12 +17,12 @@ export default function Navbar({ balance }) {
 
   return (
     <header className="navbar">
-      <div className="container-app flex h-[3.75rem] max-w-6xl items-center justify-between">
-        <Link to="/dashboard" className="flex items-center gap-2.5 font-bold text-ink">
-          <span className="logo-mark" aria-hidden>🔧</span>
-          <span className="hidden sm:inline">Fix My Website</span>
+      <div className="container-app flex h-16 max-w-6xl items-center justify-between">
+        <Link to="/dashboard" className="flex items-center gap-3 font-bold text-lg text-ink hover:opacity-80 transition-opacity">
+          <span className="logo-mark" aria-hidden>✦</span>
+          <span className="hidden sm:inline">Bosun</span>
         </Link>
-        <nav className="flex items-center gap-1.5 sm:gap-2">
+        <nav className="flex items-center gap-3">
           <BalanceBadge balance={balance} />
           {isAdmin && (
             <Link to="/admin" className={linkCls}>

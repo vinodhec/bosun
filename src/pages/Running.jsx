@@ -27,28 +27,29 @@ export default function Running() {
   }, []);
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-line bg-white p-6 text-center shadow-sm">
-        <div className="text-3xl">🔧</div>
-        <h1 className="mt-3 text-lg font-bold text-ink">Working on it…</h1>
-        <p className="mt-1 text-sm text-ink-soft">Please wait 3–5 minutes. You can leave this open.</p>
+    <div className="page-bg min-h-screen">
+      <div className="container-app mx-auto flex min-h-screen items-center justify-center px-4 py-10">
+        <div className="w-full max-w-sm rounded-3xl border border-line bg-white p-8 text-center shadow-sm">
+          <div className="text-3xl">🔧</div>
+          <h1 className="mt-3 text-lg font-bold text-ink">Working on it…</h1>
+          <p className="mt-1 text-sm text-ink-soft">Please wait 3–5 minutes. You can leave this open.</p>
 
-        <ul className="mt-6 space-y-3 text-left">
-          {STEPS.map((label, i) => {
-            const state = i < step ? 'done' : i === step ? 'active' : 'todo';
-            return (
-              <li key={label} className="flex items-center gap-3">
-                <span aria-hidden>
-                  {state === 'done' ? '✅' : state === 'active' ? '⏳' : '◻️'}
-                </span>
-                <span className={state === 'todo' ? 'text-ink-soft' : 'font-medium text-ink'}>
-                  {label}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+          <ul className="mt-6 space-y-3 text-left">
+            {STEPS.map((label, i) => {
+              const state = i < step ? 'done' : i === step ? 'active' : 'todo';
+              return (
+                <li key={label} className="flex items-center gap-3">
+                  <span aria-hidden>
+                    {state === 'done' ? '✅' : state === 'active' ? '⏳' : '◻️'}
+                  </span>
+                  <span className={state === 'todo' ? 'text-ink-soft' : 'font-medium text-ink'}>
+                    {label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       </div>
-    </div>
-  );
+      );
 }
