@@ -67,7 +67,7 @@ export default function Leaderboard({ members, meId, compact = false }) {
   // Mobile: a single compact strip above the fix box, tap to expand the full board.
   if (compact) {
     return (
-      <div className="rounded-2xl border border-line bg-white p-3">
+      <div className="card p-3">
         <button
           onClick={() => setOpenMobile((v) => !v)}
           className="flex w-full items-center justify-between gap-2 text-left"
@@ -84,7 +84,7 @@ export default function Leaderboard({ members, meId, compact = false }) {
   }
 
   return (
-    <div className="rounded-2xl border border-line bg-white p-4">
+    <div className="card p-4">
       <Board rows={rows} meId={meId} tab={tab} setTab={setTab} cta={cta} badge={badge} />
     </div>
   );
@@ -105,16 +105,16 @@ function Board({ rows, meId, tab, setTab, cta, badge }) {
     <>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-soft">Team</h2>
-        <div className="flex rounded-lg bg-canvas p-0.5 text-xs font-medium">
+        <div className="tab-group text-xs font-medium">
           <button
             onClick={() => setTab('week')}
-            className={`rounded-md px-2 py-1 transition ${tab === 'week' ? 'bg-white text-ink shadow-sm' : 'text-ink-soft'}`}
+            className={`tab-item ${tab === 'week' ? 'tab-item-active' : ''}`}
           >
             This Week
           </button>
           <button
             onClick={() => setTab('all')}
-            className={`rounded-md px-2 py-1 transition ${tab === 'all' ? 'bg-white text-ink shadow-sm' : 'text-ink-soft'}`}
+            className={`tab-item ${tab === 'all' ? 'tab-item-active' : ''}`}
           >
             All Time
           </button>
@@ -131,7 +131,7 @@ function Board({ rows, meId, tab, setTab, cta, badge }) {
           return (
             <li
               key={r.uid}
-              className={`flex items-center gap-2 rounded-xl px-2.5 py-2 ${isMe ? 'bg-brand-50 ring-1 ring-brand-200' : ''}`}
+              className={`flex items-center gap-2 rounded-xl px-2.5 py-2 transition ${isMe ? 'bg-brand-50 ring-1 ring-brand-200/80' : 'hover:bg-canvas'}`}
             >
               <span className="w-6 shrink-0 text-center text-sm font-semibold text-ink-soft">
                 {started ? medal(rank) : '·'}
@@ -165,7 +165,7 @@ function Board({ rows, meId, tab, setTab, cta, badge }) {
         </div>
       )}
 
-      <div className="mt-3 rounded-xl bg-brand-50 p-3">
+      <div className="mt-3 rounded-xl bg-gradient-to-br from-brand-50 to-brand-100/60 p-3.5 ring-1 ring-brand-200/50">
         <p className="text-sm font-medium text-brand-800">{cta}</p>
         {badge && (
           <p className="mt-1 text-xs text-brand-700">✦ Next badge: <span className="font-semibold">{badge.label}</span> — {badge.hint}</p>

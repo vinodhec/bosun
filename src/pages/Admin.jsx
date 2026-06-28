@@ -960,7 +960,7 @@ export default function Admin() {
   );
 
   return (
-    <div className="min-h-screen">
+    <div className="page-bg min-h-screen">
       <Navbar balance={null} />
       <main className="mx-auto max-w-3xl space-y-5 px-4 py-6">
         <h1 className="text-xl font-bold text-ink">Admin — organisations &amp; credits</h1>

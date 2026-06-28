@@ -21,14 +21,14 @@ export default function ShareControl({ type, id, initialToken = null, share, uns
   };
 
   return (
-    <div className="mt-4 rounded-xl border border-line bg-canvas/60 p-3">
+    <div className="card-subtle mt-4 p-3.5">
       {!token ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-ink-soft">{blurb || 'Want a teammate to build their own version from this?'}</p>
           <button
             onClick={() => run(async () => { const res = await share(); if (res?.data?.shareToken) setToken(res.data.shareToken); })}
             disabled={busy}
-            className="rounded-xl border border-brand-600 px-3 py-1.5 text-xs font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60"
+            className="btn btn-outline btn-sm"
           >
             Share with my team
           </button>
@@ -41,11 +41,11 @@ export default function ShareControl({ type, id, initialToken = null, share, uns
               readOnly
               value={link}
               onFocus={(e) => e.target.select()}
-              className="min-w-0 flex-1 rounded-lg border border-line bg-white px-2 py-1.5 text-xs text-ink-soft"
+              className="input min-w-0 flex-1 py-1.5 text-xs text-ink-soft"
             />
             <button
               onClick={() => { navigator.clipboard?.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
-              className="shrink-0 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-700"
+              className="btn btn-primary btn-sm shrink-0"
             >
               {copied ? 'Copied ✓' : 'Copy link'}
             </button>

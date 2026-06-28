@@ -63,7 +63,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
   };
 
   return (
-    <div className="rounded-2xl border border-line bg-white p-5">
+    <div className="card p-5">
       <p className="text-sm text-ink-soft">“{d.prompt}”</p>
       <h3 className="mt-1 font-semibold text-ink">
         {failed ? 'We couldn’t finish this design 😔'
@@ -79,7 +79,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
         <div className="mt-3 space-y-2">
           {turns.map((t, i) => (
             <div key={i} className={t.role === 'owner' ? 'flex justify-end' : 'flex justify-start'}>
-              <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${t.role === 'owner' ? 'bg-brand-600 text-white' : 'bg-canvas text-ink ring-1 ring-line'}`}>
+              <div className={t.role === 'owner' ? 'bubble-owner' : 'bubble-agent'}>
                 {t.text}
               </div>
             </div>
@@ -95,12 +95,12 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
             onChange={(e) => setAnswer(e.target.value)}
             rows={2}
             placeholder="Type your answer…"
-            className="w-full rounded-xl border border-line px-3 py-2 text-sm focus:border-brand-500 focus:outline-none"
+            className="input py-2 text-sm"
           />
           <button
             onClick={() => run(() => replyToClarify({ designId: d.id, answer: answer.trim() }), () => setAnswer(''))}
             disabled={busy || !answer.trim()}
-            className="mt-2 inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+            className="btn btn-primary btn-sm mt-2"
           >
             {busy ? 'Sending…' : 'Send answer'}
           </button>
@@ -117,7 +117,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
               src={d.mockUrl}
               sandbox=""
               title="Your screen"
-              className="mt-3 h-[480px] w-full rounded-xl border border-line bg-white"
+              className="mt-3 h-[480px] w-full rounded-xl border border-line bg-white shadow-sm"
             />
           )}
           {d.mockUrl && (
@@ -228,21 +228,21 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
                 if (fid) onGoToFeature?.(fid); // hand off → the feature plan, prepopulated
               })}
               disabled={busy}
-              className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+              className="btn btn-primary"
             >
               {busy ? 'Setting up…' : 'Looks great — plan the build'}
             </button>
             <button
               onClick={() => setShowChanges((v) => !v)}
               disabled={busy}
-              className="rounded-xl px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60"
+              className="btn btn-outline"
             >
               Request changes
             </button>
             <button
               onClick={() => setShowAnnotator(true)}
               disabled={busy}
-              className="rounded-xl px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60"
+              className="btn btn-outline"
             >
               ✏️ Mark up the screen
             </button>
@@ -295,7 +295,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
           <button
             onClick={() => onGoToFeature?.(d.featureId)}
             disabled={!d.featureId}
-            className="mt-2 inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+            className="btn btn-primary btn-sm mt-2"
           >
             View your feature →
           </button>

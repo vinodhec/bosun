@@ -45,7 +45,7 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
   const sendAct = (scope) => run(async () => { await onRoute(scope, actText.trim()); setActOn(null); setActText(''); });
 
   return (
-    <div className="rounded-2xl border border-line bg-white p-5">
+    <div className="card p-5">
       <p className="text-sm text-ink-soft">“{c.prompt}”</p>
       <h3 className="mt-1 font-semibold text-ink">
         {failed ? 'We couldn’t finish this comparison 😔'
@@ -60,7 +60,7 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
         <div className="mt-3 space-y-2">
           {turns.map((t, i) => (
             <div key={i} className={t.role === 'owner' ? 'flex justify-end' : 'flex justify-start'}>
-              <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${t.role === 'owner' ? 'bg-brand-600 text-white' : 'bg-canvas text-ink ring-1 ring-line'}`}>
+              <div className={t.role === 'owner' ? 'bubble-owner whitespace-pre-wrap' : 'bubble-agent whitespace-pre-wrap'}>
                 {t.text}
               </div>
             </div>
@@ -103,7 +103,7 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
               () => { setAnswer(''); resetImages(); },
             )}
             disabled={busy || !answer.trim()}
-            className="mt-2 inline-flex items-center justify-center rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+            className="btn btn-primary btn-sm mt-2"
           >
             {busy ? 'Sending…' : 'Send answer'}
           </button>
@@ -118,12 +118,12 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
           {/* Shareable report — a durable web page (like a design's live mock), to send to anyone. */}
           {c.reportUrl && (
             <div className="flex flex-wrap items-center gap-2">
-              <a href={c.reportUrl} target="_blank" rel="noreferrer" className="rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700">
+              <a href={c.reportUrl} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm">
                 Open full report ↗
               </a>
               <button
                 onClick={() => { navigator.clipboard?.writeText(c.reportUrl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
-                className="rounded-xl border border-brand-600 px-4 py-2 text-sm font-semibold text-brand-600 transition hover:bg-brand-50"
+                className="btn btn-outline btn-sm"
               >
                 {copied ? 'Link copied ✓' : 'Copy share link'}
               </button>

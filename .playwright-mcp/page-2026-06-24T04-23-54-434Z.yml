@@ -1,0 +1,421 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]:
+        - link "MaadiVeedu icon MaadiVeedu" [ref=e5] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e6]:
+            - img "MaadiVeedu icon" [ref=e7]
+            - img "MaadiVeedu" [ref=e8]
+        - button "Chennai" [ref=e11]:
+          - generic [ref=e12]: Chennai
+          - img [ref=e13]
+      - generic [ref=e15]:
+        - link "Post Property Free" [ref=e16] [cursor=pointer]:
+          - /url: /post-property
+          - generic [ref=e17]: Post Property
+          - generic [ref=e18]: Free
+        - button "Login or sign up" [ref=e19]:
+          - img [ref=e20]
+          - img [ref=e24]
+    - generic [ref=e28]:
+      - link "Home" [ref=e29] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e30]: Home
+      - link "New Launch" [ref=e32] [cursor=pointer]:
+        - /url: /projects
+        - generic [ref=e33]: New Launch
+      - link "Residential" [ref=e34] [cursor=pointer]:
+        - /url: /properties?group=residential
+        - generic [ref=e35]: Residential
+      - link "Commercial" [ref=e36] [cursor=pointer]:
+        - /url: /properties?group=commercial
+        - generic [ref=e37]: Commercial
+      - link "Agriculture" [ref=e38] [cursor=pointer]:
+        - /url: /properties/farm-land
+        - generic [ref=e39]: Agriculture
+      - link "Insights" [ref=e40] [cursor=pointer]:
+        - /url: /blog
+        - generic [ref=e41]: Insights
+      - link "Tools" [ref=e42] [cursor=pointer]:
+        - /url: /tools
+        - generic [ref=e43]: Tools
+  - main [ref=e44]:
+    - generic [ref=e45]:
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - button "BUY" [pressed] [ref=e52]
+          - button "RENT" [ref=e53]
+          - button "LEASE" [ref=e54]
+          - button "PAYING GUEST (PG)" [ref=e55]
+        - generic [ref=e56]:
+          - generic [ref=e57]:
+            - generic [ref=e58]:
+              - img "search" [ref=e59]
+              - textbox "Search properties" [ref=e60]:
+                - /placeholder: Search 2 BHK in OMR
+            - button "Search Property" [ref=e61]
+          - paragraph [ref=e62]: No Brokerage • Direct Owners & Builders • Genuine Listings
+        - generic [ref=e63]:
+          - button "Apartment Apartment" [ref=e64]:
+            - img "Apartment" [ref=e65]
+            - generic [ref=e66]: Apartment
+          - button "Villa Villa" [ref=e67]:
+            - img "Villa" [ref=e68]
+            - generic [ref=e69]: Villa
+          - button "Plots & Land Plots & Land" [ref=e70]:
+            - img "Plots & Land" [ref=e71]
+            - generic [ref=e72]: Plots & Land
+          - button "Farmland Farmland" [ref=e73]:
+            - img "Farmland" [ref=e74]
+            - generic [ref=e75]: Farmland
+      - generic [ref=e77]:
+        - generic [ref=e80]:
+          - generic [ref=e82]:
+            - img "Zero Brokerage" [ref=e83]
+            - generic [ref=e84]:
+              - paragraph [ref=e85]: Zero Brokerage
+              - paragraph [ref=e86]: Save lakhs on every property deal
+          - generic [ref=e88]:
+            - img "Direct Owners & Builders" [ref=e89]
+            - generic [ref=e90]:
+              - paragraph [ref=e91]: Direct Owners & Builders
+              - paragraph [ref=e92]: No middlemen. Faster transactions.
+          - generic [ref=e94]:
+            - img "Genuine Property Listings" [ref=e95]
+            - generic [ref=e96]:
+              - paragraph [ref=e97]: Genuine Property Listings
+              - paragraph [ref=e98]: Real homes from real sellers
+          - generic [ref=e100]:
+            - img "ISO Certified Platform" [ref=e101]
+            - generic [ref=e102]:
+              - paragraph [ref=e103]: ISO Certified Platform
+              - paragraph [ref=e104]: Your data is secure & protected..!
+        - generic [ref=e107]:
+          - heading "Make Smarter Property Decisions" [level=2] [ref=e108]
+          - generic [ref=e109]:
+            - link "Explore Properties Explore Properties Browse 10,000+ genuine listings" [ref=e110] [cursor=pointer]:
+              - /url: /properties
+              - img [ref=e112]
+              - img "Explore Properties" [ref=e115]
+              - generic [ref=e116]:
+                - paragraph [ref=e117]: Explore Properties
+                - paragraph [ref=e118]: Browse 10,000+ genuine listings
+            - link "Check Affordability Check Affordability Find your home buying budget" [ref=e119] [cursor=pointer]:
+              - /url: /tools/affordability-calculator
+              - img [ref=e121]
+              - img "Check Affordability" [ref=e124]
+              - generic [ref=e125]:
+                - paragraph [ref=e126]: Check Affordability
+                - paragraph [ref=e127]: Find your home buying budget
+            - link "EMI Calculator EMI Calculator Calculate your monthly EMI" [ref=e128] [cursor=pointer]:
+              - /url: /tools/home-loan-calculator
+              - img [ref=e130]
+              - img "EMI Calculator" [ref=e133]
+              - generic [ref=e134]:
+                - paragraph [ref=e135]: EMI Calculator
+                - paragraph [ref=e136]: Calculate your monthly EMI
+            - link "Buyer's Guide Buyer's Guide What to check before you buy" [ref=e137] [cursor=pointer]:
+              - /url: /tools
+              - img [ref=e139]
+              - img "Buyer's Guide" [ref=e142]
+              - generic [ref=e143]:
+                - paragraph [ref=e144]: Buyer's Guide
+                - paragraph [ref=e145]: What to check before you buy
+        - generic [ref=e148]:
+          - heading "Featured Properties" [level=2] [ref=e149]
+          - paragraph [ref=e150]: Find the Right Property for You
+        - generic [ref=e152]:
+          - heading "Land Investment Opportunities" [level=2] [ref=e153]
+          - generic [ref=e154]:
+            - img "Farm land" [ref=e156]
+            - generic [ref=e158]:
+              - link "Explore Properties Explore Properties Browse 10,000+ genuine listings" [ref=e159] [cursor=pointer]:
+                - /url: /properties/plots
+                - img [ref=e161]
+                - img "Explore Properties" [ref=e164]
+                - generic [ref=e165]:
+                  - paragraph [ref=e166]: Explore Properties
+                  - paragraph [ref=e167]: Browse 10,000+ genuine listings
+              - link "Calculate Investment ROI Calculate Investment ROI Estimate returns on your property" [ref=e168] [cursor=pointer]:
+                - /url: /tools/investment-roi-calculator
+                - img [ref=e170]
+                - img "Calculate Investment ROI" [ref=e173]
+                - generic [ref=e174]:
+                  - paragraph [ref=e175]: Calculate Investment ROI
+                  - paragraph [ref=e176]: Estimate returns on your property
+              - link "Property valuation Property valuation Know the fair market value of properties" [ref=e177] [cursor=pointer]:
+                - /url: /tools
+                - img [ref=e179]
+                - img "Property valuation" [ref=e182]
+                - generic [ref=e183]:
+                  - paragraph [ref=e184]: Property valuation
+                  - paragraph [ref=e185]: Know the fair market value of properties
+              - link "Consider before Buying Consider before Buying What to check before you buy" [ref=e186] [cursor=pointer]:
+                - /url: /tools
+                - img [ref=e188]
+                - img "Consider before Buying" [ref=e191]
+                - generic [ref=e192]:
+                  - paragraph [ref=e193]: Consider before Buying
+                  - paragraph [ref=e194]: What to check before you buy
+        - generic [ref=e196]:
+          - generic [ref=e197]:
+            - generic [ref=e199]: Property Requirement Assistance
+            - generic [ref=e200]:
+              - heading "Can't Find the Right Property in India? We'll Help You" [level=2] [ref=e201]
+              - paragraph [ref=e202]: Submit your property requirement privately and get connected with verified owners, builders and agents offering apartments, villas, plots, farmland and commercial properties that match your budget and preferred location. Your contact details are never displayed publicly.
+            - button "Post Your Property Requirement" [ref=e203]:
+              - generic [ref=e204]: Post Your Property Requirement
+          - generic [ref=e205]:
+            - generic [ref=e206]:
+              - img "Save Time" [ref=e208]
+              - generic [ref=e209]:
+                - paragraph [ref=e210]: Save Time
+                - paragraph [ref=e211]: Stop browsing hundreds of listings. Get relevant property options that match your requirement.
+            - generic [ref=e212]:
+              - img "Precise Matching" [ref=e214]
+              - generic [ref=e215]:
+                - paragraph [ref=e216]: Precise Matching
+                - paragraph [ref=e217]: Matches based on your budget, preferred location and property type.
+            - generic [ref=e218]:
+              - img "Private and Secure" [ref=e220]
+              - generic [ref=e221]:
+                - paragraph [ref=e222]: Private and Secure
+                - paragraph [ref=e223]: Your contact details are never displayed publicly. We connect you only with relevant verified sellers.
+        - region "The Smarter Way to Deal Property" [ref=e224]:
+          - generic [ref=e226]:
+            - generic [ref=e227]:
+              - heading "The Smarter Way to Deal Property" [level=2] [ref=e228]
+              - paragraph [ref=e229]: MaadiVeedu.com is an AI-powered property marketplace where genuine buyers and sellers connect through real-time demand and data-driven insights. Our intelligent pricing engine analyses live market activity to help you find the right price, attract serious enquiries and close deals with confidence.
+              - generic [ref=e230]:
+                - generic [ref=e231]:
+                  - img [ref=e233]
+                  - paragraph [ref=e235]: 12M+
+                  - paragraph [ref=e236]: Monthly Unique Visitors
+                - generic [ref=e237]:
+                  - img [ref=e239]
+                  - paragraph [ref=e241]: 100K+
+                  - paragraph [ref=e242]: Active Property Listings
+                - generic [ref=e243]:
+                  - img [ref=e245]
+                  - paragraph [ref=e247]: 100K+
+                  - paragraph [ref=e248]: Monthly Property Searches
+            - figure [ref=e250]:
+              - img "All Properties in one trusted place – MaadiVeedu family and mascot" [ref=e251]
+        - generic [ref=e260]:
+          - generic [ref=e261]:
+            - heading "Search Properties by City" [level=2] [ref=e262]
+            - paragraph [ref=e263]: Find high-demand homes, plots and commercial spaces in India's fastest-growing real estate markets
+          - generic [ref=e264]:
+            - link "Properties in Chennai Chennai" [ref=e265] [cursor=pointer]:
+              - /url: /properties/chennai
+              - img "Properties in Chennai" [ref=e267]
+              - generic [ref=e269]:
+                - img [ref=e270]
+                - text: Chennai
+            - link "Properties in Mumbai Mumbai" [ref=e273] [cursor=pointer]:
+              - /url: /properties/mumbai
+              - img "Properties in Mumbai" [ref=e275]
+              - generic [ref=e277]:
+                - img [ref=e278]
+                - text: Mumbai
+            - link "Properties in Bangalore Bangalore" [ref=e281] [cursor=pointer]:
+              - /url: /properties/bangalore
+              - img "Properties in Bangalore" [ref=e283]
+              - generic [ref=e285]:
+                - img [ref=e286]
+                - text: Bangalore
+            - link "Properties in Coimbatore Coimbatore" [ref=e289] [cursor=pointer]:
+              - /url: /properties/coimbatore
+              - img "Properties in Coimbatore" [ref=e291]
+              - generic [ref=e293]:
+                - img [ref=e294]
+                - text: Coimbatore
+            - link "Properties in Hyderabad Hyderabad" [ref=e297] [cursor=pointer]:
+              - /url: /properties/hyderabad
+              - img "Properties in Hyderabad" [ref=e299]
+              - generic [ref=e301]:
+                - img [ref=e302]
+                - text: Hyderabad
+        - generic [ref=e309]:
+          - heading "Real Estate News, Trends & Investment Insights" [level=2] [ref=e310]
+          - paragraph [ref=e311]: Stay ahead with expert analysis, infrastructure updates and location trends shaping India's fastest-growing property markets
+      - generic [ref=e347]:
+        - generic [ref=e348]:
+          - button "INDIVIDUAL" [ref=e349]:
+            - generic [ref=e350]: INDIVIDUAL
+          - button "FLAT/APARTMENT" [ref=e351]:
+            - generic [ref=e352]: FLAT/APARTMENT
+          - button "COMMERCIAL PROPERTIES" [ref=e353]:
+            - generic [ref=e354]: COMMERCIAL PROPERTIES
+          - button "PLOTS/LAND" [ref=e355]:
+            - generic [ref=e356]: PLOTS/LAND
+          - button "POPULAR SEARCH" [ref=e357]:
+            - generic [ref=e358]: POPULAR SEARCH
+        - generic [ref=e360]:
+          - generic [ref=e361]:
+            - link "Individual House Sales in Mumbai" [ref=e362] [cursor=pointer]:
+              - /url: /properties?city=mumbai
+              - img [ref=e364]
+              - generic [ref=e366]: Individual House Sales in Mumbai
+            - link "Individual House Sales in Delhi" [ref=e367] [cursor=pointer]:
+              - /url: /properties?city=delhi
+              - img [ref=e369]
+              - generic [ref=e371]: Individual House Sales in Delhi
+            - link "Individual House Sales in Bengaluru" [ref=e372] [cursor=pointer]:
+              - /url: /properties?city=bengaluru
+              - img [ref=e374]
+              - generic [ref=e376]: Individual House Sales in Bengaluru
+            - link "Individual House Sales in Hyderabad" [ref=e377] [cursor=pointer]:
+              - /url: /properties?city=hyderabad
+              - img [ref=e379]
+              - generic [ref=e381]: Individual House Sales in Hyderabad
+            - link "Individual House Sales in Chennai" [ref=e382] [cursor=pointer]:
+              - /url: /properties?city=chennai
+              - img [ref=e384]
+              - generic [ref=e386]: Individual House Sales in Chennai
+          - generic [ref=e387]:
+            - link "Individual House Sales in Pune" [ref=e388] [cursor=pointer]:
+              - /url: /properties?city=pune
+              - img [ref=e390]
+              - generic [ref=e392]: Individual House Sales in Pune
+            - link "Individual House Sales in Ahmedabad" [ref=e393] [cursor=pointer]:
+              - /url: /properties?city=ahmedabad
+              - img [ref=e395]
+              - generic [ref=e397]: Individual House Sales in Ahmedabad
+            - link "Individual House Sales in Kolkata" [ref=e398] [cursor=pointer]:
+              - /url: /properties?city=kolkata
+              - img [ref=e400]
+              - generic [ref=e402]: Individual House Sales in Kolkata
+            - link "Individual House Sales in Surat" [ref=e403] [cursor=pointer]:
+              - /url: /properties?city=surat
+              - img [ref=e405]
+              - generic [ref=e407]: Individual House Sales in Surat
+            - link "Individual House Sales in Jaipur" [ref=e408] [cursor=pointer]:
+              - /url: /properties?city=jaipur
+              - img [ref=e410]
+              - generic [ref=e412]: Individual House Sales in Jaipur
+          - generic [ref=e413]:
+            - link "Individual House Sales in Lucknow" [ref=e414] [cursor=pointer]:
+              - /url: /properties?city=lucknow
+              - img [ref=e416]
+              - generic [ref=e418]: Individual House Sales in Lucknow
+            - link "Individual House Sales in Indore" [ref=e419] [cursor=pointer]:
+              - /url: /properties?city=indore
+              - img [ref=e421]
+              - generic [ref=e423]: Individual House Sales in Indore
+            - link "Individual House Sales in Noida" [ref=e424] [cursor=pointer]:
+              - /url: /properties?city=noida
+              - img [ref=e426]
+              - generic [ref=e428]: Individual House Sales in Noida
+            - link "Individual House Sales in Gurugram" [ref=e429] [cursor=pointer]:
+              - /url: /properties?city=gurugram
+              - img [ref=e431]
+              - generic [ref=e433]: Individual House Sales in Gurugram
+            - link "Individual House Sales in Kochi" [ref=e434] [cursor=pointer]:
+              - /url: /properties?city=kochi
+              - img [ref=e436]
+              - generic [ref=e438]: Individual House Sales in Kochi
+          - generic [ref=e439]:
+            - link "Individual House Sales in Coimbatore" [ref=e440] [cursor=pointer]:
+              - /url: /properties?city=coimbatore
+              - img [ref=e442]
+              - generic [ref=e444]: Individual House Sales in Coimbatore
+            - link "Individual House Sales in Visakhapatnam" [ref=e445] [cursor=pointer]:
+              - /url: /properties?city=visakhapatnam
+              - img [ref=e447]
+              - generic [ref=e449]: Individual House Sales in Visakhapatnam
+            - link "Individual House Sales in Nagpur" [ref=e450] [cursor=pointer]:
+              - /url: /properties?city=nagpur
+              - img [ref=e452]
+              - generic [ref=e454]: Individual House Sales in Nagpur
+            - link "Individual House Sales in Vadodara" [ref=e455] [cursor=pointer]:
+              - /url: /properties?city=vadodara
+              - img [ref=e457]
+              - generic [ref=e459]: Individual House Sales in Vadodara
+            - link "Individual House Sales in Chandigarh" [ref=e460] [cursor=pointer]:
+              - /url: /properties?city=chandigarh
+              - img [ref=e462]
+              - generic [ref=e464]: Individual House Sales in Chandigarh
+      - generic [ref=e466]:
+        - generic [ref=e467]:
+          - generic [ref=e468]:
+            - heading "Quick Link" [level=3] [ref=e469]
+            - generic [ref=e470]:
+              - link "Villa for Rent, Sale and Lease" [ref=e471] [cursor=pointer]:
+                - /url: /properties/villas
+                - img [ref=e473]
+                - generic [ref=e475]: Villa for Rent, Sale and Lease
+              - link "Apartment for Rent, Sale and Lease" [ref=e476] [cursor=pointer]:
+                - /url: /properties/apartments
+                - img [ref=e478]
+                - generic [ref=e480]: Apartment for Rent, Sale and Lease
+              - link "Farm House for Rent, Sale and Lease" [ref=e481] [cursor=pointer]:
+                - /url: /properties/farmhouse
+                - img [ref=e483]
+                - generic [ref=e485]: Farm House for Rent, Sale and Lease
+              - link "Office Space for Rent, Sale and Lease" [ref=e486] [cursor=pointer]:
+                - /url: /properties/offices
+                - img [ref=e488]
+                - generic [ref=e490]: Office Space for Rent, Sale and Lease
+              - link "Shops for Rent, Sale and Lease" [ref=e491] [cursor=pointer]:
+                - /url: /properties/shops
+                - img [ref=e493]
+                - generic [ref=e495]: Shops for Rent, Sale and Lease
+              - link "Wedding Hall for Rent, Sale and Lease" [ref=e496] [cursor=pointer]:
+                - /url: /properties/wedding-hall
+                - img [ref=e498]
+                - generic [ref=e500]: Wedding Hall for Rent, Sale and Lease
+          - generic [ref=e502]:
+            - heading "Safe, Secure & Certified" [level=3] [ref=e503]
+            - generic [ref=e504]:
+              - img "ISO IEC" [ref=e506]
+              - img "ISO 9001" [ref=e508]
+              - img "SSL Secured" [ref=e510]
+              - img "100% Secured" [ref=e512]
+          - generic [ref=e513]:
+            - generic [ref=e514]:
+              - heading "Contact Info" [level=3] [ref=e515]
+              - 'link "Email: customersupport@maadiveedu.com" [ref=e516] [cursor=pointer]':
+                - /url: mailto:customersupport@maadiveedu.com
+                - img [ref=e517]
+                - generic [ref=e519]: "Email: customersupport@maadiveedu.com"
+            - generic [ref=e520]:
+              - heading "Follow us" [level=3] [ref=e521]
+              - generic [ref=e522]:
+                - link "Follow us on Facebook" [ref=e523] [cursor=pointer]:
+                  - /url: https://facebook.com/maadiveedu
+                  - img [ref=e526]
+                  - generic [ref=e528]: 300K
+                  - generic [ref=e529]: Followers
+                - link "Follow us on Instagram" [ref=e530] [cursor=pointer]:
+                  - /url: https://instagram.com/maadiveedu
+                  - img [ref=e533]
+                  - generic [ref=e535]: 800K
+                  - generic [ref=e536]: Followers
+                - link "Follow us on Youtube" [ref=e537] [cursor=pointer]:
+                  - /url: https://youtube.com/@maadiveedu
+                  - img [ref=e540]
+                  - generic [ref=e542]: 70K
+                  - generic [ref=e543]: Subscribers
+        - generic [ref=e545]:
+          - paragraph [ref=e546]: Copyright All Rights Reserved © 2026 Maadiveedu
+          - generic [ref=e547]:
+            - link "About Us" [ref=e548] [cursor=pointer]:
+              - /url: /about
+            - generic [ref=e549]: "|"
+            - link "Careers" [ref=e550] [cursor=pointer]:
+              - /url: /careers
+            - generic [ref=e551]: "|"
+            - link "Privacy Policy" [ref=e552] [cursor=pointer]:
+              - /url: /privacy
+            - generic [ref=e553]: "|"
+            - link "Refund Policy" [ref=e554] [cursor=pointer]:
+              - /url: /refund
+            - generic [ref=e555]: "|"
+            - link "Teams & Condition" [ref=e556] [cursor=pointer]:
+              - /url: /terms
+            - generic [ref=e557]: "|"
+            - link "Contact Us" [ref=e558] [cursor=pointer]:
+              - /url: /contact
+  - alert [ref=e559]

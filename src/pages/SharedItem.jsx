@@ -104,7 +104,7 @@ export default function SharedItem() {
   const cta = type === 'fix' ? 'Use this as a starting point' : 'Use this as my starting point';
 
   return (
-    <div className="min-h-screen bg-canvas">
+    <div className="page-bg min-h-screen">
       <Navbar />
       <main className="mx-auto max-w-3xl px-4 py-8">
         {loading ? (
@@ -112,7 +112,7 @@ export default function SharedItem() {
         ) : err && !item ? (
           <ErrorBox msg={err} onBack={() => navigate('/dashboard')} />
         ) : item ? (
-          <div className="rounded-2xl border border-line bg-white p-5">
+          <div className="card p-5">
             <p className="text-xs font-medium uppercase tracking-wide text-brand-600">{heading}</p>
             {item.prompt && <p className="mt-1 text-sm text-ink-soft">“{item.prompt}”</p>}
             {item.problem && <p className="mt-1 text-sm text-ink-soft">“{item.problem}”</p>}
@@ -214,7 +214,7 @@ function Chat({ turns }) {
 
 function ErrorBox({ msg, onBack }) {
   return (
-    <div className="rounded-2xl border border-line bg-white p-6">
+    <div className="card p-6">
       <h1 className="font-semibold text-ink">We couldn’t open this</h1>
       <p className="mt-2 text-sm text-ink-soft">{msg}</p>
       <button onClick={onBack} className="mt-4 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
