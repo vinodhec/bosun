@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrgs } from '../hooks/useOrgs.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, setActiveOrg } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, editFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, startComparison, listMyComparisons, setActiveOrg, shareSession, unshareSession, shareFeature, unshareFeature } from '../firebase/functions.js';
+import { useLocation } from 'react-router-dom';
 import Navbar from '../components/Navbar.jsx';
+import ShareControl from '../components/ShareControl.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
 import DesignCard from '../components/DesignCard.jsx';
+import ComparisonCard from '../components/ComparisonCard.jsx';
 import Leaderboard from '../components/Leaderboard.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
@@ -61,12 +64,24 @@ export default function Dashboard() {
   const { members, meId } = useOrgStats(user, orgId);
   const [mode, setMode] = useState('fix'); // 'fix' = one-off fix · 'feature' = plan a feature as steps
   const [problem, setProblem] = useState('');
+  // Arriving from a shared fix ("use as a starting point") seeds the fix box with that brief.
+  const location = useLocation();
+  useEffect(() => {
+    const pf = location.state?.prefillFix;
+    if (pf) { setMode('fix'); setProblem(pf); window.history.replaceState({}, ''); }
+  }, [location.state]);
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
   const [features, setFeatures] = useState(null);
   const [designs, setDesigns] = useState(null);
+  const [comparisons, setComparisons] = useState(null);
+  // Cross-tab navigation: an approved design hands off to a feature (and links back). `focus` switches
+  // the tab and remembers which card to scroll to + briefly highlight.
+  const [focus, setFocus] = useState(null); // { mode, id }
+  const goTo = useCallback((m, id) => { setMode(m); setErr(''); setFocus({ mode: m, id }); }, []);
+  const focusRef = useCallback((el) => { if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, []);
 
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
@@ -100,15 +115,24 @@ export default function Dashboard() {
       setDesigns((prev) => prev ?? []);
     }
   }, [orgId]);
+  const refreshComparisons = useCallback(async (oid = orgId) => {
+    if (!oid) { setComparisons([]); return; }
+    try {
+      const { data } = await listMyComparisons({ orgId: oid });
+      setComparisons(data?.comparisons ?? []);
+    } catch {
+      setComparisons((prev) => prev ?? []);
+    }
+  }, [orgId]);
   const refreshAll = useCallback(async (oid = orgId) => {
-    await Promise.all([refresh(oid), refreshFeatures(oid), refreshDesigns(oid)]);
-  }, [refresh, refreshFeatures, refreshDesigns, orgId]);
+    await Promise.all([refresh(oid), refreshFeatures(oid), refreshDesigns(oid), refreshComparisons(oid)]);
+  }, [refresh, refreshFeatures, refreshDesigns, refreshComparisons, orgId]);
 
   // Switch the active org: optimistic local select, clear the lists, persist the choice, reload.
   const switchOrg = useCallback(async (id) => {
     if (!id || id === orgId) return;
     setSelectedOrgId(id);
-    setSessions(null); setFeatures(null); setDesigns(null);
+    setSessions(null); setFeatures(null); setDesigns(null); setComparisons(null);
     try { await setActiveOrg({ orgId: id }); } catch { /* selection still applies locally */ }
     refreshAll(id);
   }, [orgId, refreshAll]);
@@ -123,8 +147,11 @@ export default function Dashboard() {
       let live = false;
       setSessions((prev) => { if (prev?.some((s) => isLive(s.status) || s.buildingPreview)) live = true; return prev; });
       setFeatures((prev) => { if (prev?.some((f) => f.status === 'running' || f.status === 'planning')) live = true; return prev; });
-      // A design is live while the agent is designing (not while it's waiting on the owner) or building.
-      setDesigns((prev) => { if (prev?.some((d) => (d.status === 'clarifying' && !d.awaitingOwner) || d.status === 'building')) live = true; return prev; });
+      // A design is live only while the agent is designing (not while it's waiting on the owner). Once
+      // approved it's handed off to a feature, which the feature poll above keeps fresh.
+      setDesigns((prev) => { if (prev?.some((d) => d.status === 'clarifying' && !d.awaitingOwner)) live = true; return prev; });
+      // A comparison is live only while the agent is analysing (not while waiting on the owner).
+      setComparisons((prev) => { if (prev?.some((c) => c.status === 'analysing' && !c.awaitingOwner)) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
@@ -183,20 +210,51 @@ export default function Dashboard() {
       setBusy(false);
     }
   };
-  const onSubmit = mode === 'feature' ? onPlan : mode === 'design' ? onDesign : onFix;
+  const onCompare = async () => {
+    if (!problem.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await startComparison({
+        orgId,
+        prompt: problem.trim(),
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+      });
+      setProblem(''); resetImages();
+      await refreshAll();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const onSubmit = mode === 'feature' ? onPlan : mode === 'design' ? onDesign : mode === 'compare' ? onCompare : onFix;
+
+  // Act on a comparison finding → route it into the matching tool, prefilled, then jump to that tab.
+  const routeFinding = useCallback(async (scope, text) => {
+    if (!text?.trim()) return;
+    const payload = { orgId, prompt: text.trim() };
+    if (scope === 'design') {
+      const res = await planDesign(payload); goTo('design', res?.data?.designId);
+    } else if (scope === 'feature') {
+      const res = await planFeature(payload); goTo('feature', res?.data?.featureId);
+    } else {
+      const res = await createTask(payload); goTo('fix', res?.data?.taskId);
+    }
+    await refreshAll();
+  }, [orgId, goTo, refreshAll]);
 
   const tabCls = (active) =>
-    `rounded-lg px-3 py-1.5 text-sm font-semibold transition ${active ? 'bg-white text-ink shadow-sm ring-1 ring-line' : 'text-ink-soft hover:text-ink'}`;
+    `tab-item ${active ? 'tab-item-active' : ''}`;
 
   return (
-    <div className="min-h-screen">
+    <div className="page-bg min-h-screen">
       <Navbar balance={balance} />
       {/* Two columns on large screens: a sticky left rail holds the team board (always in
           view to drive activation); the main column keeps the existing fix flow unchanged.
           On small screens the board collapses to a compact strip above the fix box. */}
       <main className="mx-auto w-full max-w-6xl px-4 py-6 lg:grid lg:grid-cols-[18rem_minmax(0,42rem)] lg:gap-6 lg:justify-center">
         <aside className="hidden lg:block">
-          <div className="lg:sticky lg:top-20">
+          <div className="lg:sticky lg:top-[4.5rem]">
             <Leaderboard members={members} meId={meId} />
           </div>
         </aside>
@@ -215,7 +273,7 @@ export default function Dashboard() {
               value={orgId || ''}
               onChange={(e) => switchOrg(e.target.value)}
               disabled={busy}
-              className="rounded-lg border border-line bg-white px-3 py-1.5 font-semibold text-ink disabled:opacity-60"
+              className="select disabled:opacity-60"
             >
               {orgs.map((o) => <option key={o.id} value={o.id}>{o.name || 'Untitled'}</option>)}
             </select>
@@ -223,14 +281,13 @@ export default function Dashboard() {
         )}
 
         {org === null && (
-          <div className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800 ring-1 ring-amber-200">
+          <div className="alert-warn">
             Your account isn’t set up yet — the Bosun team will connect your website and add credits.
           </div>
         )}
 
-        <section className="rounded-2xl border border-line bg-white p-5 sm:p-6">
-          {/* Pick a quick one-off fix, or plan a whole feature that we build as steps. */}
-          <div className="mb-4 inline-flex rounded-xl bg-canvas p-1 ring-1 ring-line">
+        <section className="card p-5 sm:p-6">
+          <div className="mb-5 tab-group">
             <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
               Fix something
             </button>
@@ -240,11 +297,15 @@ export default function Dashboard() {
             <button type="button" onClick={() => { setMode('design'); setErr(''); }} className={tabCls(mode === 'design')}>
               Design a screen
             </button>
+            <button type="button" onClick={() => { setMode('compare'); setErr(''); }} className={tabCls(mode === 'compare')}>
+              Size up rivals
+            </button>
           </div>
 
-          <h1 className="text-xl font-bold text-ink">
+          <h1 className="text-xl font-bold tracking-tight text-ink">
             {mode === 'feature' ? 'What would you like to add to your website?'
               : mode === 'design' ? 'What screen would you like us to design?'
+              : mode === 'compare' ? 'Who would you like to compare against?'
               : 'What’s broken on your website?'}
           </h1>
           {connected && (
@@ -260,6 +321,8 @@ export default function Dashboard() {
                 ? 'Example: Let customers book an appointment and get an email confirmation'
                 : mode === 'design'
                 ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
+                : mode === 'compare'
+                ? 'Example: Compare us to our main competitors — paste their website links'
                 : 'Example: My menu disappears on mobile phone'}
               images={images}
               imgErr={imgErr}
@@ -269,58 +332,70 @@ export default function Dashboard() {
               removeImage={removeImage}
             />
           </div>
-          <p className="mt-1.5 text-xs text-ink-soft">
+          <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
             📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
           </p>
           {err && <p className="mt-2 text-sm text-bad">{err}</p>}
           <button
             onClick={onSubmit}
             disabled={busy || !problem.trim() || !connected}
-            className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-brand-600 px-5 py-3 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60 sm:w-auto"
+            className="btn btn-primary mt-4 w-full sm:mt-3 sm:w-auto"
           >
             {busy
-              ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : 'Starting…')
-              : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : 'Fix My Website →')}
+              ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
+              : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
           </button>
           <p className="mt-2 text-xs text-ink-soft">
             {mode === 'feature'
               ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
               : mode === 'design'
               ? 'We’ll ask a couple of quick questions, then show you how your screen will look — on your real site — before anything is built. There’s a small charge to design it; the build is priced separately when you approve.'
+              : mode === 'compare'
+              ? 'We’ll look at your site and the competitors and show you where you’re ahead and behind — with things you can act on in one tap. There’s a small charge for the comparison; anything you choose to do is priced separately.'
               : 'You’re only charged after the fix is done.'}
           </p>
         </section>
 
-        {Array.isArray(designs) && designs.length > 0 && (
+        {/* Each tab shows only its own list, so what's below stays relevant to what you're doing:
+            Design a screen → your designs · Plan a feature → your features · Fix something → fixes. */}
+        {mode === 'design' && Array.isArray(designs) && designs.length > 0 && (
           <section className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your designs</h2>
+            <h2 className="section-label">Your designs</h2>
             {designs.map((d) => (
-              // While designing / reviewing the mock → the design card. Once approved + building, the
-              // build is a normal fix, so reuse the fix card (deploy / go-live work unchanged).
-              (d.status === 'building' || d.status === 'complete') && d.session ? (
-                <div key={d.id} className="space-y-2">
-                  <p className="px-1 text-sm text-ink-soft">“{d.prompt}”</p>
-                  <SessionCard session={d.session} onRevised={refreshAll} hideGoLive={!d.canGoLive} />
-                </div>
-              ) : (
-                <DesignCard key={d.id} design={d} onChanged={refreshAll} />
-              )
+              // The design card hosts the clarify chat + mock review. Once approved it's handed off to a
+              // feature (the build lives there), and the card shows a link across to it.
+              <div key={d.id} ref={focus?.mode === 'design' && focus.id === d.id ? focusRef : null}>
+                <DesignCard design={d} onChanged={refreshAll} onGoToFeature={(fid) => goTo('feature', fid)} />
+              </div>
             ))}
           </section>
         )}
 
-        {Array.isArray(features) && features.length > 0 && (
+        {mode === 'compare' && Array.isArray(comparisons) && comparisons.length > 0 && (
           <section className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your features</h2>
+            <h2 className="section-label">Your comparisons</h2>
+            {comparisons.map((c) => (
+              <div key={c.id} ref={focus?.mode === 'compare' && focus.id === c.id ? focusRef : null}>
+                <ComparisonCard comparison={c} onChanged={refreshAll} onRoute={routeFinding} />
+              </div>
+            ))}
+          </section>
+        )}
+
+        {mode === 'feature' && Array.isArray(features) && features.length > 0 && (
+          <section className="space-y-3">
+            <h2 className="section-label">Your features</h2>
             {features.map((f) => (
-              <FeatureCard key={f.id} feature={f} onChanged={refreshAll} />
+              <div key={f.id} ref={focus?.mode === 'feature' && focus.id === f.id ? focusRef : null}>
+                <FeatureCard feature={f} onChanged={refreshAll} onGoToDesign={(did) => goTo('design', did)} />
+              </div>
             ))}
           </section>
         )}
 
-        {Array.isArray(sessions) && sessions.length > 0 && (
+        {mode === 'fix' && Array.isArray(sessions) && sessions.length > 0 && (
           <section className="space-y-3">
-            <h2 className="px-1 text-sm font-semibold uppercase tracking-wide text-ink-soft">Your fixes</h2>
+            <h2 className="section-label">Your fixes</h2>
             {sessions.map((s) => (
               <SessionCard key={s.id} session={s} onRevised={refreshAll} />
             ))}
@@ -402,7 +477,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
   const quoteAmount = s.quoteInr || s.priceInr || 0;
 
   return (
-    <div className="rounded-2xl border border-line bg-white p-5">
+    <div className="card p-5">
       {/* The original problem heads the card — except once complete, where the thread's
           first entry already shows it (avoids repeating it twice). */}
       {s.problem && !(s.status === 'complete' && s.rounds?.length > 0) && (
@@ -436,10 +511,10 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
           </p>
           {err && <p className="mt-1 text-sm text-bad">{err}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
-            <button onClick={() => act(confirmQuote)} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+            <button onClick={() => act(confirmQuote)} disabled={busy} className="btn btn-primary">
               {busy ? 'Starting…' : `Yes, fix it for ${formatINR(quoteAmount)}`}
             </button>
-            <button onClick={() => act(declineQuote)} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-line/40 disabled:opacity-60">
+            <button onClick={() => act(declineQuote)} disabled={busy} className="btn btn-ghost">
               Not now
             </button>
           </div>
@@ -459,7 +534,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
           {s.rounds?.length > 0 ? (
             <ol className="mt-2 space-y-2">
               {s.rounds.map((r, i) => (
-                <li key={i} className="rounded-xl border border-line bg-canvas p-3">
+                <li key={i} className="card-inset p-3">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
                       {roundLabel(r)}
@@ -535,23 +610,23 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
               <>
                 {s.buildingPreview ? (
                   <span className="inline-flex items-center gap-2 text-sm text-ink-soft">
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-brand-600 border-t-transparent" />
+                    <span className="h-3.5 w-3.5 spinner" />
                     Putting it on your test site… <DeployTimer since={s.previewStartedAt} /> <span className="text-ink-soft/70">(usually 1–2 min)</span>
                   </span>
                 ) : s.previewActive && s.previewUrl ? (
                   <>
-                    <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
+                    <a href={s.previewUrl} target="_blank" rel="noreferrer" className="btn btn-outline">
                       Open your test site →
                     </a>
                     {s.canRevert && (
-                      <button onClick={() => act(customerRevertTesting)} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-canvas disabled:opacity-60">
+                      <button onClick={() => act(customerRevertTesting)} disabled={busy} className="btn btn-ghost">
                         {busy ? 'Undoing…' : 'Undo preview'}
                       </button>
                     )}
                   </>
                 ) : s.canPreview ? (
                   // Fallback (auto-deploy failed / not yet active): let them trigger it manually.
-                  <button onClick={() => act(customerPreviewTesting)} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+                  <button onClick={() => act(customerPreviewTesting)} disabled={busy} className="btn btn-outline disabled:opacity-60">
                     {busy ? 'Deploying…' : 'Show it on your test site'}
                   </button>
                 ) : null}
@@ -562,7 +637,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                 )}
               </>
             ) : s.previewUrl ? (
-              <a href={s.previewUrl} target="_blank" rel="noreferrer" className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
+              <a href={s.previewUrl} target="_blank" rel="noreferrer" className="btn btn-outline">
                 Test the preview →
               </a>
             ) : s.buildingPreview ? (
@@ -571,13 +646,13 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
 
             {/* "Looks good" appears only when the org requires approval before charging. */}
             {s.canApprove && !open && (
-              <button onClick={approve} disabled={busy} className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
+              <button onClick={approve} disabled={busy} className="btn btn-success">
                 {busy ? 'Confirming…' : (s.owedInr > 0 ? `Looks good — pay ${formatINR(s.owedInr)}` : 'Looks good ✓')}
               </button>
             )}
 
             {s.canRevise && !open && (
-              <button onClick={() => setOpen(true)} className="rounded-xl px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50">
+              <button onClick={() => setOpen(true)} className="btn btn-outline">
                 Request changes
               </button>
             )}
@@ -593,7 +668,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                     <button
                       onClick={() => act(customerDeployTesting)}
                       disabled={busy}
-                      className="rounded-xl bg-teal-600 px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                      className="btn btn-teal"
                     >
                       {busy ? 'Merging…' : 'Merge to testing'}
                     </button>
@@ -602,7 +677,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                     <button
                       onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
                       disabled={busy}
-                      className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                      className="btn btn-success"
                     >
                       {busy ? 'Publishing…' : 'Go live'}
                     </button>
@@ -615,7 +690,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                     <button
                       onClick={() => act(customerDeployTesting)}
                       disabled={busy}
-                      className="rounded-xl bg-teal-600 px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                      className="btn btn-teal"
                     >
                       {busy ? 'Deploying…' : 'Testing'}
                     </button>
@@ -624,7 +699,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                     <button
                       onClick={() => { if (window.confirm('Make this change live on your website now?')) act(customerDeployProd); }}
                       disabled={busy}
-                      className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                      className="btn btn-success"
                     >
                       {busy ? 'Publishing…' : 'Go live'}
                     </button>
@@ -634,7 +709,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                   </button>
                 </>
               ) : (
-                <button onClick={() => setDeployOpen(true)} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700">
+                <button onClick={() => setDeployOpen(true)} className="btn btn-primary">
                   Deploy
                 </button>
               )
@@ -645,21 +720,21 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
           </div>
 
           {open && (
-            <div className="mt-3 rounded-xl bg-canvas p-3">
+            <div className="card-inset mt-3 p-3.5">
               {/* Why is it not right? — maps to free re-fix vs new, chargeable scope. */}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => setReason('unresolved')}
                   disabled={noFreeLeft}
-                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition disabled:opacity-50 ${reason === 'unresolved' ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line'}`}
+                  className={`btn btn-sm ring-1 transition ${reason === 'unresolved' ? 'btn-primary ring-brand-600' : 'bg-white text-ink ring-line hover:bg-canvas'}`}
                 >
                   It’s not working / not what I meant
                 </button>
                 <button
                   type="button"
                   onClick={() => setReason('new_scope')}
-                  className={`rounded-lg px-3 py-1.5 text-sm font-medium ring-1 transition ${reason === 'new_scope' ? 'bg-brand-600 text-white ring-brand-600' : 'bg-white text-ink ring-line'}`}
+                  className={`btn btn-sm ring-1 transition ${reason === 'new_scope' ? 'btn-primary ring-brand-600' : 'bg-white text-ink ring-line hover:bg-canvas'}`}
                 >
                   I want something new
                 </button>
@@ -692,17 +767,29 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                 <button
                   onClick={sendChanges}
                   disabled={busy || !changes.trim() || (reason === 'unresolved' && noFreeLeft)}
-                  className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60"
+                  className="btn btn-primary btn-sm"
                 >
                   {busy ? 'Sending…' : 'Send changes →'}
                 </button>
-                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); resetImages(); }} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); resetImages(); }} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
               </div>
             </div>
           )}
           {err && !open && <p className="mt-2 text-sm text-bad">{err}</p>}
+
+          {/* Share this finished fix with a teammate, who uses it as a starting point for their own. */}
+          {!open && (
+            <ShareControl
+              type="fix"
+              id={s.id}
+              initialToken={s.shared ? s.shareToken : null}
+              share={() => shareSession({ taskId: s.id })}
+              unshare={() => unshareSession({ taskId: s.id })}
+              blurb="Want a teammate to start their own fix from this?"
+            />
+          )}
         </>
       )}
 
@@ -716,17 +803,18 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
 // A planned feature. New lifecycle: planning (we explore your site + design) → plan_review (you
 // approve / request changes / start over) → running (build step by step, normal fix card on the
 // active step) → complete (one go-live). Nothing builds or is charged a build until you approve.
-function FeatureCard({ feature: f, onChanged }) {
+function FeatureCard({ feature: f, onChanged, onGoToDesign }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [panel, setPanel] = useState(null); // 'refine' | 'replace' | 'addChange' | null
   const [text, setText] = useState('');
+  const [editSteps, setEditSteps] = useState(null); // null = not editing the prepopulated steps
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
-  const active = f.steps.find((st) => st.status === 'running' || st.status === 'failed');
+  const active = f.steps.find((st) => st.status === 'running' || st.status === 'ready' || st.status === 'failed');
   const reviewing = f.status === 'plan_review';
 
   const stepIcon = (st) =>
-    st.status === 'done' ? '✅' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️'
+    st.status === 'done' ? '✅' : st.status === 'ready' ? '🟢' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️'
       : st.status === 'proposed' ? '•' : '◻️';
 
   const run = async (fn) => {
@@ -737,6 +825,15 @@ function FeatureCard({ feature: f, onChanged }) {
   };
   const retry = () => run(() => retryFeatureStep({ featureId: f.id }));
   const approvePlan = () => run(() => approveFeaturePlan({ featureId: f.id }));
+  // Free, no-charge edit of the prepopulated steps (design-origin features). No re-plan session.
+  const startEdit = () => { setEditSteps(f.steps.map((s) => ({ title: s.title || '', description: s.description || '', kind: s.kind === 'dynamic' ? 'dynamic' : 'static' }))); setErr(''); };
+  const setStep = (i, patch) => setEditSteps((arr) => arr.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const addStep = () => setEditSteps((arr) => [...arr, { title: '', description: '', kind: 'static' }]);
+  const removeStep = (i) => setEditSteps((arr) => arr.filter((_, j) => j !== i));
+  const saveEdit = () => run(async () => {
+    await editFeaturePlan({ featureId: f.id, steps: editSteps.filter((s) => s.title.trim() || s.description.trim()) });
+    setEditSteps(null);
+  });
   const submitRevise = () => run(async () => {
     const mode = panel; // 'refine' | 'replace'
     await reviseFeaturePlan({ featureId: f.id, mode, ...(mode === 'refine' ? { changes: text.trim() } : { prompt: text.trim() }) });
@@ -756,10 +853,20 @@ function FeatureCard({ feature: f, onChanged }) {
     plan_review: 'Here’s the plan — your call',
     plan_failed: 'We couldn’t plan this one',
     complete: 'All steps done 🎉',
-  }[f.status] || `Building your feature — step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}`;
+  }[f.status] || (active?.status === 'ready'
+    ? `Step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount} is ready — take a look`
+    : `Building your feature — step ${Math.min(f.currentStep + 1, f.stepCount)} of ${f.stepCount}`);
 
   return (
-    <div className="rounded-2xl border border-line bg-white p-5">
+    <div className="card p-5">
+      {f.fromDesign && f.designId && (
+        <button
+          onClick={() => onGoToDesign?.(f.designId)}
+          className="mb-1 inline-flex items-center text-xs font-medium text-brand-600 hover:underline"
+        >
+          ← From your design{f.designPrompt ? `: “${f.designPrompt.slice(0, 60)}${f.designPrompt.length > 60 ? '…' : ''}”` : ''}
+        </button>
+      )}
       <p className="text-sm text-ink-soft">“{f.prompt}”</p>
       <h3 className="mt-1 font-semibold text-ink">{heading}</h3>
 
@@ -771,7 +878,7 @@ function FeatureCard({ feature: f, onChanged }) {
       )}
 
       {/* The plan, step by step. Proposed steps show a Fixed / Live-data tag. */}
-      {f.steps.length > 0 && (
+      {f.steps.length > 0 && editSteps === null && (
         <ol className="mt-3 space-y-1.5">
           {f.steps.map((st, i) => (
             <li key={i} className="flex items-start gap-2 text-sm">
@@ -793,6 +900,48 @@ function FeatureCard({ feature: f, onChanged }) {
         </ol>
       )}
 
+      {/* Editing the prepopulated steps (design-origin) — free, no re-plan. */}
+      {editSteps !== null && (
+        <div className="mt-3 space-y-3">
+          {editSteps.map((s, i) => (
+            <div key={i} className="card-inset p-3">
+              <div className="flex items-center gap-2">
+                <input
+                  value={s.title}
+                  onChange={(e) => setStep(i, { title: e.target.value })}
+                  placeholder="Step title"
+                  className="input flex-1 py-2 text-sm font-medium"
+                />
+                <select
+                  value={s.kind}
+                  onChange={(e) => setStep(i, { kind: e.target.value })}
+                  className="select py-2 text-xs text-ink-soft"
+                >
+                  <option value="static">Fixed</option>
+                  <option value="dynamic">Live data</option>
+                </select>
+                <button onClick={() => removeStep(i)} className="rounded-lg px-2 py-1 text-sm text-ink-soft hover:bg-line/40" title="Remove step">✕</button>
+              </div>
+              <textarea
+                value={s.description}
+                onChange={(e) => setStep(i, { description: e.target.value })}
+                rows={2}
+                placeholder="What this step adds and where on the site"
+                className="input mt-2 w-full py-2 text-sm"
+              />
+            </div>
+          ))}
+          {err && <p className="text-sm text-bad">{err}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={addStep} disabled={busy} className="rounded-lg border border-line px-3 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40 disabled:opacity-60">+ Add a step</button>
+            <button onClick={saveEdit} disabled={busy || editSteps.every((s) => !s.title.trim() && !s.description.trim())} className="btn btn-primary btn-sm">
+              {busy ? 'Saving…' : 'Save the plan'}
+            </button>
+            <button onClick={() => { setEditSteps(null); setErr(''); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">Cancel</button>
+          </div>
+        </div>
+      )}
+
       {/* Running total — planning + each finished step. Not an estimate: this is what's paid. */}
       {f.totalPaidInr > 0 && (
         <p className="mt-3 text-sm">
@@ -803,21 +952,27 @@ function FeatureCard({ feature: f, onChanged }) {
         </p>
       )}
 
-      {/* Plan review: approve to build, or refine / start over (each re-plan is a fresh look). */}
-      {reviewing && (
+      {/* Plan review: approve to build, edit the steps yourself (free, design-origin), or refine /
+          start over (each re-plan is a fresh AI look). Hidden while the inline editor is open. */}
+      {reviewing && editSteps === null && (
         <div className="mt-4 border-t border-line pt-4">
           {!panel && (
             <>
-              <p className="text-sm text-ink">Happy with these steps? We’ll build them one at a time — you approve and pay for each as it’s done.</p>
+              <p className="text-sm text-ink">Happy with these steps? We’ll build them one at a time — you approve and pay for each as it’s done.{f.fromDesign ? ' You can tweak them here first — that’s free.' : ''}</p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex flex-wrap gap-2">
-                <button onClick={approvePlan} disabled={busy} className="rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                <button onClick={approvePlan} disabled={busy} className="btn btn-primary">
                   {busy ? 'Starting…' : 'Looks good — start building →'}
                 </button>
-                <button onClick={() => { setPanel('refine'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+                {f.fromDesign && (
+                  <button onClick={startEdit} disabled={busy} className="btn btn-outline">
+                    Edit the steps
+                  </button>
+                )}
+                <button onClick={() => { setPanel('refine'); setText(''); setErr(''); }} disabled={busy} className="btn btn-outline">
                   Request changes
                 </button>
-                <button onClick={() => { setPanel('replace'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl px-4 py-2 font-semibold text-ink-soft transition hover:bg-line/40 disabled:opacity-60">
+                <button onClick={() => { setPanel('replace'); setText(''); setErr(''); }} disabled={busy} className="btn btn-ghost">
                   Start over
                 </button>
               </div>
@@ -833,15 +988,15 @@ function FeatureCard({ feature: f, onChanged }) {
                 onChange={(e) => setText(e.target.value)}
                 rows={3}
                 placeholder={panel === 'refine' ? 'Example: combine the last two steps, and the footer should keep the existing links' : 'Describe what you want added to your website'}
-                className="mt-2 w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500"
+                className="input mt-2 w-full py-2 text-sm"
               />
               <p className="mt-1 text-xs text-ink-soft">We’ll take another look and show you an updated plan. There’s a small charge to re-plan, the same as the first plan.</p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex gap-2">
-                <button onClick={submitRevise} disabled={busy || !text.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                <button onClick={submitRevise} disabled={busy || !text.trim()} className="btn btn-primary btn-sm">
                   {busy ? 'Re-planning…' : (panel === 'refine' ? 'Update the plan →' : 'Plan again →')}
                 </button>
-                <button onClick={() => { setPanel(null); setText(''); setErr(''); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setPanel(null); setText(''); setErr(''); }} disabled={busy} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
               </div>
@@ -860,7 +1015,7 @@ function FeatureCard({ feature: f, onChanged }) {
             <div>
               <p className="text-sm text-ink-soft">This step didn’t work — no charge for it. You can try it again.</p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
-              <button onClick={retry} disabled={busy} className="mt-2 rounded-xl bg-brand-600 px-4 py-2 font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+              <button onClick={retry} disabled={busy} className="btn btn-primary mt-2">
                 {busy ? 'Starting…' : 'Try this step again'}
               </button>
             </div>
@@ -876,7 +1031,7 @@ function FeatureCard({ feature: f, onChanged }) {
         <div className="mt-4 border-t border-line pt-4">
           <p className="text-sm text-ink-soft">Getting the next step ready…</p>
           {err && <p className="mt-1 text-sm text-bad">{err}</p>}
-          <button onClick={retry} disabled={busy} className="mt-2 rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+          <button onClick={retry} disabled={busy} className="btn btn-outline mt-2">
             {busy ? 'Starting…' : 'Continue building →'}
           </button>
         </div>
@@ -891,19 +1046,19 @@ function FeatureCard({ feature: f, onChanged }) {
           {err && <p className="mt-1 text-sm text-bad">{err}</p>}
           <div className="mt-2 flex flex-wrap gap-2">
             {f.canGoLive && (
-              <button onClick={goLive} disabled={busy} className="rounded-xl bg-good px-4 py-2 font-semibold text-white transition hover:opacity-90 disabled:opacity-60">
+              <button onClick={goLive} disabled={busy} className="btn btn-success">
                 {busy ? 'Publishing…' : 'Go live →'}
               </button>
             )}
             {panel !== 'addChange' && (
-              <button onClick={() => { setPanel('addChange'); setText(''); setErr(''); }} disabled={busy} className="rounded-xl border border-brand-600 px-4 py-2 font-semibold text-brand-600 transition hover:bg-brand-50 disabled:opacity-60">
+              <button onClick={() => { setPanel('addChange'); setText(''); setErr(''); }} disabled={busy} className="btn btn-outline">
                 Add another change
               </button>
             )}
           </div>
 
           {panel === 'addChange' && (
-            <div className="mt-3 rounded-xl bg-canvas p-3">
+            <div className="card-inset mt-3 p-3.5">
               <p className="text-sm font-medium text-ink">What else would you like to change about this feature?</p>
               <div className="mt-2">
                 <ScreenshotComposer
@@ -920,16 +1075,28 @@ function FeatureCard({ feature: f, onChanged }) {
               </div>
               <p className="mt-1 text-xs text-ink-soft">📎 Attach, paste or drag in a screenshot to show what you mean. We’ll build this as another step on this feature — you review and pay for it just like the others, and it’s added to this feature’s total.</p>
               <div className="mt-2 flex gap-2">
-                <button onClick={submitAddChange} disabled={busy || !text.trim()} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60">
+                <button onClick={submitAddChange} disabled={busy || !text.trim()} className="btn btn-primary btn-sm">
                   {busy ? 'Starting…' : 'Make this change →'}
                 </button>
-                <button onClick={() => { setPanel(null); setText(''); setErr(''); resetImages(); }} disabled={busy} className="rounded-lg px-4 py-2 text-sm font-semibold text-ink-soft hover:bg-line/40">
+                <button onClick={() => { setPanel(null); setText(''); setErr(''); resetImages(); }} disabled={busy} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
               </div>
             </div>
           )}
         </div>
+      )}
+
+      {/* Share the plan with a teammate, who forks it into their own feature to build. */}
+      {['plan_review', 'running', 'complete'].includes(f.status) && (
+        <ShareControl
+          type="feature"
+          id={f.id}
+          initialToken={f.shared ? f.shareToken : null}
+          share={() => shareFeature({ featureId: f.id })}
+          unshare={() => unshareFeature({ featureId: f.id })}
+          blurb="Want a teammate to build their own version of this plan?"
+        />
       )}
     </div>
   );

@@ -1,8 +1,6 @@
 import { useRef } from 'react';
 import { MAX_IMAGES, ACCEPTED_TYPES, imageFilesFrom } from '../utils/images.js';
 
-// Textarea + screenshot attachments: paste (Ctrl/⌘+V), drag-drop, or the 📎 attach button.
-// Driven by an external useImageAttachments() so the parent can read/reset the images it sends.
 export default function ScreenshotComposer({
   value, onChange, rows = 3, placeholder, autoFocus = false,
   images, imgErr, dragging, setDragging, addFiles, removeImage,
@@ -22,7 +20,7 @@ export default function ScreenshotComposer({
       onDrop={onDrop}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
-      className={`rounded-xl border ${dragging ? 'border-brand-500 ring-1 ring-brand-500' : 'border-line'}`}
+      className={`composer ${dragging ? 'composer-dragging' : ''}`}
     >
       <textarea
         value={value}
@@ -31,18 +29,18 @@ export default function ScreenshotComposer({
         rows={rows}
         autoFocus={autoFocus}
         placeholder={placeholder}
-        className="w-full resize-none rounded-t-xl bg-transparent px-4 py-3 text-sm outline-none"
+        className="w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted"
       />
       {images.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-4 pb-2">
+        <div className="flex flex-wrap gap-2.5 border-t border-line/60 px-4 py-3">
           {images.map((img) => (
             <div key={img.id} className="relative">
-              <img src={img.dataUrl} alt="screenshot" className="h-16 w-16 rounded-lg border border-line object-cover" />
+              <img src={img.dataUrl} alt="screenshot" className="h-16 w-16 rounded-lg border border-line object-cover shadow-sm" />
               <button
                 type="button"
                 onClick={() => removeImage(img.id)}
                 aria-label="Remove screenshot"
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-xs text-white shadow"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink text-xs text-white shadow-md transition hover:scale-110"
               >
                 ×
               </button>
@@ -50,13 +48,13 @@ export default function ScreenshotComposer({
           ))}
         </div>
       )}
-      <div className="px-3 pb-2">
+      <div className="border-t border-line/60 px-3 py-2">
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={full}
           title={full ? `Up to ${MAX_IMAGES} screenshots` : 'Attach a screenshot'}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-ink-soft transition hover:bg-line/50 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-soft transition hover:bg-canvas hover:text-ink disabled:opacity-50"
         >
           📎 Attach screenshot
         </button>
@@ -69,7 +67,7 @@ export default function ScreenshotComposer({
           onChange={onPick}
         />
       </div>
-      {imgErr && <p className="px-4 pb-2 text-sm text-bad">{imgErr}</p>}
+      {imgErr && <p className="px-4 pb-3 text-sm text-bad">{imgErr}</p>}
     </div>
   );
 }

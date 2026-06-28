@@ -1,6 +1,8 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { startPlanningSession } from '../utils/featurePlan.js';
+import { randomUUID } from 'node:crypto';
+import { loadShared } from '../utils/sharing.js';
+import { startPlanningSession, normalizeSteps } from '../utils/featurePlan.js';
 import { startFeatureStep } from '../utils/featureRun.js';
 import { sessionView } from '../utils/sessionView.js';
 import { designContextFromText } from '../utils/figma.js';
@@ -194,6 +196,36 @@ export const reviseFeaturePlan = onCall({ region: 'asia-south1', secrets: [ANTHR
   return { ok: true, mode };
 });
 
+// Cheap, no-charge plan edit for a feature still in plan_review. The owner tweaks the prepopulated
+// steps (title/description/kind, add/remove) directly — NO managed-agent session, NO charge. This is
+// the light edit path for a design-origin feature (whose steps were prepopulated from the design, so
+// they're already grounded); reviseFeaturePlan stays for a true AI re-plan. Backend-only write of the
+// (non-financial) steps array, so it complies with the cardinal rule.
+export const editFeaturePlan = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const featureId = String(request.data?.featureId ?? '').trim();
+  if (!featureId) throw new HttpsError('invalid-argument', 'featureId required.');
+  const raw = Array.isArray(request.data?.steps) ? request.data.steps : null;
+  if (!raw) throw new HttpsError('invalid-argument', 'steps required.');
+
+  // Normalise + cap with the SHARED normalizer (same as the planner output), then re-stamp the
+  // review state onto each — these are still proposed steps with no task yet.
+  const steps = normalizeSteps(raw).map((s) => ({ ...s, status: 'proposed', taskId: null }));
+  if (steps.length === 0) throw new HttpsError('invalid-argument', 'Please keep at least one step.');
+
+  const db = getFirestore();
+  const featureRef = db.collection('features').doc(featureId);
+  const fSnap = await featureRef.get();
+  if (!fSnap.exists) throw new HttpsError('not-found', 'Feature not found.');
+  const f = fSnap.data();
+  if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
+  if (f.status !== 'plan_review') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
+
+  await featureRef.update({ steps, updatedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
 // Customer-facing view of their features, newest first. Surfaces the lifecycle status, the proposed
 // steps (with static/dynamic kind), the running total paid, and — only while building — the full
 // session view of the active step (so the dashboard reuses the normal fix card on it).
@@ -246,15 +278,24 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
     const steps = rawSteps.map((s, i) => {
       const t = isBuilding && s.taskId ? taskById[s.taskId] : null;
       const deployed = !!(t && (t.deployedTesting || t.deployedProd));
+      // The step states: proposed (plan not approved) → pending (no task yet) → running (agent
+      // building) → ready (agent finished + charged, PR open, awaiting the owner's deploy) → done
+      // (deployed to testing/prod). 'ready' is distinct from 'running' so a finished step that's
+      // waiting on the OWNER never looks like one we're still working on. The feature only reaches
+      // 'complete' once every step is 'done' (deployed) — a 'ready' step keeps it building.
       let status;
       if (!isBuilding) status = 'proposed';
       else if (!t) status = 'pending';
       else if (deployed) status = 'done';
       else if (t.status === 'failed') status = 'failed';
+      else if (t.status === 'complete') status = 'ready';
       else status = 'running';
 
+      // The active step (the one needing attention) is whichever is building, finished-and-waiting,
+      // or failed — its full session is attached so the card can show progress / deploy / retry.
+      const isActive = status === 'running' || status === 'ready' || status === 'failed';
       if (t) { paidStepsInr += Number(t.finalCharge) || 0; lastTaskId = s.taskId; }
-      if ((status === 'running' || status === 'failed') && activeIndex === -1) activeIndex = i;
+      if (isActive && activeIndex === -1) activeIndex = i;
 
       return {
         title: s.title || '',
@@ -263,7 +304,7 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
         status,
         summary: t?.resultSummary ?? null,
         paidInr: t ? Number(t.finalCharge) || 0 : 0,
-        session: t && (status === 'running' || status === 'failed') ? sessionView(t, s.taskId, { userCanDeployProd, deploy }) : null,
+        session: t && isActive ? sessionView(t, s.taskId, { userCanDeployProd, deploy }) : null,
       };
     });
 
@@ -278,16 +319,127 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
       status, // planning | plan_review | plan_failed | running | complete
       stepCount: rawSteps.length,
       currentStep: activeIndex === -1 ? rawSteps.length : activeIndex,
+      // Handed off from a "Design a screen"? Surface the origin so the card can show an editable,
+      // prepopulated plan + a link back to the design (no planning charge was taken for these).
+      fromDesign: !!f.fromDesign,
+      designId: f.designId || null,
+      designPrompt: f.design?.originalPrompt || '',
       planningChargeInr,
       totalPaidInr: planningChargeInr + paidStepsInr,
       steps,
       canGoLive: status === 'complete' && userCanDeployProd && !!lastTaskId,
       goLiveTaskId: status === 'complete' ? lastTaskId : null,
+      // Sharing state for the "Share with my team" control (token builds the link).
+      shared: !!f.shared,
+      shareToken: f.shareToken || null,
+      forkedFromFeatureId: f.forkedFromFeatureId || null,
       createdAt: f.createdAt?.toMillis?.() ?? null,
     };
   });
 
   return { features };
+});
+
+// ─── Share & fork a feature ───────────────────────────────────────────────────────────────────
+// A teammate can SHARE a feature's PLAN (the ordered steps) with another member of the SAME org, who
+// FORKS it into their own feature: we copy the prompt + proposed steps into a fresh feature in
+// plan_review (NO re-plan, NO planning charge — just like a design hand-off), and they review →
+// approve → build it in their own thread. Same org ⇒ same repo + same wallet; each step is charged
+// the normal way when it builds. Access is via these callables (Admin SDK), never via rules.
+
+// Only a feature with a real plan is worth sharing.
+const SHAREABLE_FEATURE = ['plan_review', 'running', 'complete'];
+
+export const shareFeature = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const featureId = String(request.data?.featureId ?? '').trim();
+  if (!featureId) throw new HttpsError('invalid-argument', 'featureId required.');
+  const db = getFirestore();
+  const ref = db.collection('features').doc(featureId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Feature not found.');
+  const f = snap.data();
+  if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
+  if (!SHAREABLE_FEATURE.includes(f.status)) throw new HttpsError('failed-precondition', 'NOT_SHAREABLE');
+  const shareToken = f.shareToken || randomUUID();
+  await ref.update({ shared: true, shareToken, sharedBy: uid, sharedAt: FieldValue.serverTimestamp() });
+  return { ok: true, shareToken };
+});
+
+export const unshareFeature = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const featureId = String(request.data?.featureId ?? '').trim();
+  if (!featureId) throw new HttpsError('invalid-argument', 'featureId required.');
+  const db = getFirestore();
+  const ref = db.collection('features').doc(featureId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Feature not found.');
+  if (snap.data().userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
+  await ref.update({ shared: false });
+  return { ok: true };
+});
+
+// A teammate opens a feature share link — read-only view of the plan (the ordered steps in plain
+// English). Strips operator/internal fields.
+export const getSharedFeature = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+  const { d } = await loadShared(db, 'features', uid, String(request.data?.featureId ?? '').trim(), request.data?.shareToken);
+  const steps = (Array.isArray(d.steps) ? d.steps : []).map((s) => ({
+    title: s.title || '',
+    description: s.description || '',
+  }));
+  return {
+    feature: {
+      prompt: d.prompt || '',
+      steps,
+      status: d.status || 'plan_review',
+      isOwn: d.userId === uid,
+    },
+  };
+});
+
+// A teammate forks the shared feature into their OWN (same org/repo). Instant + free: we copy the
+// prompt + proposed steps into a new feature in plan_review — no re-plan, no planning charge. The
+// fork does NOT carry the original's screenshotFileIds (those Anthropic Files-API IDs may have been
+// deleted; a build step referencing a dead file fails). Returns the new featureId.
+export const forkFeature = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+  const sourceId = String(request.data?.featureId ?? '').trim();
+  const { d } = await loadShared(db, 'features', uid, sourceId, request.data?.shareToken);
+  if (d.userId === uid) throw new HttpsError('failed-precondition', 'ALREADY_YOURS');
+
+  const proposed = (Array.isArray(d.steps) && d.steps.length ? d.steps : [])
+    .map((s) => ({
+      title: s.title || '',
+      description: s.description || '',
+      kind: s.kind === 'dynamic' ? 'dynamic' : 'static',
+      status: 'proposed',
+      taskId: null,
+    }));
+  if (proposed.length === 0) throw new HttpsError('failed-precondition', 'NO_PLAN');
+
+  const forkRef = db.collection('features').doc();
+  await forkRef.set({
+    userId: uid,
+    orgId: d.orgId,
+    prompt: `(Building on a shared plan) ${d.prompt || ''}`.slice(0, 1000),
+    repoFullName: d.repoFullName,
+    status: 'plan_review',
+    currentStep: 0,
+    steps: proposed,
+    screenshotFileIds: [], // do NOT carry stale Files-API ids — they may no longer exist
+    imageCount: 0,
+    planningChargeInr: 0, // no planning session ran — the plan was copied
+    forkedFromFeatureId: sourceId,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, featureId: forkRef.id };
 });
 
 // Add another change to a feature AFTER all its steps are done. It runs as a NEW step on the same

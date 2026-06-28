@@ -70,6 +70,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Comparisons — a "size up the competition" request: the clarify chat + the two-sided scorecard.
+    // Owner-read; all writes backend-only (the session finalizer debits the wallet for the comparison
+    // phase and stores the report). The customer UI reads comparisons via the listMyComparisons
+    // callable, not directly.
+    match /comparisons/{comparisonId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
       allow read:  if memberOf(resource.data.orgId);

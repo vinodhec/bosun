@@ -131,6 +131,22 @@ export function priceForDesign(costUsd, { rate = DEFAULT_USD_TO_INR, isRefine = 
 }
 
 /**
+ * "Size up the competition" phase pricing. A comparison is a research deliverable: the agent reads
+ * the owner's own site (code-aware) and the competitors, then writes a two-sided scorecard + scoped
+ * actions. Like design/planning it's billed a flat multiple of its OWN actual COGS (inflated by
+ * Anthropic GST), charged when the report is ready. The FIRST report carries the higher markup; a
+ * "look again" refine is cheap iteration on its incremental cost. No floor/cap — it's a cheap call.
+ * Tune the multipliers here and nowhere else.
+ */
+export const COMPARE_INITIAL_MULTIPLIER = 3.5;
+export const COMPARE_REFINE_MULTIPLIER = 1.5;
+export function priceForCompare(costUsd, { rate = DEFAULT_USD_TO_INR, isRefine = false } = {}) {
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  const mult = isRefine ? COMPARE_REFINE_MULTIPLIER : COMPARE_INITIAL_MULTIPLIER;
+  return Math.ceil(usdToInr(effectiveUsd, rate) * mult);
+}
+
+/**
  * Canonical charge for a completed task.
  * @param {number} actualCostUsd  cost reported by the agent run
  * @param {{rate?: number}} [opts]

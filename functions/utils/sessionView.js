@@ -88,6 +88,10 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
     deployedTesting: !!t.deployedTesting,
     deployedProd: !!t.deployedProd,
     deployed: merged,
+    // Sharing state for the "Share with my team" control on a finished fix (token builds the link).
+    shared: !!t.shared,
+    shareToken: t.shareToken || null,
+    forkedFromTaskId: t.forkedFromTaskId || null,
     createdAt: t.createdAt?.toMillis?.() ?? null,
   };
 }

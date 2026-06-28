@@ -1,0 +1,333 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - link "OLX India" [ref=e9] [cursor=pointer]:
+        - /url: /
+        - img "OLX India" [ref=e11]
+      - generic [ref=e14]:
+        - generic [ref=e17]:
+          - img [ref=e18]
+          - textbox "Search city, area or locality" [ref=e20]
+          - button [ref=e22] [cursor=pointer]:
+            - img [ref=e23]
+        - generic [ref=e25]:
+          - search [ref=e27]:
+            - button "search"
+            - group [ref=e28]:
+              - textbox "Find Cars, Mobile Phones and more..." [ref=e30]
+          - img [ref=e33] [cursor=pointer]
+      - generic [ref=e35]:
+        - link "Wishlist" [ref=e37] [cursor=pointer]:
+          - /url: /wishlist
+          - button "favorite" [ref=e38]:
+            - img [ref=e39]
+          - generic [ref=e41]: Wishlist
+        - button "Login" [ref=e43] [cursor=pointer]:
+          - img [ref=e44]
+          - generic [ref=e46]: Login
+        - link "Sell" [ref=e48] [cursor=pointer]:
+          - /url: /post
+          - img [ref=e49]
+          - generic [ref=e55]:
+            - img [ref=e57]
+            - generic [ref=e59]: Sell
+  - generic [ref=e63]:
+    - generic [ref=e64] [cursor=pointer]:
+      - button [ref=e66]:
+        - img [ref=e67]
+      - generic [ref=e69]: All Categories
+    - generic [ref=e70]:
+      - link "Cars" [ref=e72] [cursor=pointer]:
+        - /url: /cars_c84
+      - link "Motorcycles" [ref=e74] [cursor=pointer]:
+        - /url: /motorcycles_c81
+      - link "Mobile Phones" [ref=e76] [cursor=pointer]:
+        - /url: /mobile-phones_c1453
+      - 'link "For Sale: Houses & Apartments" [ref=e78] [cursor=pointer]':
+        - /url: /for-sale-houses-apartments_c1725
+      - 'link "For Rent: Houses & Apartments" [ref=e80] [cursor=pointer]':
+        - /url: /for-rent-houses-apartments_c1723
+      - link "beds-wardrobes" [ref=e82] [cursor=pointer]:
+        - /url: /beds-wardrobes_c1591
+      - link "TVs, Video - Audio" [ref=e84] [cursor=pointer]:
+        - /url: /tvs-video-audio_c1523
+      - generic [ref=e86]: 24 Jun, 2026
+  - main [ref=e87]:
+    - generic [ref=e88]:
+      - generic [ref=e91]:
+        - list [ref=e94]:
+          - listitem [ref=e95]:
+            - link "Home" [ref=e96] [cursor=pointer]:
+              - /url: /
+            - img [ref=e98]
+          - listitem [ref=e100]:
+            - link "Properties" [ref=e101] [cursor=pointer]:
+              - /url: /properties_c3
+            - img [ref=e103]
+          - listitem [ref=e105]:
+            - link "Lands & Plots" [ref=e106] [cursor=pointer]:
+              - /url: /lands-plots_c1729
+            - img [ref=e108]
+          - listitem [ref=e110]:
+            - link "Lands & Plots in Tamil Nadu" [ref=e111] [cursor=pointer]:
+              - /url: /tamil-nadu_g2001173/lands-plots_c1729
+            - img [ref=e113]
+          - listitem [ref=e115]:
+            - link "Lands & Plots in Chennai" [ref=e116] [cursor=pointer]:
+              - /url: /chennai_g4059162/lands-plots_c1729
+            - img [ref=e118]
+          - listitem [ref=e120]:
+            - link "Lands & Plots in Chennai Central" [ref=e121] [cursor=pointer]:
+              - /url: /chennai-central_g5334898/lands-plots_c1729
+            - img [ref=e123]
+          - listitem [ref=e125]:
+            - link "Farm house farm land thiruvalur near மாமரங்" [ref=e126]:
+              - /url: /item/lands-plots-c1729-for-sale-18500-sq-yd-in-chennai-central-chennai-iid-1844225427
+        - generic [ref=e130]:
+          - button [ref=e132]:
+            - generic [ref=e133]:
+              - generic [ref=e134]:
+                - generic [ref=e137]:
+                  - figure [ref=e143] [cursor=pointer]
+                  - figure [ref=e166] [cursor=pointer]
+                - img [ref=e186] [cursor=pointer]
+                - img [ref=e189] [cursor=pointer]
+              - generic [ref=e191]:
+                - generic [ref=e194]:
+                  - button [ref=e198] [cursor=pointer]
+                  - button [ref=e202] [cursor=pointer]
+                  - button [ref=e206] [cursor=pointer]
+                  - button [ref=e210] [cursor=pointer]
+                  - button [ref=e214] [cursor=pointer]
+                  - button [ref=e218] [cursor=pointer]
+                  - button [ref=e222] [cursor=pointer]
+                  - button [ref=e226] [cursor=pointer]
+                  - button [ref=e230] [cursor=pointer]
+                  - button [ref=e234] [cursor=pointer]
+                  - button [ref=e238] [cursor=pointer]
+                  - button [ref=e242] [cursor=pointer]
+                  - button [ref=e246] [cursor=pointer]
+                  - button [ref=e250] [cursor=pointer]
+                  - button [ref=e254] [cursor=pointer]
+                  - button [ref=e258] [cursor=pointer]
+                  - button [ref=e262] [cursor=pointer]
+                  - button [ref=e266] [cursor=pointer]
+                  - button [ref=e270] [cursor=pointer]
+                  - button [ref=e274] [cursor=pointer]
+                  - button [ref=e278] [cursor=pointer]
+                  - button [ref=e282] [cursor=pointer]
+                  - button [ref=e286] [cursor=pointer]
+                  - button [ref=e290] [cursor=pointer]
+                  - button [ref=e294] [cursor=pointer]
+                  - button [ref=e298] [cursor=pointer]
+                  - button [ref=e302] [cursor=pointer]
+                  - button [ref=e306] [cursor=pointer]
+                  - button [ref=e310] [cursor=pointer]
+                  - button [ref=e314] [cursor=pointer]
+                  - button [ref=e318] [cursor=pointer]
+                  - button [ref=e322] [cursor=pointer]
+                  - button [ref=e326] [cursor=pointer]
+                  - button [ref=e330] [cursor=pointer]
+                  - button [ref=e334] [cursor=pointer]
+                  - button [ref=e338] [cursor=pointer]
+                  - button [ref=e342] [cursor=pointer]
+                  - button [ref=e346] [cursor=pointer]
+                  - button [ref=e350] [cursor=pointer]
+                  - button [ref=e354] [cursor=pointer]
+                  - button [ref=e358] [cursor=pointer]
+                  - button [ref=e362] [cursor=pointer]
+                - img [ref=e364] [cursor=pointer]
+                - img [ref=e367] [cursor=pointer]
+          - button "Featured Details Type For Sale Listed By Owner Plot Area 18500 Length 180 Breadth 100 Facing West Project Name Farm house farm land Description மாமரங்ள் தென்னை மரங்கள் தேக்கு மரங்கள் சுற்றி பேன்ஸ் தண்ணிர் வசதி பார்ம் ஹவுஸ்" [ref=e370]:
+            - generic [ref=e371]:
+              - generic [ref=e373]: Featured
+              - heading "Details" [level=3] [ref=e374]
+              - generic [ref=e376]:
+                - generic [ref=e378]:
+                  - generic [ref=e379]: Type
+                  - generic [ref=e380]: For Sale
+                - generic [ref=e382]:
+                  - generic [ref=e383]: Listed By
+                  - generic [ref=e384]: Owner
+                - generic [ref=e386]:
+                  - generic [ref=e387]: Plot Area
+                  - generic [ref=e388]: "18500"
+                - generic [ref=e390]:
+                  - generic [ref=e391]: Length
+                  - generic [ref=e392]: "180"
+                - generic [ref=e394]:
+                  - generic [ref=e395]: Breadth
+                  - generic [ref=e396]: "100"
+                - generic [ref=e398]:
+                  - generic [ref=e399]: Facing
+                  - generic [ref=e400]: West
+                - generic [ref=e402]:
+                  - generic [ref=e403]: Project Name
+                  - generic [ref=e404]: Farm house farm land
+              - heading "Description" [level=3] [ref=e405]
+              - paragraph [ref=e407]: மாமரங்ள் தென்னை மரங்கள் தேக்கு மரங்கள் சுற்றி பேன்ஸ் தண்ணிர் வசதி பார்ம் ஹவுஸ்
+        - generic [ref=e408]:
+          - button "₹ 65,00,000 Farm house farm land thiruvalur near மாமரங் Chennai Central, Chennai, Tamil Nadu Today" [ref=e409]:
+            - generic [ref=e410]:
+              - generic [ref=e411]:
+                - generic [ref=e412]: ₹ 65,00,000
+                - heading "Farm house farm land thiruvalur near மாமரங்" [level=1] [ref=e413]
+                - generic [ref=e414]:
+                  - generic [ref=e416]: Chennai Central, Chennai, Tamil Nadu
+                  - generic [ref=e417]: Today
+              - generic [ref=e418]:
+                - button "Share" [ref=e419] [cursor=pointer]:
+                  - img [ref=e420]
+                - button "Favourite" [ref=e422] [cursor=pointer]:
+                  - img [ref=e423]
+          - button "Posted byK R Harikrishnan Member since Sep 2016 3 Items listed" [ref=e425]:
+            - generic [ref=e427]:
+              - generic [ref=e428]:
+                - link "avatar" [ref=e429] [cursor=pointer]:
+                  - /url: /profile/108479707
+                  - figure [ref=e430]
+                - link "Posted byK R Harikrishnan Member since Sep 2016" [ref=e432] [cursor=pointer]:
+                  - /url: /profile/108479707
+                  - generic [ref=e433]:
+                    - generic [ref=e434]:
+                      - generic [ref=e435]:
+                        - generic [ref=e436]: Posted by
+                        - text: K R Harikrishnan
+                      - generic [ref=e440]: Member since Sep 2016
+                    - img [ref=e442]
+              - generic [ref=e447]:
+                - generic [ref=e448]: "3"
+                - generic [ref=e449]: Items listed
+          - button "Posted in Chennai Central, Chennai, Tamil Nadu" [ref=e451]:
+            - generic [ref=e452]:
+              - heading "Posted in" [level=3] [ref=e453]
+              - generic [ref=e454]: Chennai Central, Chennai, Tamil Nadu
+          - button [ref=e455]:
+            - iframe [ref=e457]:
+              
+          - generic [ref=e458]:
+            - strong [ref=e459]: AD ID 1844225427
+            - paragraph [ref=e460] [cursor=pointer]: Report this ad
+      - generic [ref=e462]:
+        - link "Lands & Plots For Sale in Chennai" [ref=e463] [cursor=pointer]:
+          - /url: /chennai_g4059162/lands-plots_c1729?filter=type_eq_for-sale
+          - heading "Lands & Plots For Sale in Chennai" [level=3] [ref=e464]
+          - img [ref=e465]
+        - link "Lands & Plots For Sale Under 70 Lakhs in Chennai" [ref=e467] [cursor=pointer]:
+          - /url: /chennai_g4059162/lands-plots_c1729?filter=price_between_6000000_to_6999999
+          - heading "Lands & Plots For Sale Under 70 Lakhs in Chennai" [level=3] [ref=e468]
+          - img [ref=e469]
+  - contentinfo [ref=e473]:
+    - generic [ref=e475]:
+      - generic [ref=e476]:
+        - generic [ref=e477]:
+          - text: Popular Locations
+          - list [ref=e478]:
+            - listitem [ref=e479]:
+              - link "Kolkata" [ref=e480] [cursor=pointer]:
+                - /url: /kolkata_g4157275
+            - listitem [ref=e481]:
+              - link "Mumbai" [ref=e482] [cursor=pointer]:
+                - /url: /mumbai_g4058997
+            - listitem [ref=e483]:
+              - link "Chennai" [ref=e484] [cursor=pointer]:
+                - /url: /chennai_g4059162
+            - listitem [ref=e485]:
+              - link "Pune" [ref=e486] [cursor=pointer]:
+                - /url: /pune_g4059014
+        - generic [ref=e487]:
+          - text: Trending Locations
+          - list [ref=e488]:
+            - listitem [ref=e489]:
+              - link "Bhubaneshwar" [ref=e490] [cursor=pointer]:
+                - /url: /bhubaneshwar_g4059049
+            - listitem [ref=e491]:
+              - link "Hyderabad" [ref=e492] [cursor=pointer]:
+                - /url: /hyderabad_g4058526
+            - listitem [ref=e493]:
+              - link "Chandigarh" [ref=e494] [cursor=pointer]:
+                - /url: /chandigarh_g4058651
+            - listitem [ref=e495]:
+              - link "Nashik" [ref=e496] [cursor=pointer]:
+                - /url: /nashik_g4059002
+        - generic [ref=e497]:
+          - text: About Us
+          - list [ref=e498]:
+            - listitem [ref=e499]:
+              - link "About OLX India" [ref=e500] [cursor=pointer]:
+                - /url: https://olx.in/about-us
+            - listitem [ref=e501]:
+              - link "Tech@OLX" [ref=e502] [cursor=pointer]:
+                - /url: https://tech.olx.in/
+            - listitem [ref=e503]:
+              - link "Careers" [ref=e504] [cursor=pointer]:
+                - /url: https://careers.olx.in/
+        - generic [ref=e505]:
+          - text: OLX
+          - list [ref=e506]:
+            - listitem [ref=e507]:
+              - link "Blog" [ref=e508] [cursor=pointer]:
+                - /url: https://www.olx.in/blog
+            - listitem [ref=e509]:
+              - link "Help" [ref=e510] [cursor=pointer]:
+                - /url: https://help.olx.in/hc/en-us
+            - listitem [ref=e511]:
+              - link "Sitemap" [ref=e512] [cursor=pointer]:
+                - /url: /sitemap/most-popular
+            - listitem [ref=e513]:
+              - link "Legal & Privacy information" [ref=e514] [cursor=pointer]:
+                - /url: https://help.olx.in/hc/en-us/categories/10781706981149-Legal-Privacy-information
+            - listitem [ref=e515]:
+              - link "Vulnerability Disclosure Program" [ref=e516] [cursor=pointer]:
+                - /url: https://bugbase.ai/programs/olx
+      - generic [ref=e517]:
+        - generic [ref=e518]:
+          - generic [ref=e519]: Follow Us
+          - generic [ref=e520]:
+            - link "Facebook-icon" [ref=e521] [cursor=pointer]:
+              - /url: https://www.facebook.com/share/15nUyTpVrb/?mibextid=wwXIfr
+              - img "Facebook-icon" [ref=e523]
+            - link "Instagram-icon" [ref=e524] [cursor=pointer]:
+              - /url: https://www.instagram.com/olx_india?igsh=MWdpNmdiMmJ2aDFncg==
+              - img "Instagram-icon" [ref=e526]
+            - link "Youtube-icon" [ref=e527] [cursor=pointer]:
+              - /url: https://www.youtube.com/@olx_india
+              - img "Youtube-icon" [ref=e529]
+            - link "Twitter-icon" [ref=e530] [cursor=pointer]:
+              - /url: https://x.com/OLX_India?ref_src=twsrc%5Egoogle%7Ctwcamp%5Eserp%7Ctwgr%5Eauthor
+              - img "Twitter-icon" [ref=e532]
+            - link "Whatsapp-icon" [ref=e533] [cursor=pointer]:
+              - /url: https://whatsapp.com/channel/0029VaCIzHV4tRrmJPFz6H15
+              - img "Whatsapp-icon" [ref=e535]
+            - link "LinkedIn-icon" [ref=e536] [cursor=pointer]:
+              - /url: https://www.linkedin.com/company/olxindia/posts/?feedView=all
+              - img "LinkedIn-icon" [ref=e538]
+        - generic:
+          - link:
+            - /url: https://play.google.com/store/apps/details?id=com.olx.southasia
+          - link:
+            - /url: https://itunes.apple.com/in/app/olx-buy-sell-near-you/id913492792?mt=8
+    - generic [ref=e539]:
+      - generic [ref=e540]:
+        - img "Car Trade" [ref=e543]
+        - img "olx" [ref=e546]
+        - link "carwale" [ref=e548] [cursor=pointer]:
+          - /url: https://www.carwale.com
+          - img "carwale" [ref=e550]
+        - link "bikewale" [ref=e552] [cursor=pointer]:
+          - /url: https://www.bikewale.com
+          - img "bikewale" [ref=e554]
+        - link "cartrade" [ref=e556] [cursor=pointer]:
+          - /url: https://www.cartrade.com
+          - img "cartrade" [ref=e558]
+        - link "mobility_outlook" [ref=e560] [cursor=pointer]:
+          - /url: https://www.mobilityoutlook.com
+          - img "mobility_outlook" [ref=e562]
+      - generic [ref=e563]:
+        - generic [ref=e564]: All rights reserved © 2006-2026 OLX
+        - generic [ref=e565]:
+          - link "Help" [ref=e567] [cursor=pointer]:
+            - /url: https://help.olx.in/hc/en-us
+          - text: "-"
+          - link "Sitemap" [ref=e568] [cursor=pointer]:
+            - /url: /sitemap/most-popular

@@ -1,5 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { randomUUID } from 'node:crypto';
+import { loadShared } from '../utils/sharing.js';
 import { continueFixSession, startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
 import { designContextFromText } from '../utils/figma.js';
 import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
@@ -41,11 +43,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     .get();
 
   return {
-    // Feature steps AND design builds are filtered out here — they belong to a feature/design and
-    // are shown inside that card (listMyFeatures / listMyDesigns), never as standalone fixes.
-    // sessionView is the shared task → safe-view projection used by all three.
+    // Feature steps, design builds AND comparison sessions are filtered out here — they belong to a
+    // feature/design/comparison and are shown inside that card (listMyFeatures / listMyDesigns /
+    // listMyComparisons), never as standalone fixes. sessionView is the shared task → safe-view
+    // projection used by all of them.
     sessions: snap.docs
-      .filter((d) => !d.data().featureId && !d.data().designId)
+      .filter((d) => !d.data().featureId && !d.data().designId && !d.data().comparisonId)
       .map((d) => sessionView(d.data(), d.id, { userCanDeployProd, deploy })),
   };
 });
@@ -245,4 +248,70 @@ export const declineQuote = onCall({ region: 'asia-south1' }, async (request) =>
   }
   await taskRef.update({ status: 'cancelled', cancelledAt: FieldValue.serverTimestamp() });
   return { ok: true };
+});
+
+// ─── Share & fork a fix ───────────────────────────────────────────────────────────────────────
+// A teammate can SHARE a finished fix (the chat + what we changed) with another member of the SAME
+// org, who uses it as a STARTING POINT: opening the share link pre-fills their normal "fix a website"
+// box with the shared brief, so they tweak it and run it as their own fix. Same org ⇒ same repo +
+// same wallet, so there's nothing to copy and nothing to bill until they actually submit a fix.
+
+// The plain-English brief worth carrying forward: the polished idealDescription if we have one
+// (a ready-to-paste prompt), else the owner's original words.
+function fixBrief(task) {
+  return String(task.idealDescription || task.prompt || '').slice(0, 1000);
+}
+
+// Owner turns sharing ON for a finished fix. Mints a capability token for the link (reused if already
+// shared). Returns the token so the client can build the share URL.
+export const shareSession = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const taskId = String(request.data?.taskId ?? '').trim();
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const db = getFirestore();
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Fix not found.');
+  const t = snap.data();
+  if (t.userId !== uid) throw new HttpsError('permission-denied', 'Not your fix.');
+  if (t.status !== 'complete') throw new HttpsError('failed-precondition', 'NOT_SHAREABLE'); // nothing finished to share
+  const shareToken = t.shareToken || randomUUID();
+  await ref.update({ shared: true, shareToken, sharedBy: uid, sharedAt: FieldValue.serverTimestamp() });
+  return { ok: true, shareToken };
+});
+
+export const unshareSession = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const taskId = String(request.data?.taskId ?? '').trim();
+  if (!taskId) throw new HttpsError('invalid-argument', 'taskId required.');
+  const db = getFirestore();
+  const ref = db.collection('tasks').doc(taskId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Fix not found.');
+  if (snap.data().userId !== uid) throw new HttpsError('permission-denied', 'Not your fix.');
+  await ref.update({ shared: false });
+  return { ok: true };
+});
+
+// A teammate opens a fix share link — read-only view of the chat + what changed, plus the `brief`
+// the client uses to pre-fill their fix box ("use as a starting point"). Strips operator fields.
+export const getSharedSession = onCall({ region: 'asia-south1' }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
+  const db = getFirestore();
+  const { d } = await loadShared(db, 'tasks', uid, String(request.data?.taskId ?? '').trim(), request.data?.shareToken);
+  // sessionView is the customer-safe projection; we hand back a read-only subset + the brief to seed a fix.
+  const view = sessionView(d, request.data?.taskId, {});
+  return {
+    session: {
+      problem: view.problem,
+      summary: view.summary,
+      changes: view.changes,
+      rounds: view.rounds,
+      brief: fixBrief(d),
+      isOwn: d.userId === uid,
+    },
+  };
 });
