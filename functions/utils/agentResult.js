@@ -257,31 +257,47 @@ export async function extractResult(client, sessionId) {
       if (mm) jsonStr = mm[1]; // keep the last match
     }
     if (jsonStr) {
-      const j = JSON.parse(jsonStr);
-      resultSummary = String(j.summary || '').slice(0, 600);
-      filesChanged = Array.isArray(j.filesChanged) ? j.filesChanged.slice(0, 50) : [];
-      prUrl = j.prUrl || null;
-      idealDescription = String(j.idealDescription || '').slice(0, 400);
-      // Keep only keywords whose phrase actually appears in idealDescription — guards against
-      // the model inventing a "highlight" that doesn't match anything in the tip text.
-      if (Array.isArray(j.idealKeywords) && idealDescription) {
-        const haystack = idealDescription.toLowerCase();
-        idealKeywords = j.idealKeywords
-          .map((k) => ({
-            phrase: String(k?.phrase || '').slice(0, 120).trim(),
-            why: String(k?.why || '').slice(0, 100).trim(),
-          }))
-          .filter((k) => k.phrase && k.why && haystack.includes(k.phrase.toLowerCase()))
-          .slice(0, 5);
+      let j = null;
+      try {
+        j = JSON.parse(jsonStr);
+      } catch {
+        // The agent sometimes emits unescaped double-quotes inside string values (e.g. naming
+        // a UI element like "Notify Me"). Fall back to regex extraction for the fields we
+        // actually need — prUrl is a plain URL with no special chars; summary can come from
+        // the last plain-text reply if the JSON is unrecoverable.
+        const prUrlMatch = jsonStr.match(/"prUrl"\s*:\s*"(https?:\/\/[^"]+)"/);
+        if (prUrlMatch) prUrl = prUrlMatch[1];
+        const scoreMatch = jsonStr.match(/"briefScore"\s*:\s*(\d+)/);
+        if (scoreMatch) briefScore = Math.min(100, Number(scoreMatch[1]));
+        // filesChanged and idealKeywords require valid JSON arrays — skip on parse failure.
+        resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
       }
-      // Clarity rating for points + coaching (advisory only — never gates or prices a fix).
-      // Trust the agent's score when it's a sane number; otherwise fall back to how sparse
-      // idealKeywords is (few missing details ⇒ the brief was already clear ⇒ high score).
-      const raw = Number(j.briefScore);
-      if (Number.isFinite(raw) && raw >= 0) {
-        briefScore = Math.min(100, Math.round(raw));
-      } else {
-        briefScore = idealKeywords.length === 0 ? 80 : Math.max(20, 80 - idealKeywords.length * 15);
+      if (j) {
+        resultSummary = String(j.summary || '').slice(0, 600);
+        filesChanged = Array.isArray(j.filesChanged) ? j.filesChanged.slice(0, 50) : [];
+        prUrl = j.prUrl || null;
+        idealDescription = String(j.idealDescription || '').slice(0, 400);
+        // Keep only keywords whose phrase actually appears in idealDescription — guards against
+        // the model inventing a "highlight" that doesn't match anything in the tip text.
+        if (Array.isArray(j.idealKeywords) && idealDescription) {
+          const haystack = idealDescription.toLowerCase();
+          idealKeywords = j.idealKeywords
+            .map((k) => ({
+              phrase: String(k?.phrase || '').slice(0, 120).trim(),
+              why: String(k?.why || '').slice(0, 100).trim(),
+            }))
+            .filter((k) => k.phrase && k.why && haystack.includes(k.phrase.toLowerCase()))
+            .slice(0, 5);
+        }
+        // Clarity rating for points + coaching (advisory only — never gates or prices a fix).
+        // Trust the agent's score when it's a sane number; otherwise fall back to how sparse
+        // idealKeywords is (few missing details ⇒ the brief was already clear ⇒ high score).
+        const raw = Number(j.briefScore);
+        if (Number.isFinite(raw) && raw >= 0) {
+          briefScore = Math.min(100, Math.round(raw));
+        } else {
+          briefScore = idealKeywords.length === 0 ? 80 : Math.max(20, 80 - idealKeywords.length * 15);
+        }
       }
     } else {
       resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
