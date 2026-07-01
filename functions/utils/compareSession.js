@@ -98,13 +98,13 @@ export function buildCompareReply(answer) {
 /** Start the comparison session (async). Mirrors a fix dispatch with the compare instruction + no PR. */
 export async function startCompareSession({
   ask, repoUrl, githubToken, vaultId, agentId, firebaseSAs = [],
-  figmaDesign = null, imageFileIds = [], screenshotCount = 0,
+  figmaDesign = null, imageFileIds = [], screenshotCount = 0, documents = [],
 }) {
   const instruction = buildComparePrompt(ask, { figmaDesign, screenshotCount });
   return startFixSession({
     instruction,
     repoUrl, githubToken, vaultId, agentId, firebaseSAs,
-    figmaDesign, imageFileIds,
+    figmaDesign, imageFileIds, documents,
   });
 }
 

@@ -83,12 +83,13 @@ export function buildPlanPrompt(ask, { figmaDesign = null, screenshotCount = 0, 
 export async function startPlanningSession({
   ask, repoUrl, githubToken, vaultId, agentId, firebaseSAs = [],
   figmaDesign = null, imageFileIds = [], screenshotCount = 0, priorSteps = null, changeNote = '',
+  documents = [],
 }) {
   const instruction = buildPlanPrompt(ask, { figmaDesign, screenshotCount, priorSteps, changeNote });
   return startFixSession({
     instruction,
     repoUrl, githubToken, vaultId, agentId, firebaseSAs,
-    figmaDesign, imageFileIds,
+    figmaDesign, imageFileIds, documents,
   });
 }
 

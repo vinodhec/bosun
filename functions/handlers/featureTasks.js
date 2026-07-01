@@ -9,6 +9,7 @@ import { designContextFromText } from '../utils/figma.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -38,7 +39,7 @@ async function loadOrgCtx(db, orgId) {
 // Start a planning session for a feature and record it as a kind:'planning' task that pollSessions
 // will finalize. Returns the planning taskId. `ask` is the text the plan is based on; `priorSteps`
 // + `changeNote` drive a refine; screenshots ride along by file_id (carried from the original ask).
-async function dispatchPlanning(db, { featureId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, priorSteps = null, changeNote = '', mode = 'initial' }) {
+async function dispatchPlanning(db, { featureId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, priorSteps = null, changeNote = '', documents = [], mode = 'initial' }) {
   const figmaDesign = await designContextFromText({ org, secretData, text: ask });
   const firebaseSAs = firebaseSAsFromSecret(secretData);
   const { sessionId, firebaseFileIds } = await startPlanningSession({
@@ -53,6 +54,7 @@ async function dispatchPlanning(db, { featureId, userId, orgId, org, gh, secretD
     screenshotCount,
     priorSteps,
     changeNote,
+    documents,
   });
   const taskRef = db.collection('tasks').doc();
   await taskRef.set({
@@ -83,6 +85,8 @@ export const planFeature = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_A
   const prompt = String(request.data?.prompt ?? '').trim();
   if (!prompt) throw new HttpsError('invalid-argument', 'Please describe the feature you want.');
   const images = sanitizeImages(request.data?.images);
+  // Reference documents (a CSV page plan, a spec) that inform the plan. Inline text, not persisted.
+  const documents = sanitizeDocuments(request.data?.documents);
 
   const db = getFirestore();
   const userSnap = await db.collection('users').doc(uid).get();
@@ -111,7 +115,7 @@ export const planFeature = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_A
   try {
     const planningTaskId = await dispatchPlanning(db, {
       featureId: featureRef.id, userId: uid, orgId, org, gh, secretData,
-      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length, mode: 'initial',
+      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length, documents, mode: 'initial',
     });
     await featureRef.update({ planningTaskId });
   } catch (e) {

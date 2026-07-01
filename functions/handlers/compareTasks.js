@@ -6,6 +6,7 @@ import { saveCompareShots } from '../utils/compareShots.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -40,7 +41,7 @@ async function loadOrgCtx(db, orgId) {
 
 // Start (or restart, on a refine) the comparison session and record it as a kind:'compare' task
 // pollSessions will finalize. `ask` is the text the comparison is based on. Returns { taskId }.
-async function dispatchCompareSession(db, { comparisonId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0 }) {
+async function dispatchCompareSession(db, { comparisonId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, documents = [] }) {
   // The agent researches competitors itself via its own web_search / web_fetch tools (the managed-agent
   // environment has unrestricted egress) — Bosun does no server-side scraping. We only enrich with a
   // Figma link if the org has one connected (degrades to null on any problem).
@@ -56,6 +57,7 @@ async function dispatchCompareSession(db, { comparisonId, userId, orgId, org, gh
     figmaDesign,
     imageFileIds,
     screenshotCount,
+    documents,
   });
   const taskRef = db.collection('tasks').doc();
   await taskRef.set({
@@ -85,6 +87,8 @@ export const startComparison = onCall({ region: 'asia-south1', secrets: [ANTHROP
   const prompt = String(request.data?.prompt ?? '').trim();
   if (!prompt) throw new HttpsError('invalid-argument', 'Please tell us what to compare, and who against.');
   const images = sanitizeImages(request.data?.images);
+  // Reference documents (a feature checklist, positioning notes) to weigh in the comparison.
+  const documents = sanitizeDocuments(request.data?.documents);
 
   const db = getFirestore();
   const userSnap = await db.collection('users').doc(uid).get();
@@ -118,7 +122,7 @@ export const startComparison = onCall({ region: 'asia-south1', secrets: [ANTHROP
   try {
     const { taskId, sessionId } = await dispatchCompareSession(db, {
       comparisonId: comparisonRef.id, userId: uid, orgId, org, gh, secretData,
-      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length,
+      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length, documents,
     });
     await comparisonRef.update({ compareTaskId: taskId, sessionId });
   } catch (e) {

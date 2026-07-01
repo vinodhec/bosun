@@ -6,6 +6,7 @@ import { designContextFromText } from '../utils/figma.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -37,7 +38,7 @@ async function loadOrgCtx(db, orgId) {
 
 // Start (or restart, after a fresh prompt) the design session and record it as a kind:'design' task
 // pollSessions will finalize. Returns the task id. `ask` is the text the mock is based on.
-async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, images = [] }) {
+async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, secretData, ask, imageFileIds = [], screenshotCount = 0, images = [], documents = [] }) {
   const figmaDesign = await designContextFromText({ org, secretData, text: ask });
   const firebaseSAs = firebaseSAsFromSecret(secretData);
   const { sessionId, firebaseFileIds } = await startDesignSession({
@@ -51,6 +52,7 @@ async function dispatchDesignSession(db, { designId, userId, orgId, org, gh, sec
     imageFileIds,
     screenshotCount,
     images, // freshly attached marked-up screenshots (base64), in addition to persisted ones
+    documents,
   });
   const taskRef = db.collection('tasks').doc();
   await taskRef.set({
@@ -80,6 +82,8 @@ export const planDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   const prompt = String(request.data?.prompt ?? '').trim();
   if (!prompt) throw new HttpsError('invalid-argument', 'Please describe the screen you want.');
   const images = sanitizeImages(request.data?.images);
+  // Reference documents (a content plan, copy, a spec) informing the screen. Inline text.
+  const documents = sanitizeDocuments(request.data?.documents);
 
   const db = getFirestore();
   const userSnap = await db.collection('users').doc(uid).get();
@@ -110,7 +114,7 @@ export const planDesign = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   try {
     const { taskId, sessionId } = await dispatchDesignSession(db, {
       designId: designRef.id, userId: uid, orgId, org, gh, secretData,
-      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length,
+      ask: prompt, imageFileIds: screenshotFileIds, screenshotCount: images.length, documents,
     });
     await designRef.update({ designTaskId: taskId, sessionId });
   } catch (e) {

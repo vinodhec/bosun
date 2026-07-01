@@ -147,13 +147,13 @@ export function buildDesignReply(answer, imageCount = 0) {
  */
 export async function startDesignSession({
   ask, repoUrl, githubToken, vaultId, agentId, firebaseSAs = [],
-  figmaDesign = null, imageFileIds = [], screenshotCount = 0, images = [],
+  figmaDesign = null, imageFileIds = [], screenshotCount = 0, images = [], documents = [],
 }) {
   const instruction = buildDesignPrompt(ask, { figmaDesign, screenshotCount });
   return startFixSession({
     instruction,
     repoUrl, githubToken, vaultId, agentId, firebaseSAs,
-    figmaDesign, imageFileIds, images,
+    figmaDesign, imageFileIds, images, documents,
   });
 }
 

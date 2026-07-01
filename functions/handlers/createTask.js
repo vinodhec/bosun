@@ -6,6 +6,7 @@ import { startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js'
 import { designContextFromText } from '../utils/figma.js';
 import { modelForComplexity, agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
+import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
@@ -29,6 +30,10 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   // Optional screenshots the owner pasted in (base64). Validated + capped before we
   // forward them to the agent so a screenshot can show what words can't.
   const images = sanitizeImages(request.data?.images);
+
+  // Optional reference documents (a CSV page plan, a spec) the owner attached (inline text). The
+  // agent treats them as the source of truth for exact values / per-page details. Not persisted.
+  const documents = sanitizeDocuments(request.data?.documents);
 
   const db = getFirestore();
 
@@ -65,6 +70,7 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
       currentRoundCharge: 0,
       freeRevisionsUsed: 0,
       imageCount: images.length, // screenshots aren't carried to the deferred run
+      documentCount: documents.length, // nor are attached documents
       createdAt: FieldValue.serverTimestamp(),
     });
     return { taskId: quoteRef.id, needsQuote: true };
@@ -116,11 +122,12 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
     // Metadata the poller folds into the round thread when the agent finishes.
     pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt },
     imageCount: images.length, // we don't persist the screenshots, only that there were some
+    documentCount: documents.length, // nor the documents, only that there were some
     createdAt: FieldValue.serverTimestamp(),
   });
 
   try {
-    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign });
+    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign, documents });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch {
     await taskRef.update({ status: 'failed', error: 'dispatch_failed' });

@@ -1,11 +1,16 @@
 import { useRef } from 'react';
 import { MAX_IMAGES, ACCEPTED_TYPES, imageFilesFrom } from '../utils/images.js';
+import { MAX_DOCUMENTS, ACCEPTED_DOC_ACCEPT } from '../utils/documents.js';
 
 export default function ScreenshotComposer({
   value, onChange, rows = 3, placeholder, autoFocus = false,
   images, imgErr, dragging, setDragging, addFiles, removeImage,
+  // Optional document attachments — the "attach a plan / spreadsheet" button only renders when
+  // an `addDocs` handler is passed, so screenshot-only composers are unaffected.
+  documents = [], docErr = '', addDocs, removeDoc,
 }) {
   const fileRef = useRef(null);
+  const docRef = useRef(null);
 
   const onPaste = (e) => {
     const files = imageFilesFrom(e.clipboardData);
@@ -13,7 +18,9 @@ export default function ScreenshotComposer({
   };
   const onDrop = (e) => { e.preventDefault(); setDragging(false); addFiles(imageFilesFrom(e.dataTransfer)); };
   const onPick = (e) => { addFiles(e.target.files); e.target.value = ''; };
+  const onPickDoc = (e) => { addDocs?.(e.target.files); e.target.value = ''; };
   const full = images.length >= MAX_IMAGES;
+  const docsFull = documents.length >= MAX_DOCUMENTS;
 
   return (
     <div
@@ -48,7 +55,27 @@ export default function ScreenshotComposer({
           ))}
         </div>
       )}
-      <div className="border-t border-line/60 px-3 py-2">
+      {addDocs && documents.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-t border-line/60 px-4 py-3">
+          {documents.map((doc) => (
+            <span
+              key={doc.id}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs font-medium text-ink"
+            >
+              📄 {doc.name}
+              <button
+                type="button"
+                onClick={() => removeDoc(doc.id)}
+                aria-label="Remove document"
+                className="text-ink-soft transition hover:text-ink"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1 border-t border-line/60 px-3 py-2">
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
@@ -66,8 +93,30 @@ export default function ScreenshotComposer({
           className="hidden"
           onChange={onPick}
         />
+        {addDocs && (
+          <>
+            <button
+              type="button"
+              onClick={() => docRef.current?.click()}
+              disabled={docsFull}
+              title={docsFull ? `Up to ${MAX_DOCUMENTS} documents` : 'Attach a plan or spreadsheet'}
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-ink-soft transition hover:bg-canvas hover:text-ink disabled:opacity-50"
+            >
+              📄 Attach document
+            </button>
+            <input
+              ref={docRef}
+              type="file"
+              accept={ACCEPTED_DOC_ACCEPT}
+              multiple
+              className="hidden"
+              onChange={onPickDoc}
+            />
+          </>
+        )}
       </div>
       {imgErr && <p className="px-4 pb-3 text-sm text-bad">{imgErr}</p>}
+      {docErr && <p className="px-4 pb-3 text-sm text-bad">{docErr}</p>}
     </div>
   );
 }

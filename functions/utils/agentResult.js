@@ -12,10 +12,13 @@
 // over-bills Sonnet (~1.7×) and, worse, UNDER-bills Opus (~3×), silently eroding margin on
 // `complex` fixes. Source: Anthropic public pricing (2026-05). Within a family the ratios are
 // uniform: cache-read = 0.1× input, 5m cache-write = 1.25× input, 1h cache-write = 2× input.
-// Keyed by family so dated snapshots (claude-sonnet-4-6, claude-opus-4-7, …) all resolve here.
+// Keyed by family so dated snapshots (claude-sonnet-5, claude-opus-4-8, …) all resolve here.
+// Source: Anthropic public pricing (2026-07). Sonnet row is Sonnet 5 INTRO pricing.
 export const MODEL_PRICES = {
-  opus:   { input: 15, output: 75, cacheRead: 1.5, cacheWrite5m: 18.75, cacheWrite1h: 30 },
-  sonnet: { input: 3,  output: 15, cacheRead: 0.3, cacheWrite5m: 3.75,  cacheWrite1h: 6  },
+  opus:   { input: 5,  output: 25, cacheRead: 0.5, cacheWrite5m: 6.25,  cacheWrite1h: 10 },
+  // Sonnet 5 intro pricing, in effect through 2026-08-31. REVERT to standard rates on
+  // 2026-09-01 → input:3, output:15, cacheRead:0.3, cacheWrite5m:3.75, cacheWrite1h:6.
+  sonnet: { input: 2,  output: 10, cacheRead: 0.2, cacheWrite5m: 2.5,   cacheWrite1h: 4  },
   haiku:  { input: 1,  output: 5,  cacheRead: 0.1, cacheWrite5m: 1.25,  cacheWrite1h: 2  },
 };
 

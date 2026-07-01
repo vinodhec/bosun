@@ -63,6 +63,30 @@ export async function uploadImagesToFiles(images = []) {
 }
 
 /**
+ * Owner-attached reference documents (a CSV page plan, a spec, notes) become TRAILING text blocks
+ * on the message. Keeping them out of the prompt string means this works uniformly whether the
+ * caller used buildFixPrompt/buildRevisePrompt or passed its own `instruction`. Empty list = no
+ * blocks. A short header tells the agent to treat them as the source of truth for the details.
+ */
+function documentBlocks(documents = []) {
+  const docs = (documents || []).filter((d) => d?.text);
+  if (docs.length === 0) return [];
+  const n = docs.length;
+  const header = {
+    type: 'text',
+    text:
+      `The owner attached ${n} reference document${n > 1 ? 's' : ''} below — treat ${n > 1 ? 'them' : 'it'} ` +
+      `as the source of truth for the specifics of this request (for example exact text/values, or a ` +
+      `per-page plan). Apply what ${n > 1 ? 'they specify' : 'it specifies'} precisely.`,
+  };
+  const blocks = docs.map((d) => ({
+    type: 'text',
+    text: `----- BEGIN ATTACHED DOCUMENT: ${d.name} -----\n${d.text}\n----- END ATTACHED DOCUMENT: ${d.name} -----`,
+  }));
+  return [header, ...blocks];
+}
+
+/**
  * Start a Claude Managed Agent session to fix the user's repo.
  *
  * Runs in Anthropic's MANAGED CLOUD environment — no infrastructure of ours. The agent
@@ -73,7 +97,7 @@ export async function uploadImagesToFiles(images = []) {
  *
  * Returns { sessionId }. The `pollSessions` scheduled function finalizes + bills.
  */
-export async function startFixSession({ prompt, images = [], imageFileIds = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null, instruction = null }) {
+export async function startFixSession({ prompt, images = [], imageFileIds = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null, documents = [], instruction = null }) {
   const resolvedAgent = agentId || process.env.ANTHROPIC_MANAGED_AGENT_ID;
   if (!resolvedAgent) throw new Error('ANTHROPIC_MANAGED_AGENT_ID not configured');
   const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID;
@@ -158,6 +182,7 @@ export async function startFixSession({ prompt, images = [], imageFileIds = [], 
           ...imageBlocks,
           ...fileImageBlocks,
           ...figmaImageBlock,
+          ...documentBlocks(documents),
         ],
       },
     ],
@@ -171,7 +196,7 @@ export async function startFixSession({ prompt, images = [], imageFileIds = [], 
  * environment + GitHub auth, so the agent updates the SAME branch/PR. Usage accrues on
  * the same session, so the cost we read later is cumulative across rounds.
  */
-export async function continueFixSession({ sessionId, changes, images = [], figmaDesign = null, instruction = null }) {
+export async function continueFixSession({ sessionId, changes, images = [], figmaDesign = null, documents = [], instruction = null }) {
   if (!sessionId) throw new Error('missing sessionId');
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
@@ -198,6 +223,7 @@ export async function continueFixSession({ sessionId, changes, images = [], figm
           { type: 'text', text },
           ...imageBlocks,
           ...figmaImageBlock,
+          ...documentBlocks(documents),
         ],
       },
     ],

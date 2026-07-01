@@ -11,6 +11,7 @@ import DesignCard from '../components/DesignCard.jsx';
 import ComparisonCard from '../components/ComparisonCard.jsx';
 import Leaderboard from '../components/Leaderboard.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
 import { formatINR } from '@shared/currency.js';
 import { clarityStars } from '@shared/gamification.js';
@@ -71,6 +72,8 @@ export default function Dashboard() {
     if (pf) { setMode('fix'); setProblem(pf); window.history.replaceState({}, ''); }
   }, [location.state]);
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
+  // Reference documents (a CSV page plan, a spec) — offered on the "Fix something" tab only.
+  const { documents, docErr, addDocs, removeDoc, reset: resetDocs } = useDocumentAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sessions, setSessions] = useState(null);
@@ -165,8 +168,9 @@ export default function Dashboard() {
         orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setProblem(''); resetImages();
+      setProblem(''); resetImages(); resetDocs();
       await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
@@ -183,8 +187,9 @@ export default function Dashboard() {
         orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setProblem(''); resetImages();
+      setProblem(''); resetImages(); resetDocs();
       await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
@@ -201,8 +206,9 @@ export default function Dashboard() {
         orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setProblem(''); resetImages();
+      setProblem(''); resetImages(); resetDocs();
       await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
@@ -218,8 +224,9 @@ export default function Dashboard() {
         orgId,
         prompt: problem.trim(),
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setProblem(''); resetImages();
+      setProblem(''); resetImages(); resetDocs();
       await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
@@ -337,10 +344,15 @@ export default function Dashboard() {
                 setDragging={setDragging}
                 addFiles={addFiles}
                 removeImage={removeImage}
+                documents={documents}
+                docErr={docErr}
+                addDocs={addDocs}
+                removeDoc={removeDoc}
               />
             </div>
             <p className="mt-1.5 text-sm text-ink-soft">
               📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
+              {' '}📄 You can also attach a plan or spreadsheet (e.g. a page-by-page list of headings and descriptions) and we’ll follow it.
             </p>
             {err && <p className="mt-3 text-sm text-bad">{err}</p>}
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -436,6 +448,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
   const [reason, setReason] = useState('unresolved'); // 'unresolved' (free) | 'new_scope' (paid)
   const [changes, setChanges] = useState('');
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
+  const { documents, docErr, addDocs, removeDoc, reset: resetDocs } = useDocumentAttachments();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [deployOpen, setDeployOpen] = useState(false); // expanded Testing|Production picker
@@ -470,8 +483,9 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
         changes: changes.trim(),
         reason,
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setChanges(''); setOpen(false); setReason('unresolved'); resetImages();
+      setChanges(''); setOpen(false); setReason('unresolved'); resetImages(); resetDocs();
       await onRevised();
     } catch (e) {
       setErr(friendlyError(e));
@@ -769,10 +783,14 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                   setDragging={setDragging}
                   addFiles={addFiles}
                   removeImage={removeImage}
+                  documents={documents}
+                  docErr={docErr}
+                  addDocs={addDocs}
+                  removeDoc={removeDoc}
                 />
               </div>
               <p className="mt-1 text-xs text-ink-soft">
-                📎 Attach, paste or drag in a screenshot to show what’s still off.
+                📎 Attach a screenshot to show what’s still off, or 📄 a plan / spreadsheet to follow.
               </p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex gap-2">
@@ -783,7 +801,7 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
                 >
                   {busy ? 'Sending…' : 'Send changes →'}
                 </button>
-                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); resetImages(); }} className="btn btn-ghost btn-sm">
+                <button onClick={() => { setOpen(false); setErr(''); setReason('unresolved'); resetImages(); resetDocs(); }} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
               </div>

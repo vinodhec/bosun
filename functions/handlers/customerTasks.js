@@ -7,6 +7,7 @@ import { designContextFromText } from '../utils/figma.js';
 import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
+import { sanitizeDocuments } from '../utils/documents.js';
 import { chargeApprovedFix } from '../utils/finalize.js';
 import { sessionView } from '../utils/sessionView.js';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
@@ -124,6 +125,8 @@ export const reviseSession = onCall(
 
     // Optional fresh screenshots attached to this change request (validated + capped).
     const images = sanitizeImages(request.data?.images);
+    // Optional reference documents attached to this change request (inline text, not persisted).
+    const documents = sanitizeDocuments(request.data?.documents);
 
     const db = getFirestore();
     const taskRef = db.collection('tasks').doc(taskId);
@@ -160,7 +163,7 @@ export const reviseSession = onCall(
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
     try {
-      await continueFixSession({ sessionId: task.sessionId, changes, images, figmaDesign });
+      await continueFixSession({ sessionId: task.sessionId, changes, images, figmaDesign, documents });
     } catch (e) {
       console.error('reviseSession:dispatch', taskId, e?.message || e);
       throw new HttpsError('internal', 'We could not start the changes. You were not charged.');
