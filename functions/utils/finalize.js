@@ -63,7 +63,12 @@ export function logBillingEvent(evt, data) {
 // the org does NOT require approval (default) we charge the owed tier price right away;
 // otherwise we leave it pendingReview for the customer to approve. Idempotent: only acts on
 // the running→complete transition.
-export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords, briefScore }) {
+// `chargeCapInr` clamps this round's bracketed price (feature build steps pass
+// MAX_FEATURE_STEP_CHARGE_INR; standalone fixes leave it undefined → the default MAX_CHARGE_INR).
+// `suppressDeploy` keeps an INTERMEDIATE feature step from triggering a preview/auto-deploy — a
+// feature is reviewed and deployed ONCE at the end, so only its final step (suppressDeploy=false)
+// arms the deploy affordances.
+export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords, briefScore, chargeCapInr, suppressDeploy = false }) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
   // Resolve the rate once, before the transaction — it may read Firestore / memo, and we don't
@@ -91,7 +96,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     // Free re-fix (our shortfall) is the only round that doesn't get billed; every other
     // round bills the bracketed price computed from this round's actual COGS.
     const isFreeRound = pr.kind === 'unresolved';
-    const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate });
+    const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate, capInr: chargeCapInr });
 
     const safeKeywords = Array.isArray(idealKeywords)
       ? idealKeywords
@@ -137,11 +142,16 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       idealKeywords: safeKeywords,
       prUrl: prUrl || null,
       downloadUrl: downloadUrl || null,
-      needsPreview: !!prUrl && deployHost !== 'firebase',
+      needsPreview: !suppressDeploy && !!prUrl && deployHost !== 'firebase',
       // Firebase host: auto-deploy this fix's branch to the testing site the moment it's ready
       // (the poller dispatches it) — the owner sees it on testing without lifting a finger.
-      needsAutoDeploy: !!prUrl && deployHost === 'firebase',
+      // Suppressed for intermediate feature steps: the feature deploys once, at its final step.
+      needsAutoDeploy: !suppressDeploy && !!prUrl && deployHost === 'firebase',
       previewUrl: null,
+      // An INTERMEDIATE feature step (auto-continued in a warm session): billed + done, but it shares
+      // the batch's single PR and must NOT show its own deploy control — the batch deploys once, at
+      // its final step. sessionView reads this to withhold canDeploy* and show a "built" state.
+      ...(suppressDeploy ? { featureIntermediate: true } : {}),
       completedAt: FieldValue.serverTimestamp(),
     };
 

@@ -79,12 +79,13 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
           at: r.at ?? null,
         }))
       : [],
-    canApprove: t.status === 'complete' && pendingReview,
-    canRevise: t.status === 'complete' && !merged,
+    canApprove: t.status === 'complete' && pendingReview && !t.featureIntermediate,
+    canRevise: t.status === 'complete' && !merged && !t.featureIntermediate,
     // Self-deploy: finished + approved (paid / auto-charged) and it produced a PR. Testing is
-    // open to every org member; going live (production) needs the per-user grant.
-    canDeployTesting: t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
-    canDeployProd: userCanDeployProd && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd,
+    // open to every org member; going live (production) needs the per-user grant. An intermediate
+    // feature step shares the batch's single PR — it never deploys on its own (the batch deploys once).
+    canDeployTesting: t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd && !t.featureIntermediate,
+    canDeployProd: userCanDeployProd && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd && !t.featureIntermediate,
     deployedTesting: !!t.deployedTesting,
     deployedProd: !!t.deployedProd,
     deployed: merged,

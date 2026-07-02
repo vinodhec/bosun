@@ -4,6 +4,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure, chargeCiRun } from '../utils/finalize.js';
 import { usageBreakdown, extractResult } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
+import { continueFeatureStep } from '../utils/featureRun.js';
+import { MAX_FEATURE_STEP_CHARGE_INR, FEATURE_MAX_STEPS_PER_SESSION } from '../utils/billing.js';
 import { extractDesignTurn } from '../utils/designSession.js';
 import { extractCompareTurn, renderReportHtml } from '../utils/compareSession.js';
 import { saveReportHtml } from '../utils/compareShots.js';
@@ -363,6 +365,59 @@ export const pollSessions = onSchedule(
               await failCompare(db, docSnap, task, overSecC ? 'timeout' : 'over_budget', client);
             }
             continue;
+          }
+
+          // Feature BUILD step (has featureId; planning/design/compare kinds already handled + skipped
+          // above, so this is a kind:'initial' step task). On DONE, bill this step its OWN incremental
+          // COGS (capped at the feature-step ceiling), then — on the default no-approval path and while
+          // still inside the safety-valve batch — auto-continue the SAME warm session into the next
+          // step (no re-clone, no re-discovery). The batch's final step (valve full / last step / an
+          // approval org) arms a single deploy for the owner. FAILED marks the step failed (never
+          // charged). Still-running feature steps fall through to the generic per-round cap guards.
+          if (task.featureId) {
+            if (DONE.has(status)) {
+              const featureSnap = await db.collection('features').doc(task.featureId).get();
+              const steps = featureSnap.exists && Array.isArray(featureSnap.data().steps) ? featureSnap.data().steps : [];
+              const stepIndex = Number(task.stepIndex) || 0;
+              const isLastStep = stepIndex + 1 >= steps.length;
+              const nextIsAdded = !!steps[stepIndex + 1]?.added; // follow-up changes start their own session
+              const batchFull = (Number(task.sessionStepCount) || 1) >= FEATURE_MAX_STEPS_PER_SESSION;
+              const orgSnap = await db.collection('organisations').doc(task.orgId).get();
+              const requireApproval = orgSnap.exists && orgSnap.data().requireApproval === true;
+              const willAutoContinue = !requireApproval && !isLastStep && !batchFull && !nextIsAdded;
+
+              logAgentUsage('done', docSnap.id, task, bd, roundUsd, roundSec);
+              const { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore } = await extractResult(client, task.sessionId);
+              await markRoundReady(docSnap.id, {
+                actualCostUsd: costUsd, activeSeconds: activeSec,
+                resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore,
+                chargeCapInr: MAX_FEATURE_STEP_CHARGE_INR, suppressDeploy: willAutoContinue,
+              });
+              if (willAutoContinue) {
+                // Keep the session warm — do NOT delete its mounted key files yet; carry them forward.
+                try {
+                  await continueFeatureStep(db, task.featureId, stepIndex + 1, {
+                    sessionId: task.sessionId,
+                    reviewedCostUsd: costUsd,
+                    reviewedSeconds: activeSec,
+                    sessionStepCount: (Number(task.sessionStepCount) || 1) + 1,
+                    firebaseFileIds: task.firebaseFileIds || [],
+                  });
+                } catch (e) {
+                  console.error('pollSessions:feature_continue', docSnap.id, e?.message || e);
+                }
+              } else {
+                await deleteSessionFiles(client, task); // batch-final — the warm session is done
+              }
+              continue;
+            }
+            if (FAILED.has(status)) {
+              logAgentUsage('failed', docSnap.id, task, bd, roundUsd, roundSec);
+              await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
+              await deleteSessionFiles(client, task);
+              continue;
+            }
+            // still running → fall through to the generic live-snapshot + per-round cap guards below.
           }
 
           // Terminal status first. The runtime/budget caps below are mid-flight guards that

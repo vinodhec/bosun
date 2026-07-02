@@ -844,7 +844,8 @@ function FeatureCard({ feature: f, onChanged, onGoToDesign }) {
   const reviewing = f.status === 'plan_review';
 
   const stepIcon = (st) =>
-    st.status === 'done' ? '✅' : st.status === 'ready' ? '🟢' : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️'
+    st.status === 'done' ? '✅' : st.status === 'ready' ? '🟢' : st.status === 'built' ? '✔️'
+      : st.status === 'running' ? '⏳' : st.status === 'failed' ? '⚠️'
       : st.status === 'proposed' ? '•' : '◻️';
 
   const run = async (fn) => {
@@ -913,7 +914,7 @@ function FeatureCard({ feature: f, onChanged, onGoToDesign }) {
           {f.steps.map((st, i) => (
             <li key={i} className="flex items-start gap-2 text-sm">
               <span className="mt-0.5 w-5 shrink-0 text-center">{stepIcon(st)}</span>
-              <span className={st.status === 'done' ? 'text-ink-soft' : 'text-ink'}>
+              <span className={st.status === 'done' || st.status === 'built' ? 'text-ink-soft' : 'text-ink'}>
                 <span className="font-medium">{st.title || `Step ${i + 1}`}</span>
                 {(reviewing || f.status === 'planning') && (
                   <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${st.kind === 'dynamic' ? 'bg-amber-100 text-amber-700' : 'bg-line/60 text-ink-soft'}`}>

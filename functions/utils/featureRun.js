@@ -1,16 +1,31 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { classifyComplexity } from './classify.js';
-import { startFixSession, firebaseSAsFromSecret } from './claudeAgent.js';
+import { startFixSession, continueFixSession, firebaseSAsFromSecret } from './claudeAgent.js';
 import { designContextFromText } from './figma.js';
 import { modelForComplexity, agentIdForModel } from './routeModel.js';
 import { tierFor } from './billing.js';
 import { buildDesignHandoff } from './designRun.js';
 
-// The fix instruction for one feature step. The agent treats it like a normal fix; we add
-// light framing so it builds ONLY this step. Earlier steps are already merged into main (each
-// step is merged when the owner deploys it to testing — see deployTaskToTesting), so the repo
-// the agent clones already contains them and it can build on top.
-function buildAgentPrompt(feature, stepIndex) {
+// ─── One warm session per batch of steps ────────────────────────────────────────────────────────
+// A feature is built by ONE managed-agent session that runs its steps back-to-back (each step billed
+// its own incremental COGS — see the poller's feature branch + markRoundReady). The session stays
+// warm across steps, so the expensive "clone + read the repo" discovery is paid ONCE per batch, not
+// once per step. The owner reviews + deploys the whole batch ONCE at the end.
+//
+// SAFETY VALVE (billing.FEATURE_MAX_STEPS_PER_SESSION): a session runs at most that many steps before
+// the build hands off. The hand-off happens at a DEPLOY boundary — the owner deploys the batch (merge
+// to main), then the next batch starts a FRESH session that clones the updated main (which now
+// contains the earlier steps). This reuses the existing deploy→advanceFeature path and avoids any
+// fragile cross-session branch juggling. A feature with ≤ valve steps is a single batch = one review.
+//
+// requireApproval orgs are UNCHANGED: they keep per-step review (each step arms a deploy, the owner
+// approves + deploys it, advanceFeature starts the next). The in-session auto-advance below applies
+// only to the default (no-approval) path — see the poller.
+
+// The fix instruction for one feature step. `sameSession` = we are CONTINUING the warm session that
+// already built the earlier steps of this batch (so they're in the agent's context + on its branch);
+// otherwise this is a fresh session and any earlier steps are already merged into main.
+function buildAgentPrompt(feature, stepIndex, { sameSession = false } = {}) {
   const step = feature.steps[stepIndex];
   const body = step.description ? `${step.title} — ${step.description}` : step.title;
 
@@ -36,6 +51,18 @@ function buildAgentPrompt(feature, stepIndex) {
   }
 
   const total = feature.steps.length;
+  if (sameSession) {
+    // Continuing the SAME warm session — the earlier steps are already built here, on the same
+    // branch/PR. Keep using them: same branch, UPDATE the same pull request (don't open a new one).
+    return (
+      designLead +
+      `Good — that step is done. This is step ${stepIndex + 1} of ${total} of the same feature:\n` +
+      `"${feature.prompt}"\n\n` +
+      `Continue in THIS session, building on the steps you just completed. Keep working on the SAME ` +
+      `branch and UPDATE the same pull request — do NOT open a new one.\n\n` +
+      `Do ONLY this step now:\n${body}`
+    );
+  }
   return (
     designLead +
     `This is step ${stepIndex + 1} of ${total} of a larger feature the website owner asked for:\n` +
@@ -59,58 +86,21 @@ async function loadRepoContext(db, orgId) {
   return { gh, githubToken, firebaseSAs: firebaseSAsFromSecret(secretData), org: orgSnap.data(), secretData };
 }
 
-/**
- * Start (or restart) the task for one feature step: classify it, write tasks/{id} carrying
- * featureId + stepIndex, dispatch the managed-agent session, then point the feature's step at
- * the new task. Mirrors createTask. A step is pre-scoped by the breakdown, so it never parks
- * for an operator quote — a 'large' classification is capped to 'complex' so it always runs.
- * Returns the new taskId; on dispatch failure the task is marked failed and the error rethrown.
- */
-export async function startFeatureStep(db, featureId, stepIndex) {
-  const featureRef = db.collection('features').doc(featureId);
-  const fSnap = await featureRef.get();
-  if (!fSnap.exists) throw new Error('feature_not_found');
-  const feature = fSnap.data();
-  const step = feature.steps?.[stepIndex];
-  if (!step) throw new Error('step_not_found');
-
-  const { gh, githubToken, firebaseSAs, org, secretData } = await loadRepoContext(db, feature.orgId);
-
-  // If the owner's feature request included a Figma link and the org is connected, enrich every
-  // step with the design (exact spec + rendered image) so each step is built pixel-perfect — same
-  // as a standalone fix (createTask). The link lives in feature.prompt; for a design-origin feature
-  // the brief may have dropped it, so fall back to the design's original prompt.
-  const figmaText = `${feature.prompt || ''}\n${feature.design?.originalPrompt || ''}`;
-  const figmaDesign = await designContextFromText({ org, secretData, text: figmaText });
-  // Carry the owner's original screenshots forward into every step (persisted once at plan time as
-  // Files API ids), attached by file_id — alongside Figma (above) and Jam (rides in the prompt). A
-  // follow-up change may also carry its OWN screenshots (step.imageFileIds), shown first.
-  const imageFileIds = [
-    ...(Array.isArray(step.imageFileIds) ? step.imageFileIds : []),
-    ...(Array.isArray(feature.screenshotFileIds) ? feature.screenshotFileIds : []),
-  ];
-
-  // The owner sees a clean title/description (displayPrompt); the agent gets the full framing
-  // (build on earlier steps, do only this step) via agentPrompt. They're decoupled so the
-  // dashboard never shows the engineered instruction. Classify on the clean work, not the framing.
-  const displayPrompt = step.description ? `${step.title} — ${step.description}` : (step.title || '');
-  const agentPrompt = buildAgentPrompt(feature, stepIndex);
-  const { complexity: raw } = await classifyComplexity(displayPrompt);
-  const complexity = raw === 'large' ? 'complex' : raw;
-  const tier = tierFor(complexity);
-  const model = modelForComplexity(complexity);
-
-  const taskRef = db.collection('tasks').doc();
-  await taskRef.set({
+// Write the tasks/{id} doc for one feature step. `session` carries the shared-session bookkeeping:
+// for a fresh batch it's { sessionStepCount: 1, reviewedCostUsd: 0, reviewedSeconds: 0 }; for an
+// in-session continuation the poller seeds reviewedCostUsd/reviewedSeconds to the session's
+// cumulative-so-far, so this step's round delta (cumulative − seed) is exactly ITS own COGS.
+function stepTaskFields(feature, featureId, stepIndex, displayPrompt, { complexity, model, tier, session }) {
+  return {
     userId: feature.userId,
     orgId: feature.orgId,
     prompt: displayPrompt,
-    repoFullName: gh.repoFullName,
-    // Links this task to its feature + position. listMySessions filters these out (they show
-    // inside the feature card, not as standalone fixes); deploying one advances the feature.
+    repoFullName: feature.repoFullName,
     featureId,
     stepIndex,
-    featureStepTitle: step.title || '',
+    featureStepTitle: feature.steps?.[stepIndex]?.title || '',
+    // How many steps THIS warm session has built (drives the safety valve in the poller).
+    sessionStepCount: Number(session?.sessionStepCount) || 1,
     kind: 'initial',
     complexity,
     model,
@@ -120,12 +110,77 @@ export async function startFeatureStep(db, featureId, stepIndex) {
     pendingReview: false,
     maxBudgetUsd: tier.maxBudgetUsd,
     maxSeconds: tier.maxSeconds,
-    currentRoundCharge: 0, // bracketed price computed in markRoundReady from actual COGS — same as any fix
+    // Seed the round baseline. For a continuation this is the shared session's cumulative cost/runtime
+    // at the moment this step starts, so markRoundReady bills only this step's incremental COGS.
+    reviewedCostUsd: Number(session?.reviewedCostUsd) || 0,
+    reviewedSeconds: Number(session?.reviewedSeconds) || 0,
+    currentRoundCharge: 0,
     finalCharge: 0,
     freeRevisionsUsed: 0,
     pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt: displayPrompt },
-    imageCount: imageFileIds.length, // owner's original screenshots carried into the step
     createdAt: FieldValue.serverTimestamp(),
+  };
+}
+
+// Point the feature's step at its task + mark it the active step. Firestore can't patch a single
+// array element by index, so read-modify-write the whole steps array.
+async function attachStepTask(db, featureId, stepIndex, taskId) {
+  const featureRef = db.collection('features').doc(featureId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(featureRef);
+    if (!snap.exists) return;
+    const f = snap.data();
+    const steps = Array.isArray(f.steps) ? [...f.steps] : [];
+    if (steps[stepIndex]) steps[stepIndex] = { ...steps[stepIndex], taskId, status: 'running' };
+    tx.update(featureRef, { steps, currentStep: stepIndex, status: 'running', updatedAt: FieldValue.serverTimestamp() });
+  });
+}
+
+/**
+ * Start a feature step in a FRESH managed-agent session — used for step 0, the first step of a new
+ * batch (after the previous batch was deployed to main), a follow-up "added" change, and retries.
+ * `baseBranch` (retry mid-batch) tells the agent to check out an existing in-progress branch and
+ * continue on it, so a failed step's retry doesn't lose the batch's earlier, un-merged commits.
+ * Returns the new taskId; on dispatch failure the task is marked failed and the error rethrown.
+ */
+export async function startFeatureStep(db, featureId, stepIndex, { baseBranch = null } = {}) {
+  const featureRef = db.collection('features').doc(featureId);
+  const fSnap = await featureRef.get();
+  if (!fSnap.exists) throw new Error('feature_not_found');
+  const feature = fSnap.data();
+  const step = feature.steps?.[stepIndex];
+  if (!step) throw new Error('step_not_found');
+
+  const { gh, githubToken, firebaseSAs, org, secretData } = await loadRepoContext(db, feature.orgId);
+
+  // Enrich every step with the owner's Figma design + carried screenshots — same as a standalone fix.
+  const figmaText = `${feature.prompt || ''}\n${feature.design?.originalPrompt || ''}`;
+  const figmaDesign = await designContextFromText({ org, secretData, text: figmaText });
+  const imageFileIds = [
+    ...(Array.isArray(step.imageFileIds) ? step.imageFileIds : []),
+    ...(Array.isArray(feature.screenshotFileIds) ? feature.screenshotFileIds : []),
+  ];
+
+  const displayPrompt = step.description ? `${step.title} — ${step.description}` : (step.title || '');
+  let agentPrompt = buildAgentPrompt(feature, stepIndex, { sameSession: false });
+  // A retry that must continue an existing (un-merged) branch: tell the agent to check it out first.
+  if (baseBranch) {
+    agentPrompt =
+      `Earlier steps of this feature are already committed on the branch "${baseBranch}" (not yet ` +
+      `merged). FIRST run: git fetch origin && git checkout ${baseBranch}. Then continue on that ` +
+      `SAME branch and UPDATE its existing pull request — do NOT open a new one.\n\n` + agentPrompt;
+  }
+  const { complexity: raw } = await classifyComplexity(displayPrompt);
+  const complexity = raw === 'large' ? 'complex' : raw;
+  const tier = tierFor(complexity);
+  const model = modelForComplexity(complexity);
+
+  const taskRef = db.collection('tasks').doc();
+  await taskRef.set({
+    ...stepTaskFields(feature, featureId, stepIndex, displayPrompt, {
+      complexity, model, tier, session: { sessionStepCount: 1, reviewedCostUsd: 0, reviewedSeconds: 0 },
+    }),
+    imageCount: imageFileIds.length,
   });
 
   try {
@@ -146,31 +201,64 @@ export async function startFeatureStep(db, featureId, stepIndex) {
     throw e;
   }
 
-  // Point the feature's step at this task + mark it the active step. Firestore can't patch a
-  // single array element by index, so read-modify-write the whole steps array.
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(featureRef);
-    if (!snap.exists) return;
-    const f = snap.data();
-    const steps = Array.isArray(f.steps) ? [...f.steps] : [];
-    if (steps[stepIndex]) steps[stepIndex] = { ...steps[stepIndex], taskId: taskRef.id, status: 'running' };
-    tx.update(featureRef, {
-      steps,
-      currentStep: stepIndex,
-      status: 'running',
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  });
-
+  await attachStepTask(db, featureId, stepIndex, taskRef.id);
   return taskRef.id;
 }
 
 /**
- * Advance a feature after one of its steps is deployed to testing (merged into main). Marks
- * that step done; if a later step remains, dispatches it — its agent now clones the updated
- * main, so it builds on this step — otherwise marks the feature complete. Idempotent (a step
- * already marked done won't double-advance or double-start the next) and best-effort: it must
- * never throw and block the deploy that triggered it.
+ * Continue the SAME warm session for the next step of a batch (default, no-approval path). No
+ * re-clone and no re-discovery — the agent already has the repo + earlier steps in context. The
+ * poller seeds `reviewedCostUsd`/`reviewedSeconds` to the session's cumulative-so-far so this step
+ * is billed only its own incremental COGS. Returns the new taskId; marks failed + rethrows on error.
+ */
+export async function continueFeatureStep(db, featureId, stepIndex, { sessionId, reviewedCostUsd = 0, reviewedSeconds = 0, sessionStepCount = 2, firebaseFileIds = [] }) {
+  if (!sessionId) throw new Error('missing sessionId');
+  const featureRef = db.collection('features').doc(featureId);
+  const fSnap = await featureRef.get();
+  if (!fSnap.exists) throw new Error('feature_not_found');
+  const feature = fSnap.data();
+  const step = feature.steps?.[stepIndex];
+  if (!step) throw new Error('step_not_found');
+
+  const displayPrompt = step.description ? `${step.title} — ${step.description}` : (step.title || '');
+  const agentPrompt = buildAgentPrompt(feature, stepIndex, { sameSession: true });
+  const { complexity: raw } = await classifyComplexity(displayPrompt);
+  const complexity = raw === 'large' ? 'complex' : raw;
+  const tier = tierFor(complexity);
+  const model = modelForComplexity(complexity);
+
+  const taskRef = db.collection('tasks').doc();
+  await taskRef.set({
+    ...stepTaskFields(feature, featureId, stepIndex, displayPrompt, {
+      complexity, model, tier, session: { sessionStepCount, reviewedCostUsd, reviewedSeconds },
+    }),
+    // The shared session already carries the owner's screenshots/design from step 0 — no re-attach.
+    imageCount: 0,
+    // Carry the session + its uploaded Firebase key file_ids forward so the poller can clean them up.
+    sessionId,
+    firebaseFileIds: Array.isArray(firebaseFileIds) ? firebaseFileIds : [],
+    status: 'running',
+  });
+
+  try {
+    // Resume the warm session with this step's instruction (replaces the revise prompt).
+    await continueFixSession({ sessionId, changes: displayPrompt, instruction: agentPrompt });
+  } catch (e) {
+    await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+    throw e;
+  }
+
+  await attachStepTask(db, featureId, stepIndex, taskRef.id);
+  return taskRef.id;
+}
+
+/**
+ * Advance a feature after a BATCH is deployed to testing (its shared PR merged into main). Marks
+ * every step up to and including the deployed one done (a batch may be several steps sharing one PR),
+ * then dispatches the next batch's first step in a FRESH session (it now clones the updated main and
+ * builds on the merged work) — or marks the feature complete. Idempotent + best-effort: it must never
+ * throw and block the deploy that triggered it. (requireApproval orgs deploy one step at a time, so a
+ * "batch" is a single step — same code path.)
  */
 export async function advanceFeature(db, taskId) {
   try {
@@ -188,7 +276,10 @@ export async function advanceFeature(db, taskId) {
       const f = snap.data();
       const steps = Array.isArray(f.steps) ? [...f.steps] : [];
       if (!steps[stepIndex] || steps[stepIndex].status === 'done') return -1; // already advanced
-      steps[stepIndex] = { ...steps[stepIndex], status: 'done' };
+      // Mark the whole just-deployed batch done: every not-yet-done step up to this one shared the PR.
+      for (let i = 0; i <= stepIndex && i < steps.length; i++) {
+        if (steps[i] && steps[i].status !== 'done') steps[i] = { ...steps[i], status: 'done' };
+      }
       const next = stepIndex + 1;
       const hasNext = next < steps.length;
       tx.update(featureRef, {
@@ -202,7 +293,7 @@ export async function advanceFeature(db, taskId) {
     });
 
     if (startNext >= 0) {
-      await startFeatureStep(db, featureId, startNext); // dispatch the next step (network — outside the tx)
+      await startFeatureStep(db, featureId, startNext); // next batch — fresh session on updated main
     }
   } catch (e) {
     console.error('advanceFeature', taskId, e?.message || e);
