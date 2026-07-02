@@ -7,6 +7,7 @@ import { startFeatureStep } from '../utils/featureRun.js';
 import { sessionView } from '../utils/sessionView.js';
 import { designContextFromText } from '../utils/figma.js';
 import { firebaseSAsFromSecret, uploadImagesToFiles } from '../utils/claudeAgent.js';
+import { getPrHeadRef } from '../utils/github.js';
 import { agentIdForModel } from '../utils/routeModel.js';
 import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
@@ -292,11 +293,15 @@ export const listMyFeatures = onCall({ region: 'asia-south1' }, async (request) 
       else if (!t) status = 'pending';
       else if (deployed) status = 'done';
       else if (t.status === 'failed') status = 'failed';
+      // An intermediate step of a warm-session batch: billed + built, but it shares the batch's
+      // single PR and waits for the batch's one deploy — show it as 'built', never a deploy card.
+      else if (t.status === 'complete' && t.featureIntermediate) status = 'built';
       else if (t.status === 'complete') status = 'ready';
       else status = 'running';
 
-      // The active step (the one needing attention) is whichever is building, finished-and-waiting,
-      // or failed — its full session is attached so the card can show progress / deploy / retry.
+      // The active step (the one needing attention) is whichever is building, finished-and-waiting-
+      // to-deploy, or failed — its full session is attached so the card can show progress / deploy /
+      // retry. 'built' intermediate steps are done-in-batch, not awaiting the owner, so not active.
       const isActive = status === 'running' || status === 'ready' || status === 'failed';
       if (t) { paidStepsInr += Number(t.finalCharge) || 0; lastTaskId = s.taskId; }
       if (isActive && activeIndex === -1) activeIndex = i;
@@ -526,8 +531,30 @@ export const retryFeatureStep = onCall({ region: 'asia-south1', secrets: [ANTHRO
     }
   }
 
+  // If earlier steps of the current (un-merged) batch already produced a shared PR, the failed
+  // step ran in a now-dead warm session and those commits live on that branch. Continue on it so
+  // the retry doesn't lose them; else (step 0, or the batch was already deployed) start fresh.
+  let baseBranch = null;
+  if (stepIndex > 0) {
+    const { secretData } = await loadOrgCtx(db, f.orgId);
+    const token = secretData.githubToken;
+    for (let i = stepIndex - 1; i >= 0; i--) {
+      const pid = f.steps?.[i]?.taskId;
+      if (!pid) continue;
+      const ps = await db.collection('tasks').doc(pid).get();
+      const pt = ps.exists ? ps.data() : null;
+      if (pt?.prUrl && !pt.deployedTesting && !pt.deployedProd) {
+        const prNum = Number(String(pt.prUrl).split('/').pop());
+        if (prNum && f.repoFullName && token) {
+          baseBranch = await getPrHeadRef(f.repoFullName, prNum, token).catch(() => null);
+        }
+        break;
+      }
+    }
+  }
+
   try {
-    await startFeatureStep(db, featureId, stepIndex);
+    await startFeatureStep(db, featureId, stepIndex, { baseBranch });
   } catch (e) {
     console.error('retryFeatureStep', featureId, e?.message || e);
     throw new HttpsError('internal', 'We could not start this step. You were not charged.');

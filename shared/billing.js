@@ -29,34 +29,55 @@ export const MAX_CHARGE_INR = 690;
 export const MARKUP_MULTIPLIER = 2.5;
 
 /**
+ * Per-step charge ceiling for a "plan a feature" BUILD step (INR). A feature is now built as one
+ * warm managed-agent session in which each step is billed the normal bracketed cost-plus on its
+ * OWN incremental COGS — capped here. So a feature's total is naturally bounded by
+ * MAX_FEATURE_STEP_CHARGE_INR × number of steps. Set just under the standalone-fix MAX_CHARGE_INR.
+ */
+export const MAX_FEATURE_STEP_CHARGE_INR = 600;
+
+/**
+ * Safety valve: the most build steps one warm session will run before the build hands off to a
+ * fresh continuation session. Bounds a single session's length (and the quality drift that comes
+ * with very long unattended sessions). Features with more steps build across ceil(n/valve) sessions,
+ * each continuing on the same feature branch. Tune here; lower it if telemetry shows late-step drift.
+ */
+export const FEATURE_MAX_STEPS_PER_SESSION = 5;
+
+/**
  * Bracketed cost-plus pricing — the production pricing rule.
  *
  * The customer pays a multiple of actual COGS, with the multiplier decreasing as cost rises
- * (so tiny fixes don't feel rip-off-y and big fixes don't balloon):
- *   - first ₹50 of COGS     → 4.5×
- *   - next ₹50 (50–100)     → 3×
- *   - everything above ₹100 → 2×
+ * (so tiny fixes don't feel rip-off-y and big fixes don't balloon). The curve is deliberately
+ * flatter at the low end than a pure cost-plus so a small change never feels steep, and it
+ * earns back gradually as COGS climbs:
+ *   - first ₹50 of COGS     → 3.5×
+ *   - next ₹50 (50–100)     → 4×
+ *   - everything above ₹100 → 3×
  *
  * Worked examples:
- *   ₹10  → ₹45      (10×4.5)
- *   ₹40  → ₹180     (40×4.5)
- *   ₹75  → ₹225 + 25×3 = ₹300
- *   ₹100 → ₹225 + 50×3 = ₹375
- *   ₹200 → ₹375 + 100×2 = ₹575
- *   ₹500 → ₹375 + 400×2 = ₹1175 → clamped to MAX_CHARGE_INR
+ *   ₹10  → ₹35      (10×3.5)
+ *   ₹40  → ₹140     (40×3.5)
+ *   ₹75  → ₹175 + 25×4 = ₹275
+ *   ₹100 → ₹175 + 50×4 = ₹375
+ *   ₹200 → ₹375 + 100×3 = ₹675
+ *   ₹500 → ₹375 + 400×3 = ₹1575 → clamped to MAX_CHARGE_INR
  *
  * Output is rounded UP to whole rupees (favours business) and clamped to MAX_CHARGE_INR so
  * the customer never sees a runaway bill. No floor — small costs stay small. The hard COGS
  * cap is also enforced separately by the poller (maxBudgetUsd / maxSeconds).
  */
 export const PRICING_BRACKETS = [
-  { upToInr: 50,        multiplier: 4.5 },
-  { upToInr: 100,       multiplier: 3 },
-  { upToInr: Infinity,  multiplier: 2 },
+  { upToInr: 50,        multiplier: 3.5 },
+  { upToInr: 100,       multiplier: 4 },
+  { upToInr: Infinity,  multiplier: 3 },
 ];
 
-/** Bracketed price from actual COGS (INR). Rounded UP to whole rupees. */
-export function priceFromCostInr(costInr) {
+/**
+ * Bracketed price from actual COGS (INR). Rounded UP to whole rupees, clamped to `capInr`
+ * (defaults to the standalone-fix MAX_CHARGE_INR; feature build steps pass MAX_FEATURE_STEP_CHARGE_INR).
+ */
+export function priceFromCostInr(costInr, { capInr = MAX_CHARGE_INR } = {}) {
   const c = Math.max(0, Number(costInr) || 0);
   let price = 0;
   let remaining = c;
@@ -69,13 +90,16 @@ export function priceFromCostInr(costInr) {
     prevCap = upToInr;
     if (remaining <= 0) break;
   }
-  return Math.min(Math.ceil(price), MAX_CHARGE_INR);
+  return Math.min(Math.ceil(price), capInr);
 }
 
-/** Bracketed price from actual COGS (USD). Inflates by Anthropic GST before converting to INR. */
-export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
+/**
+ * Bracketed price from actual COGS (USD). Inflates by Anthropic GST before converting to INR.
+ * `capInr` clamps the result (default MAX_CHARGE_INR; feature build steps pass MAX_FEATURE_STEP_CHARGE_INR).
+ */
+export function priceFromCostUsd(costUsd, { rate = DEFAULT_USD_TO_INR, capInr = MAX_CHARGE_INR } = {}) {
   const effectiveUsd = (Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
-  return priceFromCostInr(usdToInr(effectiveUsd, rate));
+  return priceFromCostInr(usdToInr(effectiveUsd, rate), { capInr });
 }
 
 /**
