@@ -135,10 +135,15 @@ function firebaseNote(mounts) {
     .join('\n');
   return (
     `This site is backed by Firebase. Read-only service-account keys are mounted for you:\n${lines}\n` +
-    `When it helps you diagnose the problem, set GOOGLE_APPLICATION_CREDENTIALS to the key for the ` +
-    `relevant environment and use the firebase CLI or the "firebase-admin" package to READ data ` +
-    `(list collections, read documents, check Auth). Default to the TESTING environment; only read ` +
-    `PRODUCTION if the problem is explicitly about production data.\n` +
+    `PREFER NOT to read live data. For a display, formatting, copy, styling, layout, or data-plumbing ` +
+    `fix, the field names and shapes you need are in the repo's OWN type definitions / code — read those ` +
+    `instead. A live read is rarely necessary and is easy to over-use. Only read live data when the bug ` +
+    `genuinely depends on what REAL records contain (e.g. a value is missing or mis-shaped in the data).\n` +
+    `If you DO need a live read: set GOOGLE_APPLICATION_CREDENTIALS to the relevant env's key file. NOTE ` +
+    `the "firebase-admin" package is NOT pre-installed in this environment — if you truly need it, run ` +
+    `"npm install firebase-admin" ONCE inside the repo (never with "-g", and do NOT keep retrying installs ` +
+    `or hunting node_modules); for metadata you can use "npx --yes firebase-tools". Default to the TESTING ` +
+    `environment; only read PRODUCTION if the problem is explicitly about production data.\n` +
     `STRICTLY READ-ONLY: you must NEVER write, update, delete, run, deploy, or perform ANY mutating ` +
     `Firebase/Firestore/Auth operation in ANY environment. Use this access only to understand the ` +
     `data behind the bug; fix the problem by changing the repo's code and opening a PR as usual.\n\n`
