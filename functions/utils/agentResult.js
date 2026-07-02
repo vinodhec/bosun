@@ -176,12 +176,25 @@ function figmaNote(design) {
   );
 }
 
+// The page the owner pointed us at (an optional field in the fix form) — where on their live site
+// the problem shows. It's a LOCALIZATION hint, not something to browse: match its path against the
+// URL-to-file route map in AGENTS.md to jump straight to that page's source file.
+function pageNote(url) {
+  const u = String(url || '').trim();
+  if (!u) return '';
+  return (
+    `The owner says the problem is on this page of their site: ${u}\n` +
+    `Look there FIRST: match the page's path against the URL-to-file route map in AGENTS.md to ` +
+    `find its source file. This is a page of the site to fix (not a recording).\n\n`
+  );
+}
+
 /**
  * The instruction we send the agent. Lives here (no SDK import) so both the
  * production code and the standalone validation harness build the exact same prompt.
  * Asks for a friendly summary + a parseable RESULT_JSON line we read (user never sees it).
  */
-export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], figmaDesign = null) {
+export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], figmaDesign = null, pageUrl = null) {
   const screenshotNote =
     imageCount > 0
       ? `The owner also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} showing the problem — ` +
@@ -190,6 +203,7 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], fig
   return (
     `A website owner reports this problem (non-technical wording):\n"${problem}"\n\n` +
     screenshotNote +
+    pageNote(pageUrl) +
     jamNote(problem) +
     firebaseNote(firebaseMounts) +
     figmaNote(figmaDesign) +

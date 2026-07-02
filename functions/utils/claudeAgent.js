@@ -97,7 +97,7 @@ function documentBlocks(documents = []) {
  *
  * Returns { sessionId }. The `pollSessions` scheduled function finalizes + bills.
  */
-export async function startFixSession({ prompt, images = [], imageFileIds = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null, documents = [], instruction = null }) {
+export async function startFixSession({ prompt, images = [], imageFileIds = [], repoUrl, githubToken, vaultId, agentId, firebaseSAs = [], figmaDesign = null, pageUrl = null, documents = [], instruction = null }) {
   const resolvedAgent = agentId || process.env.ANTHROPIC_MANAGED_AGENT_ID;
   if (!resolvedAgent) throw new Error('ANTHROPIC_MANAGED_AGENT_ID not configured');
   const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID;
@@ -171,7 +171,7 @@ export async function startFixSession({ prompt, images = [], imageFileIds = [], 
 
   // `instruction`, when given (e.g. the planning pass), is the COMPLETE prompt and replaces the
   // fix instruction — the caller has already folded in any design/screenshot framing it needs.
-  const text = instruction || buildFixPrompt(prompt, imageBlocks.length + fileImageBlocks.length, firebaseMounts, figmaDesign);
+  const text = instruction || buildFixPrompt(prompt, imageBlocks.length + fileImageBlocks.length, firebaseMounts, figmaDesign, pageUrl);
 
   await client.beta.sessions.events.send(session.id, {
     events: [

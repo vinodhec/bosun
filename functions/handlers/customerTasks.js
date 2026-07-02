@@ -223,7 +223,7 @@ export const confirmQuote = onCall(
     const repoUrl = `https://github.com/${gh.repoFullName}`;
     try {
       const { sessionId, firebaseFileIds } = await startFixSession({
-        prompt: task.prompt, images: [], repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs,
+        prompt: task.prompt, images: [], repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, pageUrl: task.pageUrl || null,
       });
       await taskRef.update({ status: 'running', sessionId, model, firebaseFileIds: firebaseFileIds || [], confirmedAt: FieldValue.serverTimestamp() });
     } catch (e) {

@@ -65,6 +65,8 @@ export default function Dashboard() {
   const { members, meId } = useOrgStats(user, orgId);
   const [mode, setMode] = useState('fix'); // 'fix' = one-off fix · 'feature' = plan a feature as steps
   const [problem, setProblem] = useState('');
+  // Optional "which page is it on?" link — helps us jump straight to the right page. Fix tab only.
+  const [pageUrl, setPageUrl] = useState('');
   // Arriving from a shared fix ("use as a starting point") seeds the fix box with that brief.
   const location = useLocation();
   useEffect(() => {
@@ -167,10 +169,11 @@ export default function Dashboard() {
       await createTask({
         orgId,
         prompt: problem.trim(),
+        pageUrl: pageUrl.trim() || undefined,
         images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
         documents: documents.map((d) => ({ name: d.name, text: d.text })),
       });
-      setProblem(''); resetImages(); resetDocs();
+      setProblem(''); setPageUrl(''); resetImages(); resetDocs();
       await refreshAll();
     } catch (e) {
       setErr(friendlyError(e));
@@ -350,10 +353,33 @@ export default function Dashboard() {
                 removeDoc={removeDoc}
               />
             </div>
+            {mode === 'fix' && (
+              <div className="mt-3">
+                <label htmlFor="pageUrl" className="block text-sm font-medium text-ink">
+                  Which page is it on? <span className="font-normal text-ink-soft">(optional — but it helps us find it fast)</span>
+                </label>
+                <input
+                  id="pageUrl"
+                  type="url"
+                  inputMode="url"
+                  value={pageUrl}
+                  onChange={(e) => setPageUrl(e.target.value)}
+                  placeholder="e.g. yoursite.com/contact"
+                  className="input mt-1.5 w-full py-2.5 text-sm"
+                />
+              </div>
+            )}
             <p className="mt-1.5 text-sm text-ink-soft">
               📎 Attach, paste (Ctrl/⌘+V) or drag in a screenshot — up to {MAX_IMAGES}. It helps us see exactly what you mean.
               {' '}📄 You can also attach a plan or spreadsheet (e.g. a page-by-page list of headings and descriptions) and we’ll follow it.
             </p>
+            {/* Soft nudge (Fix tab): if there's neither a screenshot nor a page link, the fix is likely
+                to need a round of back-and-forth. We encourage, never block — submit stays enabled. */}
+            {mode === 'fix' && !images.length && !pageUrl.trim() && (
+              <p className="mt-2 text-sm text-amber-700">
+                💡 Adding a screenshot or the page link usually gets you a faster, first-try fix.
+              </p>
+            )}
             {err && <p className="mt-3 text-sm text-bad">{err}</p>}
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <button

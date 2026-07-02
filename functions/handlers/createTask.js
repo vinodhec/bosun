@@ -10,6 +10,16 @@ import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
+// Normalise the optional "which page?" field: trim, cap length, add https:// to a bare domain, and
+// return null if it isn't a parseable URL so nothing junky is stored or fed to the agent.
+function sanitizePageUrl(raw) {
+  let s = String(raw ?? '').trim();
+  if (!s) return null;
+  if (s.length > 500) s = s.slice(0, 500);
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+  try { return new URL(s).toString(); } catch { return null; }
+}
+
 // Validate balance + the org's connected repo, create the task, and start a managed-agent
 // session. The user is NOT charged here — billing happens in pollSessions after success.
 export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
@@ -34,6 +44,12 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   // Optional reference documents (a CSV page plan, a spec) the owner attached (inline text). The
   // agent treats them as the source of truth for exact values / per-page details. Not persisted.
   const documents = sanitizeDocuments(request.data?.documents);
+
+  // Optional: the page on the owner's live site where the problem shows. A LOCALIZATION hint for
+  // the agent (matched against AGENTS.md's route map to find the source file) — never browsed. We
+  // normalise a bare domain to https, cap the length, and drop anything that isn't a plausible URL
+  // so junk never reaches the prompt.
+  const pageUrl = sanitizePageUrl(request.data?.pageUrl);
 
   const db = getFirestore();
 
@@ -71,6 +87,7 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
       freeRevisionsUsed: 0,
       imageCount: images.length, // screenshots aren't carried to the deferred run
       documentCount: documents.length, // nor are attached documents
+      pageUrl: pageUrl || null, // but the page hint IS carried into confirmQuote's run
       createdAt: FieldValue.serverTimestamp(),
     });
     return { taskId: quoteRef.id, needsQuote: true };
@@ -123,11 +140,12 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
     pendingRound: { kind: 'initial', reason: null, addedInr: 0, prompt },
     imageCount: images.length, // we don't persist the screenshots, only that there were some
     documentCount: documents.length, // nor the documents, only that there were some
+    pageUrl: pageUrl || null, // the page the owner pointed us at (localization hint), if any
     createdAt: FieldValue.serverTimestamp(),
   });
 
   try {
-    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign, documents });
+    const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign, pageUrl, documents });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch {
     await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
