@@ -130,12 +130,21 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       at: Date.now(),
     };
 
+    // This TASK's OWN COGS = the sum of its rounds' deltas (each round.actualCostUsd is already a
+    // per-round delta). For a standalone fix (its own fresh session) this equals the cumulative
+    // `totalUsd`. For a feature step that shares a WARM session, `totalUsd` is the running SESSION
+    // total — it includes EARLIER steps' tasks — so storing it here made every step report the whole
+    // batch's cost, which crushed per-step margins in the feature view AND double-counted COGS in the
+    // admin P&L (which sums actualCostInr across tasks). The round deltas isolate exactly this task's
+    // cost. `reviewedCostUsd` below stays cumulative — it's the baseline for the next round's delta.
+    const taskCostUsd = priorRounds.reduce((a, r) => a + (Number(r.actualCostUsd) || 0), 0) + roundUsd;
+
     const baseUpdate = {
       status: 'complete',
       reviewedCostUsd: totalUsd,
       reviewedSeconds: Number(activeSeconds) || Number(task.reviewedSeconds) || 0, // baseline for the next round's runtime cap
-      actualCostUsd: totalUsd,
-      actualCostInr: computeCharge(totalUsd, { rate }).actualCostInr,
+      actualCostUsd: taskCostUsd,
+      actualCostInr: computeCharge(taskCostUsd, { rate }).actualCostInr,
       resultSummary: resultSummary || '',
       filesChanged: Array.isArray(filesChanged) ? filesChanged : [],
       idealDescription: String(idealDescription || ''),
@@ -344,7 +353,13 @@ export async function markRoundFailure(taskId, { error, actualCostUsd } = {}) {
     // Failures are NEVER charged (even over-budget terminations) — but we still EAT the
     // token/runtime cost, so record it as our COGS. Admin P&L then shows the fix as a pure
     // loss (paid ₹0, margin = −COGS) instead of pretending it cost nothing.
-    const costUsd = Number(actualCostUsd) || Number(task.actualCostUsd) || Number(task.reviewedCostUsd) || 0;
+    // Record only THIS task's own COGS (mirrors markRoundReady): the failed round's delta over its
+    // start baseline, plus any prior completed rounds. Without the subtraction a failed feature step
+    // would book the whole warm session's cumulative usage (including earlier steps) as its loss.
+    const priorRounds = Array.isArray(task.rounds) ? task.rounds : [];
+    const priorCostUsd = priorRounds.reduce((a, r) => a + (Number(r.actualCostUsd) || 0), 0);
+    const cumulativeUsd = Number(actualCostUsd) || Number(task.reviewedCostUsd) || 0;
+    const costUsd = priorCostUsd + Math.max(0, cumulativeUsd - (Number(task.reviewedCostUsd) || 0));
     const costInr = computeCharge(costUsd, { rate }).actualCostInr; // raw COGS in INR (no markup)
     tx.update(taskRef, {
       status: 'failed',
