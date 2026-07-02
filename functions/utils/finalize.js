@@ -149,7 +149,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
       filesChanged: Array.isArray(filesChanged) ? filesChanged : [],
       idealDescription: String(idealDescription || ''),
       idealKeywords: safeKeywords,
-      prUrl: prUrl || null,
+      prUrl: prUrl || task.prUrl || null, // never clobber a PR we already know with a null re-parse
       downloadUrl: downloadUrl || null,
       needsPreview: !suppressDeploy && !!prUrl && deployHost !== 'firebase',
       // Firebase host: auto-deploy this fix's branch to the testing site the moment it's ready

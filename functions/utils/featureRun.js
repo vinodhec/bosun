@@ -211,7 +211,7 @@ export async function startFeatureStep(db, featureId, stepIndex, { baseBranch = 
  * poller seeds `reviewedCostUsd`/`reviewedSeconds` to the session's cumulative-so-far so this step
  * is billed only its own incremental COGS. Returns the new taskId; marks failed + rethrows on error.
  */
-export async function continueFeatureStep(db, featureId, stepIndex, { sessionId, reviewedCostUsd = 0, reviewedSeconds = 0, sessionStepCount = 2, firebaseFileIds = [] }) {
+export async function continueFeatureStep(db, featureId, stepIndex, { sessionId, reviewedCostUsd = 0, reviewedSeconds = 0, sessionStepCount = 2, firebaseFileIds = [], prUrl = null }) {
   if (!sessionId) throw new Error('missing sessionId');
   const featureRef = db.collection('features').doc(featureId);
   const fSnap = await featureRef.get();
@@ -237,6 +237,9 @@ export async function continueFeatureStep(db, featureId, stepIndex, { sessionId,
     // Carry the session + its uploaded Firebase key file_ids forward so the poller can clean them up.
     sessionId,
     firebaseFileIds: Array.isArray(firebaseFileIds) ? firebaseFileIds : [],
+    // The batch's shared PR (opened at step 0). Seeded here so the batch-final step reliably has it
+    // for preview + deploy even if the agent doesn't re-state the url on this continuation turn.
+    prUrl: prUrl || null,
     status: 'running',
   });
 

@@ -388,9 +388,13 @@ export const pollSessions = onSchedule(
 
               logAgentUsage('done', docSnap.id, task, bd, roundUsd, roundSec);
               const { resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore } = await extractResult(client, task.sessionId);
+              // The whole warm batch shares ONE PR, opened at step 0. Continuation steps only UPDATE it
+              // and often don't re-state its url, so a fresh parse can come back null — carry the
+              // first-seen PR url forward (this task was seeded with it) rather than re-deriving it.
+              const carriedPrUrl = prUrl || task.prUrl || null;
               await markRoundReady(docSnap.id, {
                 actualCostUsd: costUsd, activeSeconds: activeSec,
-                resultSummary, filesChanged, prUrl, idealDescription, idealKeywords, briefScore,
+                resultSummary, filesChanged, prUrl: carriedPrUrl, idealDescription, idealKeywords, briefScore,
                 chargeCapInr: MAX_FEATURE_STEP_CHARGE_INR, suppressDeploy: willAutoContinue,
               });
               if (willAutoContinue) {
@@ -398,6 +402,7 @@ export const pollSessions = onSchedule(
                 try {
                   await continueFeatureStep(db, task.featureId, stepIndex + 1, {
                     sessionId: task.sessionId,
+                    prUrl: carriedPrUrl,
                     reviewedCostUsd: costUsd,
                     reviewedSeconds: activeSec,
                     sessionStepCount: (Number(task.sessionStepCount) || 1) + 1,
