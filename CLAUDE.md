@@ -91,9 +91,14 @@ All charge math goes through `shared/billing.js`. Key invariants:
 - **Idempotent + atomic billing.** Billing runs inside Firestore transactions in `finalize.js`
   (called from `pollSessions` / `approveFix`) and gates on the round transition. Failed runs are
   never charged (`markRoundFailure`).
-- **Feature planning** is the one charge that is NOT bracketed: a breakdown is billed
-  `priceForPlanning(cost)` = `PLANNING_MULTIPLIER` (2×) the planning call's actual COGS, debited
-  immediately on breakdown. Each resulting step is a normal fix, charged the bracketed way.
+- **Feature charges are NOT bracketed.** Planning is billed `priceForPlanning(cost)` =
+  `PLANNING_MULTIPLIER` (2×) the planning call's actual COGS, debited on breakdown. Each PLANNED
+  build step is billed `priceForFeatureStep` — a flat `FEATURE_STEP_MULTIPLIER` (3×) on the step's
+  own incremental COGS, clamped per step (`MAX_FEATURE_STEP_CHARGE_INR` ₹600) and by a hard
+  per-feature ceiling `FEATURE_BUILD_CAP_INR` (₹1599) across the whole plan (headroom tracked on
+  `features/{id}.buildChargedInr`, consumed inside the `markRoundReady` transaction). Planning and
+  post-completion `added` changes bill OUTSIDE the cap (`added` steps use the normal brackets with
+  the ₹600 step cap).
 - The `MARKUP_MULTIPLIER` / `computeCharge` (×2.5, ₹75 floor) path is legacy — it still backs the
   `actualCostInr` analytics field and a couple of scripts, but the customer charge is
   `priceFromCostUsd`, never `computeCharge` and never `priceForComplexity`.
@@ -140,8 +145,8 @@ bad plan; refine/redo loop back to `planning`).
    **request changes** (`reviseFeaturePlan {mode:'refine'}` — re-plan with the prior steps + note),
    or **start over** (`{mode:'replace'}` — re-plan a new prompt). Each re-plan is a fresh planning
    session, charged the same way.
-4. Each step is an ORDINARY fix task carrying `featureId` + `stepIndex` — same pipeline, same
-   bracketed charge on its own approval. `startFeatureStep` carries **Figma + the owner's screenshots
+4. Each step is an ORDINARY fix task carrying `featureId` + `stepIndex` — same pipeline, but
+   charged the flat feature-step price under the per-feature cap (see "Money rules"). `startFeatureStep` carries **Figma + the owner's screenshots
    (by file_id) + Jam** (Jam rides in the embedded `feature.prompt`) into every step. The owner sees
    a clean step title; the agent gets the "step N of M, build on earlier steps" framing.
 5. Owner tests → deploys the step to testing (merges to `main`). `deployTaskToTesting` →

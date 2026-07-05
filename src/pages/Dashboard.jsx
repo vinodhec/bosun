@@ -14,6 +14,7 @@ import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
 import { formatINR } from '@shared/currency.js';
+import { FEATURE_BUILD_CAP_INR } from '@shared/billing.js';
 import { clarityStars } from '@shared/gamification.js';
 import { MAX_IMAGES } from '../utils/images.js';
 
@@ -1015,7 +1016,7 @@ function FeatureCard({ feature: f, onChanged, onGoToDesign }) {
         <div className="mt-4 border-t border-line pt-4">
           {!panel && (
             <>
-              <p className="text-sm text-ink">Happy with these steps? We’ll build them one at a time — you approve and pay for each as it’s done.{f.fromDesign ? ' You can tweak them here first — that’s free.' : ''}</p>
+              <p className="text-sm text-ink">Happy with these steps? We’ll build them one at a time — you pay for each as it’s done, and building this whole plan will never cost more than <span className="font-semibold">{formatINR(FEATURE_BUILD_CAP_INR)}</span>.{f.fromDesign ? ' You can tweak them here first — that’s free.' : ''}</p>
               {err && <p className="mt-1 text-sm text-bad">{err}</p>}
               <div className="mt-2 flex flex-wrap gap-2">
                 <button onClick={approvePlan} disabled={busy} className="btn btn-primary">

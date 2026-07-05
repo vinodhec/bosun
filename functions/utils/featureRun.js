@@ -53,24 +53,38 @@ function buildAgentPrompt(feature, stepIndex, { sameSession = false } = {}) {
   const total = feature.steps.length;
   if (sameSession) {
     // Continuing the SAME warm session — the earlier steps are already built here, on the same
-    // branch/PR. Keep using them: same branch, UPDATE the same pull request (don't open a new one).
+    // branch/PR, and the FULL plan was in the first message, so this turn is just a short nudge.
+    // The agent often builds cohesively ahead of the step boundaries; telling it NOT to redo or
+    // re-verify already-done work is what keeps continuation turns cheap.
     return (
       designLead +
-      `Good — that step is done. This is step ${stepIndex + 1} of ${total} of the same feature:\n` +
-      `"${feature.prompt}"\n\n` +
+      `Good — that step is done. Now do step ${stepIndex + 1} of ${total} of the same feature ` +
+      `(the full plan is in the first message):\n${body}\n\n` +
       `Continue in THIS session, building on the steps you just completed. Keep working on the SAME ` +
-      `branch and UPDATE the same pull request — do NOT open a new one.\n\n` +
-      `Do ONLY this step now:\n${body}`
+      `branch and UPDATE the same pull request — do NOT open a new one.\n` +
+      `If you already built part or all of this step while completing the earlier ones, do NOT redo ` +
+      `or re-explore it — quickly confirm it's in place and say so in your summary.\n\n` +
+      `When done, reply with a short friendly summary and append the same RESULT_JSON last line as ` +
+      `before, reusing the SAME pull request url.`
     );
   }
+  // Fresh session: show the WHOLE plan so the agent can architect for the full feature (shared
+  // groundwork, file layout) instead of discovering the scope one surprise step at a time — the
+  // later in-session nudges above then cost almost nothing.
+  const plan = feature.steps
+    .map((s, i) => `${i + 1}. ${s.title}${s.description ? ` — ${s.description}` : ''}`)
+    .join('\n');
   return (
     designLead +
-    `This is step ${stepIndex + 1} of ${total} of a larger feature the website owner asked for:\n` +
-    `"${feature.prompt}"\n\n` +
+    `A website owner asked for this feature:\n"${feature.prompt}"\n\n` +
+    `It is being built as ${total} ordered step${total > 1 ? 's' : ''}:\n${plan}\n\n` +
     (stepIndex > 0
-      ? `The earlier steps are already built and live in the project you're working on — build on top of them, do NOT redo them.\n\n`
+      ? `Steps 1–${stepIndex} are already built and merged into the project you're working on — build on top of them, do NOT redo them.\n\n`
       : '') +
-    `Do ONLY this step now:\n${body}`
+    `Do step ${stepIndex + 1} now:\n${body}\n\n` +
+    `The deliverable for THIS turn is step ${stepIndex + 1} only — later steps will be requested ` +
+    `one at a time in this session, so you may lay shared groundwork for them, but do not build ` +
+    `them out yet.`
   );
 }
 

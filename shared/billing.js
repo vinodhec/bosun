@@ -29,12 +29,45 @@ export const MAX_CHARGE_INR = 690;
 export const MARKUP_MULTIPLIER = 2.5;
 
 /**
- * Per-step charge ceiling for a "plan a feature" BUILD step (INR). A feature is now built as one
- * warm managed-agent session in which each step is billed the normal bracketed cost-plus on its
- * OWN incremental COGS — capped here. So a feature's total is naturally bounded by
- * MAX_FEATURE_STEP_CHARGE_INR × number of steps. Set just under the standalone-fix MAX_CHARGE_INR.
+ * Per-step charge ceiling for a "plan a feature" BUILD step (INR). A feature is built as one
+ * warm managed-agent session in which each step is billed on its OWN incremental COGS — capped
+ * here per step, and by FEATURE_BUILD_CAP_INR across the whole feature. Follow-up "added"
+ * changes (after the feature is complete) still bill the bracketed cost-plus with this per-step
+ * cap. Set just under the standalone-fix MAX_CHARGE_INR.
  */
 export const MAX_FEATURE_STEP_CHARGE_INR = 600;
+
+/**
+ * Feature build pricing (2026-07-06, replacing per-step brackets for PLANNED steps): each build
+ * step is a FLAT multiple of its own incremental COGS — simpler to explain than brackets and a
+ * genuine price cut on the multi-step totals customers were complaining about — clamped per step
+ * (MAX_FEATURE_STEP_CHARGE_INR) and by a hard PER-FEATURE ceiling across all planned build steps.
+ * 3× ⇒ 66.7% gross margin uncapped; the customer promise is "building the plan never costs more
+ * than FEATURE_BUILD_CAP_INR".
+ *
+ * The cap covers the ORIGINAL plan's build steps only: the planning charge (priceForPlanning)
+ * and post-completion "added" changes are new scope and bill outside it. The cap is safe against
+ * runaways because per-step maxBudgetUsd bounds a 5-step batch's worst-case COGS at ~₹1,590 —
+ * essentially break-even at the cap, never a deep loss. Tune both here and nowhere else.
+ */
+export const FEATURE_STEP_MULTIPLIER = 3;
+export const FEATURE_BUILD_CAP_INR = 1599;
+
+/**
+ * Charge (INR) for one PLANNED feature build step: FEATURE_STEP_MULTIPLIER × the step's own
+ * incremental COGS (inflated by Anthropic GST), rounded UP, clamped per-step, then clamped to
+ * the feature's remaining headroom under FEATURE_BUILD_CAP_INR (`billedSoFarInr` = what the
+ * feature's earlier build steps already charged). Once the feature hits the cap, later steps
+ * charge ₹0. The caller must consume headroom (billedSoFarInr += result) in the SAME Firestore
+ * transaction that fixes the price, so concurrent steps can't both see full headroom.
+ */
+export function priceForFeatureStep(costUsd, { rate = DEFAULT_USD_TO_INR, billedSoFarInr = 0 } = {}) {
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  const raw = Math.ceil(usdToInr(effectiveUsd, rate) * FEATURE_STEP_MULTIPLIER);
+  const perStep = Math.min(raw, MAX_FEATURE_STEP_CHARGE_INR);
+  const headroom = Math.max(0, FEATURE_BUILD_CAP_INR - Math.max(0, Number(billedSoFarInr) || 0));
+  return Math.min(perStep, headroom);
+}
 
 /**
  * Safety valve: the most build steps one warm session will run before the build hands off to a

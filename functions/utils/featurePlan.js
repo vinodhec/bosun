@@ -65,10 +65,16 @@ export function buildPlanPrompt(ask, { figmaDesign = null, screenshotCount = 0, 
     `You are PLANNING ONLY — do NOT edit any files, do NOT commit, do NOT open a pull request.\n` +
     `First EXPLORE the repo at /workspace/repo to ground the plan in the real code: read AGENTS.md ` +
     `if present, then look at the actual files/components/data involved. Ignore generated or ` +
-    `dependency folders (node_modules, dist, build, .next, vendor) and lock files.\n\n` +
+    `dependency folders (node_modules, dist, build, .next, vendor) and lock files. Explore ` +
+    `token-efficiently: locate code with search (grep with line numbers and context) and read only ` +
+    `the RANGE of lines you need — you are scoping the work, not implementing it, so never read a ` +
+    `large file end-to-end.\n\n` +
     `Then break the request into the FEWEST ordered, independently-shippable steps (1–${MAX_STEPS}; ` +
-    `a small ask can be a single step). Each step must be one self-contained change that can be ` +
-    `built, previewed and shipped on its own before the next; later steps may build on earlier ones.\n` +
+    `a small ask can be a single step, and most features should fit in 2–4). A step is a MILESTONE ` +
+    `the owner can see and try on their site — not an internal task. MERGE small related changes ` +
+    `into one step; only split where the owner would genuinely want to preview one part before the ` +
+    `next is built. Each step must be one self-contained change that can be built, previewed and ` +
+    `shipped on its own before the next; later steps may build on earlier ones.\n` +
     STEP_KIND_RULES + `\n\n` +
     `Reply with a short friendly sentence, then on the VERY LAST line append ONLY this machine-` +
     `readable result (the owner won't see it):\n` +

@@ -392,10 +392,16 @@ export const pollSessions = onSchedule(
               // and often don't re-state its url, so a fresh parse can come back null — carry the
               // first-seen PR url forward (this task was seeded with it) rather than re-deriving it.
               const carriedPrUrl = prUrl || task.prUrl || null;
+              // A PLANNED step bills the flat feature price against the feature's ₹ cap headroom
+              // (featureBuildId); a post-completion "added" change is new scope — it bills the
+              // normal bracketed price (per-step cap only), outside the feature cap.
+              const isAddedStep = !!steps[stepIndex]?.added;
               await markRoundReady(docSnap.id, {
                 actualCostUsd: costUsd, activeSeconds: activeSec,
                 resultSummary, filesChanged, prUrl: carriedPrUrl, idealDescription, idealKeywords, briefScore,
-                chargeCapInr: MAX_FEATURE_STEP_CHARGE_INR, suppressDeploy: willAutoContinue,
+                chargeCapInr: MAX_FEATURE_STEP_CHARGE_INR,
+                featureBuildId: isAddedStep ? null : task.featureId,
+                suppressDeploy: willAutoContinue,
               });
               if (willAutoContinue) {
                 // Keep the session warm — do NOT delete its mounted key files yet; carry them forward.

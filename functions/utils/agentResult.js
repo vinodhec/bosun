@@ -215,7 +215,15 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], fig
     `Focus only on the project's own source files — do NOT open, read, or scan generated or ` +
     `dependency folders (node_modules, vendor, dist, build, .next, out, coverage) or lock files; ` +
     `they are noise and reading them only wastes effort. ` +
-    `Commit to a new branch, push it, and open a pull request.\n\n` +
+    `Work token-efficiently: locate code with search (grep with line numbers and a few lines of ` +
+    `context) and read only the RANGE of lines you need — never read a large file end-to-end when ` +
+    `a targeted section answers the question, and do not re-read files you have already seen. ` +
+    `If you had to discover something AGENTS.md should have told you (where a page lives, the ` +
+    `project's auth/data/styling pattern), append a one-or-two-line note about it to AGENTS.md in ` +
+    `the same pull request so the next change is faster. ` +
+    `Commit to a new branch, push it, and open a pull request. Keep the pull request description ` +
+    `SHORT — two to four plain sentences on what changed and why; no headings, checklists, or ` +
+    `file-by-file breakdowns.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
     `On the VERY LAST line, append a machine-readable result (the user won't see it):\n` +
     `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's ORIGINAL description was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the description only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get this exact fix on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time — e.g. 'tells us exactly where', 'names the button', 'limits who sees it'>"}]}\n` +

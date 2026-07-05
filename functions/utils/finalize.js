@@ -1,5 +1,5 @@
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { computeCharge, priceFromCostUsd, ciRunInr } from './billing.js';
+import { computeCharge, priceFromCostUsd, priceForFeatureStep, ciRunInr } from './billing.js';
 import { getUsdToInrRate } from './fxRate.js';
 import { applyFixAward, applyShipAward } from './gamification.js';
 
@@ -63,12 +63,17 @@ export function logBillingEvent(evt, data) {
 // the org does NOT require approval (default) we charge the owed tier price right away;
 // otherwise we leave it pendingReview for the customer to approve. Idempotent: only acts on
 // the running→complete transition.
-// `chargeCapInr` clamps this round's bracketed price (feature build steps pass
+// `chargeCapInr` clamps this round's bracketed price (post-completion "added" feature steps pass
 // MAX_FEATURE_STEP_CHARGE_INR; standalone fixes leave it undefined → the default MAX_CHARGE_INR).
+// `featureBuildId` switches a PLANNED feature build step onto flat feature pricing: this round
+// bills priceForFeatureStep (FEATURE_STEP_MULTIPLIER × its own COGS) clamped to the feature's
+// remaining headroom under FEATURE_BUILD_CAP_INR, and the headroom is consumed on
+// features/{featureBuildId}.buildChargedInr IN THIS SAME transaction — at price-fix time on both
+// the auto-charge and requireApproval paths, so no two steps can ever both see full headroom.
 // `suppressDeploy` keeps an INTERMEDIATE feature step from triggering a preview/auto-deploy — a
 // feature is reviewed and deployed ONCE at the end, so only its final step (suppressDeploy=false)
 // arms the deploy affordances.
-export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords, briefScore, chargeCapInr, suppressDeploy = false }) {
+export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, resultSummary, filesChanged, prUrl, downloadUrl, idealDescription, idealKeywords, briefScore, chargeCapInr, featureBuildId = null, suppressDeploy = false }) {
   const db = getFirestore();
   const taskRef = db.collection('tasks').doc(taskId);
   // Resolve the rate once, before the transaction — it may read Firestore / memo, and we don't
@@ -93,10 +98,26 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     const roundCostInr = computeCharge(roundUsd, { rate }).actualCostInr;
 
     const pr = task.pendingRound || { kind: task.kind || 'initial', reason: null, addedInr: 0, prompt: task.prompt || '' };
-    // Free re-fix (our shortfall) is the only round that doesn't get billed; every other
-    // round bills the bracketed price computed from this round's actual COGS.
+    // Free re-fix (our shortfall) is the only round that doesn't get billed. A PLANNED feature
+    // build step bills the flat feature price against its feature's remaining cap headroom (read
+    // + consumed in this transaction); every other round bills the bracketed price on its COGS.
     const isFreeRound = pr.kind === 'unresolved';
-    const roundPriceInr = isFreeRound ? 0 : priceFromCostUsd(roundUsd, { rate, capInr: chargeCapInr });
+    const featureRef = featureBuildId ? db.collection('features').doc(featureBuildId) : null;
+    const featureSnap = featureRef ? await tx.get(featureRef) : null; // read before any write
+    let roundPriceInr;
+    // Deferred: Firestore txs require ALL reads before ANY write, and the auto-charge branch
+    // still reads users/{id} below — so the headroom consumption is applied in each branch's
+    // write phase (consumeFeatureHeadroom()), not here where it's computed.
+    let consumeFeatureHeadroom = () => {};
+    if (isFreeRound) {
+      roundPriceInr = 0;
+    } else if (featureSnap?.exists) {
+      const billedSoFarInr = Number(featureSnap.data().buildChargedInr) || 0;
+      roundPriceInr = priceForFeatureStep(roundUsd, { rate, billedSoFarInr });
+      consumeFeatureHeadroom = () => tx.update(featureRef, { buildChargedInr: billedSoFarInr + roundPriceInr });
+    } else {
+      roundPriceInr = priceFromCostUsd(roundUsd, { rate, capInr: chargeCapInr });
+    }
 
     const safeKeywords = Array.isArray(idealKeywords)
       ? idealKeywords
@@ -177,6 +198,8 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
 
     if (requireApproval) {
       // Wait for the customer to approve — no money moves yet, but record what'll be owed.
+      // The feature-cap headroom IS consumed now: the price just quoted for approval must hold.
+      consumeFeatureHeadroom();
       tx.update(taskRef, {
         ...baseUpdate,
         pendingReview: true,
@@ -212,6 +235,7 @@ export async function markRoundReady(taskId, { actualCostUsd, activeSeconds, res
     if (award.member) orgUpdate[`orgStats.members.${task.userId}`] = award.member;
     if (Object.keys(orgUpdate).length) tx.update(orgRef, orgUpdate);
 
+    consumeFeatureHeadroom();
     tx.update(taskRef, {
       ...baseUpdate,
       pendingReview: false,
