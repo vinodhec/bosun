@@ -36,6 +36,8 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
   const queries = Array.isArray(request.data?.queries)
     ? request.data.queries.map((q) => String(q || '').trim()).filter(Boolean)
     : [];
+  // Optional per-run cap on how many NEW listings to relay/charge (0 = no cap). Bounds cost per run.
+  const maxPerRun = Math.max(0, Math.floor(Number(request.data?.maxPerRun) || 0));
 
   if (!orgId || !actorId || !webhookUrl || queries.length === 0) {
     throw new HttpsError('invalid-argument', 'orgId, actorId, webhookUrl and at least one query are required.');
@@ -58,7 +60,7 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
   await secretRef.set({ sourcing: { secret, updatedAt: FieldValue.serverTimestamp() } }, { merge: true });
 
   await orgRef.set(
-    { sourcing: { enabled, actorId, queries, freshness, webhookUrl, configuredAt: FieldValue.serverTimestamp() } },
+    { sourcing: { enabled, actorId, queries, freshness, webhookUrl, maxPerRun, configuredAt: FieldValue.serverTimestamp() } },
     { merge: true }
   );
 

@@ -77,11 +77,17 @@ export async function runForOrg(db, apifyToken, orgId, cfg, { fetchSerp = callSe
     const snaps = await db.getAll(...refs);
     for (const s of snaps) if (s.exists) already.add(s.id);
   }
-  const candidates = keys.filter((k) => !already.has(k)).map((k) => ({ key: k, listing: local.get(k) }));
-  if (!candidates.length) {
+  const allNew = keys.filter((k) => !already.has(k)).map((k) => ({ key: k, listing: local.get(k) }));
+  if (!allNew.length) {
     console.log('runSourcingJobs:all-seen', orgId);
     return { relayed: 0, amountInr: 0 };
   }
+
+  // Per-run cap: process at most `maxPerRun` NEW listings (0 / unset = no cap). Applied BEFORE
+  // enrichment, so a run's Apify enrichment cost + wallet debit are bounded. The overflow isn't
+  // marked seen, so the next run picks it up — spreads cost across runs and keeps tests cheap.
+  const cap = Math.max(0, Math.floor(Number(cfg.maxPerRun) || 0));
+  const candidates = cap > 0 ? allNew.slice(0, cap) : allNew;
 
   // 3b) Enrich each new listing with the FULL Facebook post (the SERP snippet is truncated). Adds
   // the complete description + the owner phone; priced into the sourcing baseline. Best-effort and
