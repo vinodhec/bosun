@@ -373,11 +373,18 @@ export function isLowBalance(balanceInr) {
  * brackets, the complexity tiers, or finalize.js. Money is charged on successful (2xx) relay of a
  * UNIQUE listing (deduped forever), never on raw SERP count.
  *
- * The per-listing price is drawn at RANDOM within a tight band so the debit reads like a real,
- * variable per-lead cost rather than a fixed fee. Tune the band here and nowhere else.
+ * COST-PLUS with a fixed target margin (repriced 2026-07-08 from MEASURED Apify COGS). The
+ * per-listing price = our real per-listing cost baseline + a fixed net margin, with a small random
+ * jitter so the debit still reads like a real variable cost. Measured COGS: Apify Google-SERP
+ * ~₹0.05–0.10/listing; optional Facebook-post enrichment ~₹0.47/enriched post. The baseline covers
+ * SERP + one enrichment, so the ₹1.90 net margin holds even for ENRICHED leads (and runs higher on
+ * the many that are never enriched). Tune the baseline / margin / jitter here and nowhere else.
  */
-export const SOURCED_UNIT_MIN_INR = 1.8;
-export const SOURCED_UNIT_MAX_INR = 2.2;
+export const SOURCED_COST_BASELINE_INR = 0.60; // SERP (~0.10) + one FB enrichment (~0.47), rounded up
+export const SOURCED_TARGET_MARGIN_INR = 1.90; // net margin per listing we want to clear after COGS
+export const SOURCED_PRICE_JITTER_INR = 0.20;  // ± random spread around (baseline + margin)
+export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹2.30
+export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.70
 
 /**
  * One listing's price: uniform in [MIN, MAX] with 2-decimal (paise) precision. `rng` is injectable
