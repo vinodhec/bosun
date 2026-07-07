@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost } from '../utils/sourcing.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
@@ -82,6 +82,17 @@ export async function runForOrg(db, apifyToken, orgId, cfg, { fetchSerp = callSe
     console.log('runSourcingJobs:all-seen', orgId);
     return { relayed: 0, amountInr: 0 };
   }
+
+  // 3b) Enrich each new listing with the FULL Facebook post (the SERP snippet is truncated). Adds
+  // the complete description + the owner phone; priced into the sourcing baseline. Best-effort and
+  // bounded — a miss just leaves the SERP snippet in place.
+  await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
+    const enriched = await enrichPost({ apifyToken, url: c.listing.url });
+    if (enriched?.text && enriched.text.length > String(c.listing.snippet || '').length) {
+      c.listing.snippet = enriched.text;
+    }
+    if (enriched?.phone) c.listing.phone = enriched.phone;
+  });
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;

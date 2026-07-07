@@ -98,3 +98,45 @@ export function signPayload(secret, bodyString, timestamp = Date.now()) {
   const mac = crypto.createHmac('sha256', String(secret)).update(`${ts}.${bodyString}`).digest('hex');
   return { signature: `sha256=${mac}`, timestamp: ts };
 }
+
+const FB_POSTS_ACTOR = 'apify~facebook-posts-scraper';
+
+/** Extract + normalize an Indian mobile number from free text → `+91XXXXXXXXXX` or null. */
+export function extractPhone(text) {
+  const m = String(text || '').replace(/[^\d+]/g, ' ').match(/(?:\+?91|0)?\s*([6-9]\d{9})(?!\d)/);
+  return m ? `+91${m[1]}` : null;
+}
+
+/**
+ * Enrich ONE sourced listing by fetching its full Facebook post — the SERP snippet is truncated
+ * ("…Read more"), so we scrape the post for the complete description + the owner phone. Video
+ * captions come back on `previewDescription`, regular posts on `text`; we take the richest string.
+ * Priced into the sourcing cost baseline. Best-effort: returns { text, phone } or null on any miss,
+ * so the caller falls back to the SERP snippet.
+ */
+export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) {
+  if (!apifyToken || !url) return null;
+  const endpoint = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startUrls: [{ url }], resultsLimit: 1 }),
+    });
+    if (!resp.ok) {
+      console.error('enrichPost:http', resp.status, url);
+      return null;
+    }
+    const items = await resp.json();
+    const it = Array.isArray(items) ? items[0] : null;
+    if (!it) return null;
+    const text = [it.previewDescription, it.text, it.message, it.postText]
+      .filter((t) => typeof t === 'string' && t.trim())
+      .sort((a, b) => b.length - a.length)[0] || '';
+    if (!text) return null;
+    return { text: text.slice(0, 2000), phone: extractPhone(text) };
+  } catch (e) {
+    console.error('enrichPost:err', e?.message || e);
+    return null;
+  }
+}
