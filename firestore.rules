@@ -92,6 +92,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Sourced-listing dedup ledger (which listing URLs we've already relayed per org). Purely
+    // internal to the relay cron — BACKEND-ONLY, clients never touch it. The org sees its sourcing
+    // charges through the owner-readable `transactions` (kind='sourcing'); the non-secret
+    // `org.sourcing` config is readable under the `organisations` rule above, like `org.figma`.
+    match /sourcingSeen/{orgId}/{doc=**} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

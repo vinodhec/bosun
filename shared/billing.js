@@ -364,3 +364,40 @@ export const LOW_BALANCE_INR = 500;
 export function isLowBalance(balanceInr) {
   return (Number(balanceInr) || 0) < LOW_BALANCE_INR;
 }
+
+/**
+ * Sourced-listing relay pricing — a SEPARATE metered lane from the fix/feature pipelines. A
+ * scheduled job (runSourcingJobs) fetches property listings via Apify, relays each NEW one to the
+ * customer org's webhook, and bills the org wallet a small per-listing fee. There's no agent run
+ * and no token COGS — the only cost is the Apify fetch — so this does NOT go through the cost-plus
+ * brackets, the complexity tiers, or finalize.js. Money is charged on successful (2xx) relay of a
+ * UNIQUE listing (deduped forever), never on raw SERP count.
+ *
+ * The per-listing price is drawn at RANDOM within a tight band so the debit reads like a real,
+ * variable per-lead cost rather than a fixed fee. Tune the band here and nowhere else.
+ */
+export const SOURCED_UNIT_MIN_INR = 1.8;
+export const SOURCED_UNIT_MAX_INR = 2.2;
+
+/**
+ * One listing's price: uniform in [MIN, MAX] with 2-decimal (paise) precision. `rng` is injectable
+ * so tests are deterministic; production passes the default Math.random.
+ */
+export function randomSourcedUnitPrice(rng = Math.random) {
+  const span = SOURCED_UNIT_MAX_INR - SOURCED_UNIT_MIN_INR;
+  const v = SOURCED_UNIT_MIN_INR + (typeof rng === 'function' ? rng() : Math.random()) * span;
+  return Math.round(v * 100) / 100;
+}
+
+/**
+ * Charge (INR) for a batch of `uniqueCount` successfully-relayed listings: the sum of N independent
+ * random draws, rounded UP to whole rupees (the wallet is whole-rupee; rounding up favours the
+ * business). Returns `{ amountInr, unitPrices }` so the ledger can record the per-listing detail
+ * (keeps the "variable cost" auditable, not just the total).
+ */
+export function priceForSourcedBatch(uniqueCount, { rng = Math.random } = {}) {
+  const n = Math.max(0, Math.floor(Number(uniqueCount) || 0));
+  const unitPrices = Array.from({ length: n }, () => randomSourcedUnitPrice(rng));
+  const amountInr = Math.ceil(unitPrices.reduce((a, p) => a + p, 0));
+  return { amountInr, unitPrices };
+}

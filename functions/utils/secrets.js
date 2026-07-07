@@ -11,6 +11,11 @@ export const ANTHROPIC_API_KEY = defineSecret('ANTHROPIC_API_KEY');
 // that lists it:  firebase functions:secrets:set JAM_PAT
 export const JAM_PAT = defineSecret('JAM_PAT');
 
+// Apify API token — powers the sourced-listing relay's raw data-fetch layer (Bosun's only cost on
+// that lane). Shared across orgs (it's our token, not theirs). Listed only in runSourcingJobs.
+//   firebase functions:secrets:set APIFY_TOKEN
+export const APIFY_TOKEN = defineSecret('APIFY_TOKEN');
+
 // Defined LATER, once the GitHub App exists and its key is set in Secret Manager:
 //   firebase functions:secrets:set GITHUB_APP_PRIVATE_KEY
 // then re-add the defineSecret here and list it in createTask's `secrets` array.

@@ -38,6 +38,10 @@ export {
 // exact design context (the agent builds the UI pixel-perfect).
 export { adminConnectFigma, adminDisconnectFigma } from './handlers/adminFigma.js';
 
+// Operator-only: configure an org's sourced-listing relay (Apify query matrix + webhook + HMAC),
+// plus an on-demand trigger to run one org's relay immediately for end-to-end testing.
+export { adminConfigureSourcing, adminDisableSourcing, adminRunSourcingNow } from './handlers/adminSourcing.js';
+
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,
 // and run a fix against any org's repo for testing.
 export {
@@ -59,6 +63,9 @@ export {
 
 // Scheduled: finalize finished sessions → bill the org; terminate over-budget ones.
 export { pollSessions } from './handlers/pollSessions.js';
+
+// Scheduled: relay fresh sourced property listings to each org's webhook → bill per listing.
+export { runSourcingJobs } from './handlers/runSourcingJobs.js';
 
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
