@@ -3,7 +3,9 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
-import { APIFY_TOKEN, GEMINI_API_KEY } from '../utils/secrets.js';
+import { APIFY_TOKEN } from '../utils/secrets.js';
+// Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed. VERTEX_PROJECT /
+// VERTEX_LOCATION come from .env; see utils/gemini.js.
 
 // When a run targets a specific locality, enrich a larger pool so the Gemini gate can drop off-target
 // posts and still fill maxPerRun. Bounds the extra Apify enrichment cost to OVERSAMPLE × maxPerRun.
@@ -24,7 +26,7 @@ export const runSourcingJobs = onSchedule(
     region: 'asia-south1',
     schedule: 'every day 07:00',
     timeZone: 'Asia/Kolkata',
-    secrets: [APIFY_TOKEN, GEMINI_API_KEY],
+    secrets: [APIFY_TOKEN],
     timeoutSeconds: 540,
     memory: '512MiB',
   },

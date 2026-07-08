@@ -3,7 +3,8 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, fetchQueryMatrix, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { runForOrg } from './runSourcingJobs.js';
-import { APIFY_TOKEN, GEMINI_API_KEY } from '../utils/secrets.js';
+import { APIFY_TOKEN } from '../utils/secrets.js';
+// Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed (see utils/gemini.js).
 
 // Operator-only flow to configure an org's sourced-listing relay (see utils/sourcing.js +
 // handlers/runSourcingJobs.js). Mirrors adminFigma.js: the shared HMAC secret is stored backend-only
@@ -116,7 +117,7 @@ export const adminRunSourcingNow = onCall(
 // queries. This is NOT the daily schedule and NOT tied to sourcing.enabled — it's a controlled test
 // that still incurs Apify cost + the per-listing wallet debit, capped by the org's maxPerRun.
 export const adminSourceTopTarget = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN, GEMINI_API_KEY], timeoutSeconds: 300, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 300, memory: '512MiB' },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
