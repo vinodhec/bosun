@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret } from '../utils/sourcing.js';
+import { generateSourcingSecret, fetchQueryMatrix } from '../utils/sourcing.js';
 import { runForOrg } from './runSourcingJobs.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
@@ -38,15 +38,26 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
     : [];
   // Optional per-run cap on how many NEW listings to relay/charge (0 = no cap). Bounds cost per run.
   const maxPerRun = Math.max(0, Math.floor(Number(request.data?.maxPerRun) || 0));
+  // Optional: the platform's demand-ranked matrix endpoint. When set, the org can source the top
+  // target(s) on demand (adminSourceTopTarget) instead of relying only on the static `queries`.
+  const matrixUrl = String(request.data?.matrixUrl ?? '').trim();
 
-  if (!orgId || !actorId || !webhookUrl || queries.length === 0) {
-    throw new HttpsError('invalid-argument', 'orgId, actorId, webhookUrl and at least one query are required.');
+  if (!orgId || !actorId || !webhookUrl || (queries.length === 0 && !matrixUrl)) {
+    throw new HttpsError('invalid-argument', 'orgId, actorId, webhookUrl and either at least one query or a matrixUrl are required.');
   }
   try {
     const u = new URL(webhookUrl);
     if (u.protocol !== 'https:') throw new Error('not https');
   } catch {
     throw new HttpsError('invalid-argument', 'webhookUrl must be a valid https URL.');
+  }
+  if (matrixUrl) {
+    try {
+      const u = new URL(matrixUrl);
+      if (u.protocol !== 'https:') throw new Error('not https');
+    } catch {
+      throw new HttpsError('invalid-argument', 'matrixUrl must be a valid https URL.');
+    }
   }
 
   const db = getFirestore();
@@ -60,7 +71,7 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
   await secretRef.set({ sourcing: { secret, updatedAt: FieldValue.serverTimestamp() } }, { merge: true });
 
   await orgRef.set(
-    { sourcing: { enabled, actorId, queries, freshness, webhookUrl, maxPerRun, configuredAt: FieldValue.serverTimestamp() } },
+    { sourcing: { enabled, actorId, queries, freshness, webhookUrl, maxPerRun, matrixUrl, configuredAt: FieldValue.serverTimestamp() } },
     { merge: true }
   );
 
@@ -87,6 +98,55 @@ export const adminRunSourcingNow = onCall(
     }
     const result = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg);
     return { ok: true, ...result };
+  },
+);
+
+// Source the TOP demand-ranked target(s) from the platform matrix, once, on demand — the manual
+// probe for "can we actually add leads for the hottest locality?". Pulls the platform's query matrix
+// (dry run — does not advance the platform's per-target refresh schedule), takes the top `topN`
+// targets (default 1), and runs the normal fetch → dedup → enrich → signed relay for just their
+// queries. This is NOT the daily schedule and NOT tied to sourcing.enabled — it's a controlled test
+// that still incurs Apify cost + the per-listing wallet debit, capped by the org's maxPerRun.
+export const adminSourceTopTarget = onCall(
+  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    requireAdmin(request);
+    const orgId = String(request.data?.orgId ?? '').trim();
+    if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+    const topN = Math.max(1, Math.floor(Number(request.data?.topN) || 1));
+
+    const db = getFirestore();
+    const orgSnap = await db.collection('organisations').doc(orgId).get();
+    if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const cfg = orgSnap.data().sourcing || {};
+    if (!cfg.actorId || !cfg.webhookUrl || !cfg.matrixUrl) {
+      throw new HttpsError('failed-precondition', 'This org needs actorId, webhookUrl and matrixUrl — run adminConfigureSourcing first.');
+    }
+    const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+    const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
+    if (!secret) throw new HttpsError('failed-precondition', 'No sourcing secret for this org.');
+
+    // Pull the demand-ranked matrix (dry run: never burns a target's cadence while we're testing).
+    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit: 12, dryRun: true });
+    const targets = Array.isArray(matrix?.targets) ? matrix.targets : [];
+    if (!targets.length) {
+      return { ok: true, relayed: 0, amountInr: 0, note: 'No due targets returned by the platform matrix.' };
+    }
+
+    const chosen = targets.slice(0, topN);
+    const queries = chosen.flatMap((t) => (Array.isArray(t.queries) ? t.queries : []));
+    const freshness = chosen[0]?.freshness || cfg.freshness;
+    if (!queries.length) {
+      return { ok: true, relayed: 0, amountInr: 0, note: 'Top target(s) returned no queries.' };
+    }
+
+    const result = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg, { queries, freshness });
+    return {
+      ok: true,
+      targeted: chosen.map((t) => ({ locality: t.locality, city: t.city, queries: t.queries })),
+      queriesRun: queries.length,
+      ...result,
+    };
   },
 );
 

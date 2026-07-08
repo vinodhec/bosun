@@ -39,14 +39,24 @@ export const runSourcingJobs = onSchedule(
 );
 
 // Exported for the emulator/E2E test harness (lets tests inject a stubbed serp fetcher + rng).
-export async function runForOrg(db, apifyToken, orgId, cfg, { fetchSerp = callSerpActor, rng } = {}) {
+// `queries`/`freshness` overrides let a caller source a SPECIFIC set of queries (e.g. the top target
+// pulled from the platform matrix) instead of the org's static cfg.queries — see adminSourceTopTarget.
+export async function runForOrg(
+  db,
+  apifyToken,
+  orgId,
+  cfg,
+  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride } = {},
+) {
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) {
     console.error('runSourcingJobs:no-secret', orgId);
     return { relayed: 0, amountInr: 0 };
   }
-  const { actorId, queries = [], freshness, webhookUrl } = cfg;
+  const { actorId, webhookUrl } = cfg;
+  const queries = queriesOverride && queriesOverride.length ? queriesOverride : (cfg.queries || []);
+  const freshness = freshnessOverride ?? cfg.freshness;
   if (!actorId || !webhookUrl || !queries.length) return { relayed: 0, amountInr: 0 };
 
   // 1) Fetch every query, flatten the results.

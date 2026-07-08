@@ -122,6 +122,42 @@ export function signPayload(secret, bodyString, timestamp = Date.now()) {
   return { signature: `sha256=${mac}`, timestamp: ts };
 }
 
+/**
+ * Pull the platform's demand-ranked sourcing matrix — the localities to source, each already expanded
+ * into search queries and ordered best-first. HMAC-signs `${timestamp}.query-matrix` with the org's
+ * shared secret (the same secret the relay webhook verifies on the platform side). `dryRun` asks the
+ * platform NOT to advance each target's refresh schedule — right for manual / top-target testing so a
+ * dry run never consumes a locality's cadence. Returns the parsed body ({ targets: [...] }) or null on
+ * any failure (degrade-safe: a bad pull just means nothing to source).
+ */
+export async function fetchQueryMatrix({ matrixUrl, secret, limit, dryRun = true }) {
+  if (!matrixUrl || !secret) return null;
+  const { signature, timestamp } = signPayload(secret, 'query-matrix');
+  let url;
+  try {
+    url = new URL(matrixUrl);
+  } catch {
+    console.error('fetchQueryMatrix:bad-url', matrixUrl);
+    return null;
+  }
+  if (dryRun) url.searchParams.set('dryRun', 'true');
+  if (limit) url.searchParams.set('limit', String(limit));
+  try {
+    const resp = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { 'x-bosun-signature': signature, 'x-bosun-timestamp': timestamp },
+    });
+    if (!resp.ok) {
+      console.error('fetchQueryMatrix:http', resp.status);
+      return null;
+    }
+    return await resp.json();
+  } catch (e) {
+    console.error('fetchQueryMatrix:err', e?.message || e);
+    return null;
+  }
+}
+
 const FB_POSTS_ACTOR = 'apify~facebook-posts-scraper';
 
 /** Extract + normalize an Indian mobile number from free text → `+91XXXXXXXXXX` or null. */
