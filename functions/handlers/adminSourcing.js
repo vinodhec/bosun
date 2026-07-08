@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, fetchQueryMatrix, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
+import { buildSourcingQueries } from '../utils/queryGen.js';
 import { runForOrg } from './runSourcingJobs.js';
 import { APIFY_TOKEN, GEMINI_API_KEY } from '../utils/secrets.js';
 
@@ -140,14 +141,16 @@ export const adminSourceTopTarget = onCall(
       return { ok: true, relayed: 0, amountInr: 0, note: 'No due targets returned by the platform matrix.' };
     }
 
-    // Run each chosen target on its OWN queries + locality context, so the Gemini relevance gate
-    // checks each post against the right place. Results (and wallet debits) aggregate across targets.
+    // Run each chosen target on Gemini-built bilingual queries (full English name + Tamil script —
+    // see utils/queryGen.js) plus its locality context, so the relevance gate checks each post against
+    // the right place. Results (and wallet debits) aggregate across targets.
     const chosen = targets.slice(0, topN);
     let relayed = 0;
     let amountInr = 0;
     const perTarget = [];
     for (const t of chosen) {
-      const queries = Array.isArray(t.queries) ? t.queries : [];
+      const smart = await buildSourcingQueries({ locality: t.locality, city: t.city });
+      const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
       if (!queries.length) {
         perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
         continue;
@@ -159,7 +162,10 @@ export const adminSourceTopTarget = onCall(
       });
       relayed += r.relayed || 0;
       amountInr += r.amountInr || 0;
-      perTarget.push({ locality: t.locality, city: t.city, queries, ...r });
+      perTarget.push({
+        locality: t.locality, city: t.city,
+        englishName: smart.englishName, tamilName: smart.tamilName, queries, ...r,
+      });
     }
     return { ok: true, targeted: perTarget, relayed, amountInr };
   },
