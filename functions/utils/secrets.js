@@ -16,6 +16,13 @@ export const JAM_PAT = defineSecret('JAM_PAT');
 //   firebase functions:secrets:set APIFY_TOKEN
 export const APIFY_TOKEN = defineSecret('APIFY_TOKEN');
 
+// Google Gemini API key — powers utils/gemini.js (the shared Gemini client). Today it drives the
+// sourced-listing relevance gate (utils/classifyListing.js); reusable for future LLM tasks. Cheap
+// Flash-Lite calls. Set it before deploying any function that lists it:
+//   firebase functions:secrets:set GEMINI_API_KEY
+// (Alternatively, leave unset and use Vertex AI via ADC by setting the VERTEX_PROJECT env var.)
+export const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY');
+
 // Defined LATER, once the GitHub App exists and its key is set in Secret Manager:
 //   firebase functions:secrets:set GITHUB_APP_PRIVATE_KEY
 // then re-add the defineSecret here and list it in createTask's `secrets` array.

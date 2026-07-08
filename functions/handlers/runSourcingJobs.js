@@ -1,8 +1,13 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
+import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
-import { APIFY_TOKEN } from '../utils/secrets.js';
+import { APIFY_TOKEN, GEMINI_API_KEY } from '../utils/secrets.js';
+
+// When a run targets a specific locality, enrich a larger pool so the Gemini gate can drop off-target
+// posts and still fill maxPerRun. Bounds the extra Apify enrichment cost to OVERSAMPLE × maxPerRun.
+const CLASSIFY_OVERSAMPLE = 3;
 
 // Scheduled sourced-listing relay (see utils/sourcing.js). Once a day, for every org with
 // sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them FOREVER
@@ -19,7 +24,7 @@ export const runSourcingJobs = onSchedule(
     region: 'asia-south1',
     schedule: 'every day 07:00',
     timeZone: 'Asia/Kolkata',
-    secrets: [APIFY_TOKEN],
+    secrets: [APIFY_TOKEN, GEMINI_API_KEY],
     timeoutSeconds: 540,
     memory: '512MiB',
   },
@@ -46,7 +51,7 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride } = {},
+  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target } = {},
 ) {
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
@@ -56,7 +61,9 @@ export async function runForOrg(
   }
   const { actorId, webhookUrl } = cfg;
   const queries = queriesOverride && queriesOverride.length ? queriesOverride : (cfg.queries || []);
-  const freshness = freshnessOverride ?? cfg.freshness;
+  // Recency window: explicit override → org config → the 3-month default (so even orgs configured
+  // before freshness existed only pull recent listings, never the entire history).
+  const freshness = freshnessOverride ?? cfg.freshness ?? freshnessForMonths(DEFAULT_FRESHNESS_MONTHS);
   if (!actorId || !webhookUrl || !queries.length) return { relayed: 0, amountInr: 0 };
 
   // 1) Fetch every query, flatten the results.
@@ -95,11 +102,15 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
-  // Per-run cap: process at most `maxPerRun` NEW listings (0 / unset = no cap). Applied BEFORE
-  // enrichment, so a run's Apify enrichment cost + wallet debit are bounded. The overflow isn't
-  // marked seen, so the next run picks it up — spreads cost across runs and keeps tests cheap.
+  // Per-run cap: relay at most `maxPerRun` NEW listings (0 / unset = no cap). Normally applied BEFORE
+  // enrichment so a run's Apify enrichment cost + wallet debit are bounded. When a target is set (the
+  // classify path), we enrich a LARGER pool (OVERSAMPLE × cap) so the Gemini gate can drop off-target
+  // posts and still fill the cap — then trim to `cap` after filtering. Overflow isn't marked seen, so
+  // the next run picks it up.
   const cap = Math.max(0, Math.floor(Number(cfg.maxPerRun) || 0));
-  const candidates = cap > 0 ? allNew.slice(0, cap) : allNew;
+  const classifying = !!(target && target.locality);
+  const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : allNew.length;
+  let candidates = poolSize > 0 ? allNew.slice(0, poolSize) : allNew;
 
   // 3b) Enrich each new listing with the FULL Facebook post (the SERP snippet is truncated). Adds
   // the complete description + the owner phone; priced into the sourcing baseline. Best-effort and
@@ -111,6 +122,39 @@ export async function runForOrg(
     }
     if (enriched?.phone) c.listing.phone = enriched.phone;
   });
+
+  // 3c) Relevance gate (only when targeting a specific locality): a cheap deterministic pre-filter,
+  // then a Gemini classify that drops posts that aren't genuine listings in/around the target and
+  // attaches extracted fields. Fails OPEN per-post (keep) so a classifier hiccup never loses leads.
+  if (classifying) {
+    await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
+      if (!hasPropertySignal(c.listing.snippet)) {
+        c.drop = true;
+        c.dropReason = 'no-signal';
+        return;
+      }
+      const verdict = await classifyListing({
+        text: c.listing.snippet,
+        locality: target.locality,
+        city: target.city,
+        shape: target.shape,
+      });
+      if (!verdict.keep && !verdict.degraded) {
+        c.drop = true;
+        c.dropReason = verdict.reason || 'off-target';
+        return;
+      }
+      if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
+      if (verdict.extracted) c.listing.extracted = verdict.extracted;
+    });
+    const kept = candidates.filter((c) => !c.drop);
+    console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: candidates.length, kept: kept.length, target: target.locality }));
+    candidates = cap > 0 ? kept.slice(0, cap) : kept;
+  }
+  if (!candidates.length) {
+    console.log('runSourcingJobs:none-after-classify', orgId);
+    return { relayed: 0, amountInr: 0 };
+  }
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;

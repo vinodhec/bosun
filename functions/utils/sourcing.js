@@ -13,6 +13,21 @@ export function generateSourcingSecret() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+// Default recency window for a sourcing run, in months. Only listings posted within this many
+// months are fetched (Google `tbs=qdr:m{n}`). Overridable per org via `freshnessMonths` config.
+export const DEFAULT_FRESHNESS_MONTHS = 3;
+
+/**
+ * Build Google's `tbs` recency value from a month count — the human-friendly form of `freshness`.
+ * `qdr:m` = past month, `qdr:m3` = past 3 months. Clamps to a sane [1, 60] range and floors to an
+ * integer; anything unparseable falls back to DEFAULT_FRESHNESS_MONTHS.
+ */
+export function freshnessForMonths(months) {
+  const n = Math.floor(Number(months));
+  const clamped = Number.isFinite(n) && n >= 1 ? Math.min(n, 60) : DEFAULT_FRESHNESS_MONTHS;
+  return clamped === 1 ? 'qdr:m' : `qdr:m${clamped}`;
+}
+
 /**
  * Run an Apify actor synchronously and return its dataset items, normalized to
  * `[{ url, title, snippet }]`. Uses run-sync-get-dataset-items so one HTTPS call both runs the

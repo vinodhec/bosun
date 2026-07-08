@@ -1,8 +1,8 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret, fetchQueryMatrix } from '../utils/sourcing.js';
+import { generateSourcingSecret, fetchQueryMatrix, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
 import { runForOrg } from './runSourcingJobs.js';
-import { APIFY_TOKEN } from '../utils/secrets.js';
+import { APIFY_TOKEN, GEMINI_API_KEY } from '../utils/secrets.js';
 
 // Operator-only flow to configure an org's sourced-listing relay (see utils/sourcing.js +
 // handlers/runSourcingJobs.js). Mirrors adminFigma.js: the shared HMAC secret is stored backend-only
@@ -31,7 +31,14 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
   const orgId = String(request.data?.orgId ?? '').trim();
   const actorId = String(request.data?.actorId ?? '').trim();
   const webhookUrl = String(request.data?.webhookUrl ?? '').trim();
-  const freshness = String(request.data?.freshness ?? 'qdr:d').trim();
+  // Recency window: only fetch listings posted within the last N months (default 3). Operators pass
+  // the friendly `freshnessMonths` number; a raw `freshness` (Google `tbs`) string still wins if
+  // given, for power-user windows like 'qdr:w' the month knob can't express.
+  const rawFreshness = String(request.data?.freshness ?? '').trim();
+  const freshnessMonths = request.data?.freshnessMonths == null
+    ? DEFAULT_FRESHNESS_MONTHS
+    : Math.max(1, Math.min(60, Math.floor(Number(request.data.freshnessMonths) || DEFAULT_FRESHNESS_MONTHS)));
+  const freshness = rawFreshness || freshnessForMonths(freshnessMonths);
   const enabled = request.data?.enabled !== false; // default true
   const queries = Array.isArray(request.data?.queries)
     ? request.data.queries.map((q) => String(q || '').trim()).filter(Boolean)
@@ -71,7 +78,7 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
   await secretRef.set({ sourcing: { secret, updatedAt: FieldValue.serverTimestamp() } }, { merge: true });
 
   await orgRef.set(
-    { sourcing: { enabled, actorId, queries, freshness, webhookUrl, maxPerRun, matrixUrl, configuredAt: FieldValue.serverTimestamp() } },
+    { sourcing: { enabled, actorId, queries, freshness, freshnessMonths, webhookUrl, maxPerRun, matrixUrl, configuredAt: FieldValue.serverTimestamp() } },
     { merge: true }
   );
 
@@ -108,7 +115,7 @@ export const adminRunSourcingNow = onCall(
 // queries. This is NOT the daily schedule and NOT tied to sourcing.enabled — it's a controlled test
 // that still incurs Apify cost + the per-listing wallet debit, capped by the org's maxPerRun.
 export const adminSourceTopTarget = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 300, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN, GEMINI_API_KEY], timeoutSeconds: 300, memory: '512MiB' },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -133,22 +140,36 @@ export const adminSourceTopTarget = onCall(
       return { ok: true, relayed: 0, amountInr: 0, note: 'No due targets returned by the platform matrix.' };
     }
 
+    // Run each chosen target on its OWN queries + locality context, so the Gemini relevance gate
+    // checks each post against the right place. Results (and wallet debits) aggregate across targets.
     const chosen = targets.slice(0, topN);
-    const queries = chosen.flatMap((t) => (Array.isArray(t.queries) ? t.queries : []));
-    const freshness = chosen[0]?.freshness || cfg.freshness;
-    if (!queries.length) {
-      return { ok: true, relayed: 0, amountInr: 0, note: 'Top target(s) returned no queries.' };
+    let relayed = 0;
+    let amountInr = 0;
+    const perTarget = [];
+    for (const t of chosen) {
+      const queries = Array.isArray(t.queries) ? t.queries : [];
+      if (!queries.length) {
+        perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
+        continue;
+      }
+      const r = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg, {
+        queries,
+        freshness: t.freshness || cfg.freshness,
+        target: { locality: t.locality, city: t.city, shape: shapeLabel(t) },
+      });
+      relayed += r.relayed || 0;
+      amountInr += r.amountInr || 0;
+      perTarget.push({ locality: t.locality, city: t.city, queries, ...r });
     }
-
-    const result = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg, { queries, freshness });
-    return {
-      ok: true,
-      targeted: chosen.map((t) => ({ locality: t.locality, city: t.city, queries: t.queries })),
-      queriesRun: queries.length,
-      ...result,
-    };
+    return { ok: true, targeted: perTarget, relayed, amountInr };
   },
 );
+
+// Build a short "2BHK · Villa / House · Sale" hint from a matrix target's dominant shape, if present.
+function shapeLabel(t) {
+  const s = t.dominantShape || t.shape || {};
+  return [s.bhkType, s.propertyType, s.listingType].filter(Boolean).join(' · ') || undefined;
+}
 
 // Turn an org's relay off without dropping its secret/config (so re-enabling is one flag flip and
 // the customer's webhook keeps validating).
