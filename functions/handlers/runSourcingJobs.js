@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost } from '../utils/sourcing.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
@@ -56,10 +56,12 @@ export async function runForOrg(db, apifyToken, orgId, cfg, { fetchSerp = callSe
     all.push(...items);
   }
 
-  // 2) Dedup WITHIN this run by canonical listing key.
+  // 2) Keep only individual posts (real listings that enrich); drop group/page landing pages. Then
+  // dedup WITHIN this run by canonical listing key.
+  const posts = all.filter((it) => it?.url && isIndividualPost(it.url));
+  console.log('runSourcingJobs:filter', orgId, JSON.stringify({ fetched: all.length, posts: posts.length }));
   const local = new Map();
-  for (const it of all) {
-    if (!it?.url) continue;
+  for (const it of posts) {
     const key = listingKey(it.url);
     if (!local.has(key)) local.set(key, it);
   }

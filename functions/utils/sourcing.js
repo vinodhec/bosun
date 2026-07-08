@@ -89,6 +89,29 @@ export function listingKey(url) {
   return crypto.createHash('sha256').update(canonicalizeUrl(url)).digest('hex');
 }
 
+// Facebook path/query markers that identify an INDIVIDUAL post. Individual posts are the real
+// listings and enrich cleanly (full description + phone); group/page LANDING pages can't be enriched
+// and aren't listings anyway, so we drop them upstream.
+const POST_MARKERS = [
+  '/posts/', '/permalink/', '/permalink.php', '/story.php',
+  '/videos/', '/photos/', '/marketplace/item/', '/share/p/', '/share/v/',
+];
+
+/** True if the URL is an individual FB post (keep) vs a group/page landing page (drop). */
+export function isIndividualPost(url) {
+  try {
+    const u = new URL(String(url));
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    // Non-Facebook URLs: don't filter (our queries are site:facebook.com, but be safe).
+    if (host !== 'facebook.com' && host !== 'm.facebook.com' && !host.endsWith('.facebook.com')) return true;
+    if (u.searchParams.has('story_fbid')) return true;
+    const s = (u.pathname + u.search).toLowerCase();
+    return POST_MARKERS.some((m) => s.includes(m));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Sign a relay body with the org's HMAC secret. The signature covers `${timestamp}.${body}` so the
  * receiver can reject replays by checking the timestamp. Returns headers the receiver recomputes.
