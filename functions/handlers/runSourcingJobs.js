@@ -1,9 +1,31 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
+import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
+
+// How many demand-ranked targets the DAILY cron sources per org when a matrixUrl is configured
+// (each further bounded by the org's maxPerRun). Conservative by default so a day's spend stays
+// small; an org can widen it via sourcing.topN. The manual adminSourceTopTarget probe passes its own.
+const CRON_TOPN = 5;
+
+// How many QUERIES the platform matrix may emit per pull (it caps queries, ~2 per target). The old
+// hardcoded 12 throttled us to ~7 targets even when far more localities were due; default wide and
+// let an org override via sourcing.matrixLimit.
+const DEFAULT_MATRIX_LIMIT = 40;
+
+// A demand-matrix target whose locality is really an intent phrase ("For Sale") or whose city is a
+// comma-joined facet list is junk (upstream data leakage) — skip it so we never burn a run geocoding
+// it. Mirrors isPlausibleLocality on the platform; kept here as defence against a stale matrix.
+function isPlausibleTarget(t) {
+  const loc = String(t?.locality || '').trim();
+  if (!loc) return false;
+  if (/^for\s+(sale|rent|lease)$/i.test(loc) || /^(sale|rent|lease)$/i.test(loc)) return false;
+  if (String(t?.city || '').includes(',')) return false;
+  return true;
+}
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed. VERTEX_PROJECT /
 // VERTEX_LOCATION come from .env; see utils/gemini.js.
 
@@ -36,7 +58,19 @@ export const runSourcingJobs = onSchedule(
     const snap = await db.collection('organisations').where('sourcing.enabled', '==', true).get();
     for (const orgDoc of snap.docs) {
       try {
-        await runForOrg(db, apifyToken, orgDoc.id, orgDoc.data().sourcing || {});
+        const cfg = orgDoc.data().sourcing || {};
+        // Smart path when the org has a demand matrix: source the top due target(s) via the
+        // platform's demand ranking + Gemini bilingual queries + relevance gate (dryRun:false so the
+        // platform advances each target's cadence, rotating through localities day to day). Orgs with
+        // only static `queries` fall back to the flat fetch → relay path.
+        if (cfg.matrixUrl) {
+          await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
+            topN: Math.max(1, Math.floor(Number(cfg.topN) || CRON_TOPN)),
+            dryRun: false,
+          });
+        } else {
+          await runForOrg(db, apifyToken, orgDoc.id, cfg);
+        }
       } catch (e) {
         // Best-effort per org — one org's Apify/webhook failure must not block the others.
         console.error('runSourcingJobs:org', orgDoc.id, e?.message || e);
@@ -68,10 +102,11 @@ export async function runForOrg(
   const freshness = freshnessOverride ?? cfg.freshness ?? freshnessForMonths(DEFAULT_FRESHNESS_MONTHS);
   if (!actorId || !webhookUrl || !queries.length) return { relayed: 0, amountInr: 0 };
 
-  // 1) Fetch every query, flatten the results.
+  // 1) Fetch every query, flatten the results. `maxPages` controls SERP depth per query (supply).
+  const maxPages = cfg.maxPagesPerQuery;
   const all = [];
   for (const query of queries) {
-    const items = await fetchSerp({ apifyToken, actorId, query, freshness });
+    const items = await fetchSerp({ apifyToken, actorId, query, freshness, maxPages });
     all.push(...items);
   }
 
@@ -198,6 +233,57 @@ export async function runForOrg(
   }
   console.log('runSourcingJobs:done', orgId, JSON.stringify({ relayed, amountInr }));
   return { relayed, amountInr };
+}
+
+// Source the org's top demand-ranked target(s) from the platform matrix — the SMART path shared by
+// the daily cron (dryRun:false, advances cadence) and the manual adminSourceTopTarget probe
+// (dryRun:true, leaves cadence untouched). Pulls the demand-ranked matrix, takes the top `topN`
+// targets, builds Gemini bilingual queries (full English name + Tamil script) per target, and runs
+// the normal fetch → dedup → enrich → relevance-gate → signed relay for each. Wallet debits aggregate
+// across targets. Degrade-safe: a null matrix or a target with no queries is skipped, not fatal.
+export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true } = {}) {
+  if (!cfg.matrixUrl) return { ok: true, relayed: 0, amountInr: 0, note: 'no matrixUrl' };
+  const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+  const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
+  if (!secret) return { ok: false, relayed: 0, amountInr: 0, note: 'no secret' };
+
+  const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
+  const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, dryRun });
+  const targets = (Array.isArray(matrix?.targets) ? matrix.targets : []).filter(isPlausibleTarget);
+  if (!targets.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no due targets' };
+
+  const chosen = targets.slice(0, topN);
+  let relayed = 0;
+  let amountInr = 0;
+  const perTarget = [];
+  for (const t of chosen) {
+    const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
+    const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
+    if (!queries.length) {
+      perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
+      continue;
+    }
+    // Deliberately ignore the target's per-target freshness (the platform stamps a tight qdr:d /
+    // 24h window). The requirement is "posted in the last 3 months", so let runForOrg use the org's
+    // freshness window (cfg.freshness = qdr:m3) uniformly across every target.
+    const r = await runForOrg(db, apifyToken, orgId, cfg, {
+      queries,
+      target: { locality: t.locality, city: t.city, shape: shapeLabel(t) },
+    });
+    relayed += r.relayed || 0;
+    amountInr += r.amountInr || 0;
+    perTarget.push({
+      locality: t.locality, city: t.city,
+      englishName: smart.englishName, tamilName: smart.tamilName, queries, ...r,
+    });
+  }
+  return { ok: true, targeted: perTarget, relayed, amountInr };
+}
+
+// Build a short "2BHK · Villa / House · Sale" hint from a matrix target's dominant shape, if present.
+function shapeLabel(t) {
+  const s = t.dominantShape || t.shape || {};
+  return [s.bhkType, s.propertyType, s.listingType].filter(Boolean).join(' · ') || undefined;
 }
 
 // HMAC-sign and POST one listing to the org's webhook. Returns true on a 2xx, false on anything

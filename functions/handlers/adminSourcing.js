@@ -1,8 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret, fetchQueryMatrix, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
-import { buildSourcingQueries } from '../utils/queryGen.js';
-import { runForOrg } from './runSourcingJobs.js';
+import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
+import { runForOrg, sourceTopTargets } from './runSourcingJobs.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed (see utils/gemini.js).
 
@@ -131,52 +130,15 @@ export const adminSourceTopTarget = onCall(
     if (!cfg.actorId || !cfg.webhookUrl || !cfg.matrixUrl) {
       throw new HttpsError('failed-precondition', 'This org needs actorId, webhookUrl and matrixUrl — run adminConfigureSourcing first.');
     }
-    const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
-    const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
-    if (!secret) throw new HttpsError('failed-precondition', 'No sourcing secret for this org.');
 
-    // Pull the demand-ranked matrix (dry run: never burns a target's cadence while we're testing).
-    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit: 12, dryRun: true });
-    const targets = Array.isArray(matrix?.targets) ? matrix.targets : [];
-    if (!targets.length) {
-      return { ok: true, relayed: 0, amountInr: 0, note: 'No due targets returned by the platform matrix.' };
-    }
-
-    // Run each chosen target on Gemini-built bilingual queries (full English name + Tamil script —
-    // see utils/queryGen.js) plus its locality context, so the relevance gate checks each post against
-    // the right place. Results (and wallet debits) aggregate across targets.
-    const chosen = targets.slice(0, topN);
-    let relayed = 0;
-    let amountInr = 0;
-    const perTarget = [];
-    for (const t of chosen) {
-      const smart = await buildSourcingQueries({ locality: t.locality, city: t.city });
-      const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
-      if (!queries.length) {
-        perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
-        continue;
-      }
-      const r = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg, {
-        queries,
-        freshness: t.freshness || cfg.freshness,
-        target: { locality: t.locality, city: t.city, shape: shapeLabel(t) },
-      });
-      relayed += r.relayed || 0;
-      amountInr += r.amountInr || 0;
-      perTarget.push({
-        locality: t.locality, city: t.city,
-        englishName: smart.englishName, tamilName: smart.tamilName, queries, ...r,
-      });
-    }
-    return { ok: true, targeted: perTarget, relayed, amountInr };
+    // Same smart path the daily cron runs (utils shared in runSourcingJobs.js), but dryRun:true so a
+    // manual probe never burns a target's cadence. Gemini bilingual queries + relevance gate applied
+    // per target; wallet debits aggregate across targets.
+    const result = await sourceTopTargets(db, process.env.APIFY_TOKEN, orgId, cfg, { topN, dryRun: true });
+    if (result?.note === 'no secret') throw new HttpsError('failed-precondition', 'No sourcing secret for this org.');
+    return result;
   },
 );
-
-// Build a short "2BHK · Villa / House · Sale" hint from a matrix target's dominant shape, if present.
-function shapeLabel(t) {
-  const s = t.dominantShape || t.shape || {};
-  return [s.bhkType, s.propertyType, s.listingType].filter(Boolean).join(' · ') || undefined;
-}
 
 // Turn an org's relay off without dropping its secret/config (so re-enabling is one flag flip and
 // the customer's webhook keeps validating).

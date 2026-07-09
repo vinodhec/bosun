@@ -17,6 +17,10 @@ export function generateSourcingSecret() {
 // months are fetched (Google `tbs=qdr:m{n}`). Overridable per org via `freshnessMonths` config.
 export const DEFAULT_FRESHNESS_MONTHS = 3;
 
+// How many Google SERP pages to pull per query (each ~up to resultsPerPage results). More pages =
+// more raw supply per locality. Overridable per org via sourcing.maxPagesPerQuery.
+export const DEFAULT_SERP_PAGES = 4;
+
 /**
  * Build Google's `tbs` recency value from a month count — the human-friendly form of `freshness`.
  * `qdr:m` = past month, `qdr:m3` = past 3 months. Clamps to a sane [1, 60] range and floors to an
@@ -34,12 +38,12 @@ export function freshnessForMonths(months) {
  * actor and returns results. `freshness` is Google's `tbs` value (e.g. 'qdr:d' = last 24h). Any
  * failure (missing config, non-2xx, network, bad JSON) returns `[]`.
  */
-export async function callSerpActor({ apifyToken, actorId, query, freshness, extraInput = {} }) {
+export async function callSerpActor({ apifyToken, actorId, query, freshness, maxPages, extraInput = {} }) {
   if (!apifyToken || !actorId || !query) return [];
   const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
   const input = {
     queries: query,          // apify/google-search-scraper accepts newline-separated queries
-    maxPagesPerQuery: 1,
+    maxPagesPerQuery: Math.max(1, Math.floor(Number(maxPages) || DEFAULT_SERP_PAGES)),
     resultsPerPage: 100,
     ...(freshness ? { tbs: freshness } : {}),
     ...extraInput,
