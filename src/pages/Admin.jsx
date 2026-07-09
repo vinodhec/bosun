@@ -199,6 +199,81 @@ function Overview({ data, busy, onRefresh }) {
   );
 }
 
+// Sourcing overview: the sourced-listing relay lane — revenue (₹ charged), leads relayed, and an
+// ESTIMATED Apify COGS (this lane isn't metered per run, so profit is an estimate), sliced today /
+// trailing / per-org. Mirrors the Business overview. Data from adminMetrics().sourcing.
+function SourcingOverview({ data: s }) {
+  if (!s) return null;
+  const today = s.today || { revenueInr: 0, leads: 0, profitInr: 0 };
+  return (
+    <section className="rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-ink">Sourcing — leads relayed</h2>
+        <span className="text-[10px] text-ink-soft">near-zero COGS · profit est. at ₹{s.estInrPerLead}/lead Apify</span>
+      </div>
+
+      <div className="mt-3 rounded-xl border border-brand-500/40 bg-brand-50/30 p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-brand-700">Today · since 00:00 IST</div>
+        <div className="mt-2 grid grid-cols-3 gap-3">
+          <MetricCard label="Revenue today" value={formatINR(today.revenueInr)} tone="good" />
+          <MetricCard label="Leads today" value={today.leads} />
+          <MetricCard label="Profit today" value={inrPrecise(today.profitInr)} sub="est."
+            tone={today.profitInr >= 0 ? 'good' : 'bad'} />
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MetricCard label="Revenue" value={formatINR(s.revenueInr)} sub="charged for leads" tone="good" />
+        <MetricCard label="Leads relayed" value={s.leads} sub={`${s.batches} runs`} />
+        <MetricCard label="Est. Apify cost" value={inrPrecise(s.estCostInr)} sub={`est. ₹${s.estInrPerLead}/lead`} />
+        <MetricCard label="Profit" value={formatINR(s.profitInr)} sub={`${s.marginPct}% margin · est.`}
+          tone={s.profitInr >= 0 ? 'good' : 'bad'} />
+        <MetricCard label="Avg per lead" value={inrPrecise(s.avgInrPerLead)} sub="revenue / lead" />
+      </div>
+
+      <div className="mt-4">
+        <TrendTable
+          title="Recent — relayed in the last…"
+          cols={['24 hours', '7 days', '30 days']}
+          revenue={[s.trailing.d1.revenueInr, s.trailing.d7.revenueInr, s.trailing.d30.revenueInr]}
+          profit={[s.trailing.d1.profitInr, s.trailing.d7.profitInr, s.trailing.d30.profitInr]}
+        />
+      </div>
+
+      {s.byOrg.length > 0 && (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[480px] text-left text-xs">
+            <thead>
+              <tr className="border-b border-line text-ink-soft">
+                <th className="py-1.5 pr-3 font-medium">Organisation</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Leads</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Revenue</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Est. cost</th>
+                <th className="py-1.5 text-right font-medium">Profit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {s.byOrg.map((o) => {
+                const est = (Number(o.leads) || 0) * s.estInrPerLead;
+                const profit = o.revenueInr - est;
+                return (
+                  <tr key={o.orgId} className="border-b border-line/60">
+                    <td className="py-1.5 pr-3 font-medium text-ink">{o.name}</td>
+                    <td className="py-1.5 pr-3 text-right text-ink">{o.leads}</td>
+                    <td className="py-1.5 pr-3 text-right text-ink">{formatINR(o.revenueInr)}</td>
+                    <td className="py-1.5 pr-3 text-right text-ink-soft">{inrPrecise(est)}</td>
+                    <td className={`py-1.5 text-right font-semibold ${profit >= 0 ? 'text-green-700' : 'text-rose-600'}`}>{inrPrecise(profit)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 // Per-fix P&L for the admin: what the customer PAID (finalCharge — ₹0 when never charged,
 // i.e. a failed/stopped run) vs what the run actually COST us (actualCostInr = raw COGS in
 // INR, no markup). Margin is shown as an absolute ₹ figure AND a %. A never-charged fix is a
@@ -968,6 +1043,8 @@ export default function Admin() {
         {err && <p className="rounded-xl bg-rose-50 px-4 py-2 text-sm text-bad">{err}</p>}
 
         <Overview data={metrics} busy={metricsBusy} onRefresh={loadMetrics} />
+
+        <SourcingOverview data={metrics?.sourcing} />
 
         <section className="rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Organisations</h2>

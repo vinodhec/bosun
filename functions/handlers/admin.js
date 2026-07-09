@@ -247,11 +247,18 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();
   const rate = await getUsdToInrRate();
 
-  const [orgsSnap, tasksSnap, creditSnap] = await Promise.all([
+  const [orgsSnap, tasksSnap, creditSnap, sourcingSnap] = await Promise.all([
     db.collection('organisations').get(),
     db.collection('tasks').get(),
     db.collection('transactions').where('type', '==', 'credit').get(),
+    // Sourced-listing relay is a separate metered lane: one debit txn per run batch, `amount` = the
+    // ₹ we charged, `count` = leads relayed. Revenue lives here (a debit), NOT on tasks.
+    db.collection('transactions').where('kind', '==', 'sourcing').get(),
   ]);
+
+  // Apify (SERP + FB enrichment) is the only sourcing COGS and we don't meter it per run — sourcing
+  // is a deliberately near-zero-COGS lane. Estimate it for a profit view; clearly labelled "est".
+  const SOURCING_APIFY_EST_INR_PER_LEAD = 0.4;
 
   const blank = () => ({
     revenueInr: 0, costInr: 0, anthropicUsd: 0, profitInr: 0,
@@ -367,7 +374,50 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   };
 
   const byOrg = [...orgStats.values()].sort((a, b) => b.revenueInr - a.revenueInr);
-  return { rate, totals, today, averages, trailing, byOrg, generatedAt: now };
+
+  // ── Sourcing lane: revenue (Σ amount) + leads (Σ count) from the sourcing debit txns, sliced the
+  // same way as the fix business (today / trailing / per-org). Profit uses the estimated Apify COGS.
+  const estCost = (leads) => (Number(leads) || 0) * SOURCING_APIFY_EST_INR_PER_LEAD;
+  const srcTotals = { revenueInr: 0, leads: 0, batches: 0 };
+  const srcToday = { revenueInr: 0, leads: 0 };
+  const srcWin = { d1: { rev: 0, leads: 0 }, d7: { rev: 0, leads: 0 }, d30: { rev: 0, leads: 0 } };
+  const srcByOrg = new Map();
+  const srcBump = (orgId, amt, leads) => {
+    let s = srcByOrg.get(orgId);
+    if (!s) { s = { orgId, name: orgStats.get(orgId)?.name || '(unknown)', revenueInr: 0, leads: 0 }; srcByOrg.set(orgId, s); }
+    s.revenueInr += amt; s.leads += leads;
+  };
+  for (const d of sourcingSnap.docs) {
+    const t = d.data();
+    const amt = Number(t.amount) || 0;
+    const leads = Number(t.count) || 0;
+    srcTotals.revenueInr += amt; srcTotals.leads += leads; srcTotals.batches += 1;
+    if (t.orgId) srcBump(t.orgId, amt, leads);
+    const whenMs = t.createdAt?.toMillis?.() ?? null;
+    if (whenMs != null) {
+      const age = now - whenMs;
+      if (age <= DAY_MS) { srcWin.d1.rev += amt; srcWin.d1.leads += leads; }
+      if (age <= 7 * DAY_MS) { srcWin.d7.rev += amt; srcWin.d7.leads += leads; }
+      if (age <= 30 * DAY_MS) { srcWin.d30.rev += amt; srcWin.d30.leads += leads; }
+      if (whenMs >= todayStartMs) { srcToday.revenueInr += amt; srcToday.leads += leads; }
+    }
+  }
+  const srcWindow = (w) => ({ revenueInr: w.rev, leads: w.leads, profitInr: w.rev - estCost(w.leads) });
+  const sourcing = {
+    revenueInr: srcTotals.revenueInr,
+    leads: srcTotals.leads,
+    batches: srcTotals.batches,
+    estCostInr: estCost(srcTotals.leads),
+    profitInr: srcTotals.revenueInr - estCost(srcTotals.leads),
+    marginPct: srcTotals.revenueInr > 0 ? Math.round(((srcTotals.revenueInr - estCost(srcTotals.leads)) / srcTotals.revenueInr) * 100) : 0,
+    estInrPerLead: SOURCING_APIFY_EST_INR_PER_LEAD,
+    avgInrPerLead: srcTotals.leads > 0 ? srcTotals.revenueInr / srcTotals.leads : 0,
+    today: { revenueInr: srcToday.revenueInr, leads: srcToday.leads, profitInr: srcToday.revenueInr - estCost(srcToday.leads) },
+    trailing: { d1: srcWindow(srcWin.d1), d7: srcWindow(srcWin.d7), d30: srcWindow(srcWin.d30) },
+    byOrg: [...srcByOrg.values()].sort((a, b) => b.revenueInr - a.revenueInr),
+  };
+
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
