@@ -35,23 +35,60 @@ async function localityNames({ locality, city }) {
   return { englishName: String(j.englishName || '').trim(), tamilName: String(j.tamilName || '').trim() };
 }
 
-// Proven templates (see experiment above). Broad OR-groups keep recall high; the Gemini relevance
-// gate downstream is what enforces precision, so we deliberately cast wide here.
-const enQuery = (name) =>
-  `site:facebook.com ${name} (house OR flat OR apartment OR villa OR plot OR land) (sale OR rent OR lease)`;
-const taQuery = (name) =>
-  `site:facebook.com ${name} (வீடு OR மனை OR நிலம் OR அபார்ட்மெண்ட்) (விற்பனை OR வாடகை OR குத்தகை)`;
+// Property-term OR-groups (English + Tamil) by demand CATEGORY. We pick the group from the target's
+// dominant property type so a commercial-demand locality (Office Space, Shop) is searched for
+// commercial supply — not homes. Broad within a category keeps recall high; the Gemini relevance
+// gate downstream enforces precision, so we deliberately cast wide.
+const PROP_GROUPS = {
+  residential: {
+    en: 'house OR flat OR apartment OR villa OR home OR plot OR land',
+    ta: 'வீடு OR மனை OR நிலம் OR அபார்ட்மெண்ட் OR குடியிருப்பு',
+  },
+  commercial: {
+    en: '"office space" OR office OR shop OR showroom OR "commercial space" OR commercial OR warehouse',
+    ta: 'அலுவலகம் OR கடை OR வணிக OR கமர்ஷியல் OR கிடங்கு',
+  },
+  land: {
+    en: 'plot OR land OR "vacant land" OR "farm land" OR acre OR cent',
+    ta: 'மனை OR நிலம் OR பண்ணை OR சென்ட்',
+  },
+  pg: {
+    en: '"paying guest" OR PG OR hostel OR "room for rent"',
+    ta: 'விடுதி OR தங்குமிடம் OR அறை',
+  },
+};
+const INTENT_EN = 'sale OR rent OR lease';
+const INTENT_TA = 'விற்பனை OR வாடகை OR குத்தகை';
 
 /**
- * Build the search queries for a target: a broad English query on the full name + a Tamil-script
- * query when we have a Tamil name. Always returns at least the English query (falls back to the raw
- * locality if Gemini is unavailable), so a name/LLM hiccup never leaves us with nothing to search.
+ * Map a target's dominant property type → a query category. A dominant shape can be a comma-joined
+ * mix; we scan the whole string and let the most specific signal win (commercial before land, so
+ * "Commercial Land" reads as commercial). Falls back to residential when the shape is absent/unknown.
  */
-export async function buildSourcingQueries({ locality, city }) {
+export function categoryForShape(shape) {
+  const p = String(shape?.propertyType || '').toLowerCase();
+  if (/office|shop|showroom|warehouse|commercial|industrial|mall|godown|\bhall\b|hotel|resort|guest house/.test(p)) return 'commercial';
+  if (/paying guest|\bpg\b|hostel/.test(p)) return 'pg';
+  if (/plot|land|acre|cent/.test(p)) return 'land';
+  return 'residential';
+}
+
+const enQuery = (name, cat) => `site:facebook.com ${name} (${PROP_GROUPS[cat].en}) (${INTENT_EN})`;
+const taQuery = (name, cat) => `site:facebook.com ${name} (${PROP_GROUPS[cat].ta}) (${INTENT_TA})`;
+
+/**
+ * Build the search queries for a target: an English query on the full name + a Tamil-script query
+ * when we have a Tamil name, both keyed to the demand CATEGORY (residential / commercial / land / pg)
+ * so we search for the kind of property that's actually in demand. Always returns at least the English
+ * query (falls back to the raw locality if Gemini is unavailable), so a name/LLM hiccup never leaves
+ * us with nothing to search.
+ */
+export async function buildSourcingQueries({ locality, city, shape }) {
   const names = await localityNames({ locality, city });
   const en = names?.englishName || locality;
   const ta = names?.tamilName || '';
-  const queries = [enQuery(en)];
-  if (ta) queries.push(taQuery(ta));
-  return { queries, englishName: en, tamilName: ta };
+  const category = categoryForShape(shape);
+  const queries = [enQuery(en, category)];
+  if (ta) queries.push(taQuery(ta, category));
+  return { queries, englishName: en, tamilName: ta, category };
 }
