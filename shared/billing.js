@@ -380,12 +380,18 @@ export function isLowBalance(balanceInr) {
  * SERP + one enrichment, so the ₹1.90 net margin holds even for ENRICHED leads (and runs higher on
  * the many that are never enriched). Tune the baseline / margin / jitter here and nowhere else.
  */
-export const SOURCED_COST_BASELINE_INR = 0.55; // measured Apify VARIABLE cost/property (SERP ~0.08 + FB enrichment ~0.47)
+// Per-property Gemini cost: the sourcing pipeline spends a Gemini call or two on each property (the
+// bilingual query builder + the relevance/extraction gate — utils/queryGen.js, utils/classifyListing.js),
+// on cheap flash-lite. ~2 paise/property of real COGS + 18% India GST (≈2.36 paise) rounded up to a
+// clean 3 paise. Folded into the variable cost and PASSED ON AT COST: the baseline flows 1:1 into the
+// price, so the customer pays this flat 3 paise with no markup on it.
+export const SOURCED_GEMINI_COST_INR = 0.03;   // 3 paise/property (≈2 paise Gemini COGS + 18% GST, rounded up)
+export const SOURCED_COST_BASELINE_INR = 0.55 + SOURCED_GEMINI_COST_INR; // measured VARIABLE cost/property: Apify (SERP ~0.08 + FB enrichment ~0.47) + Gemini (GST-incl.)
 export const SOURCED_TARGET_MARGIN_INR = 1.40; // margin over the variable cost. NOTE: the $29/mo Apify base is a
                                                // SEPARATE fixed cost (covers ~4,600 enriched props/mo) — not in here.
 export const SOURCED_PRICE_JITTER_INR = 0.15;  // ± random spread around (baseline + margin)
-export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹1.80
-export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.10
+export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹1.83
+export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.13
 
 /**
  * One listing's price: uniform in [MIN, MAX] with 2-decimal (paise) precision. `rng` is injectable
