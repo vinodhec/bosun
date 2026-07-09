@@ -55,7 +55,8 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
   const prompt =
     `TARGET locality: ${target}\n` +
     (shape ? `Buyers there mostly want: ${shape}\n` : '') +
-    `\nIndian place names vary — treat abbreviations and English/Tamil spellings/transliterations as the ` +
+    `\nIndian place names vary — treat abbreviations and English or regional-language ` +
+    `(Tamil, Malayalam, Telugu, Kannada, Hindi, Bengali, Marathi, …) spellings/transliterations as the ` +
     `SAME place (e.g. "Ramnad" = "Ramanathapuram" = "ராமநாதபுரம").\n\n` +
     `Facebook post:\n"""${body.slice(0, 1500)}"""\n\n` +
     `Decide: isListing (a genuine property listing?), localityMatches (is the property in or ` +

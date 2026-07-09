@@ -270,7 +270,8 @@ export async function runForOrg(
 // Source the org's top demand-ranked target(s) from the platform matrix — the SMART path shared by
 // the daily cron (dryRun:false, advances cadence) and the manual adminSourceTopTarget probe
 // (dryRun:true, leaves cadence untouched). Pulls the demand-ranked matrix, takes the top `topN`
-// targets, builds Gemini bilingual queries (full English name + Tamil script) per target, and runs
+// targets, builds Gemini bilingual queries (full English name + the locality's own regional script,
+// language chosen by Gemini per target) per target, and runs
 // the normal fetch → dedup → enrich → relevance-gate → signed relay for each. Wallet debits aggregate
 // across targets. Degrade-safe: a null matrix or a target with no queries is skipped, not fatal.
 export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true } = {}) {
@@ -291,6 +292,14 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   for (const t of chosen) {
     const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
     const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
+    // Log the generated queries + the regional language Gemini chose, for offline analysis of query
+    // quality/recall per region (this is the only place the built queries surface — the cron discards
+    // sourceTopTargets' return value).
+    console.log('runSourcingJobs:queries', orgId, JSON.stringify({
+      locality: t.locality, city: t.city, category: smart.category,
+      englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName,
+      queries,
+    }));
     if (!queries.length) {
       perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
       continue;
@@ -306,7 +315,7 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
     amountInr += r.amountInr || 0;
     perTarget.push({
       locality: t.locality, city: t.city,
-      englishName: smart.englishName, tamilName: smart.tamilName, queries, ...r,
+      englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName, queries, ...r,
     });
   }
   return { ok: true, targeted: perTarget, relayed, amountInr };
