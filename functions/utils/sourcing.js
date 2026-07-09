@@ -33,6 +33,27 @@ export function freshnessForMonths(months) {
 }
 
 /**
+ * Google's `tbs` recency value as a VALID custom date range for the last N months, computed from now:
+ * `cdr:1,cd_min:M/D/YYYY,cd_max:M/D/YYYY`. Use this instead of `freshnessForMonths` for the SERP query —
+ * `qdr:m3` (multi-month) is NOT a real Google operator and gets ignored, letting any-age posts through.
+ * Best-effort only (Google dates facebook.com by index time); the hard post-date filter is the real gate.
+ */
+export function tbsForMonths(months) {
+  const n = Math.min(60, Math.max(1, Math.floor(Number(months)) || DEFAULT_FRESHNESS_MONTHS));
+  const now = new Date();
+  const min = new Date(now);
+  min.setMonth(min.getMonth() - n);
+  const fmt = (d) => `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+  return `cdr:1,cd_min:${fmt(min)},cd_max:${fmt(now)}`;
+}
+
+/** Milliseconds cutoff for "posted within the last N months" — the hard recency gate. */
+export function cutoffMsForMonths(months) {
+  const n = Math.min(60, Math.max(1, Math.floor(Number(months)) || DEFAULT_FRESHNESS_MONTHS));
+  return Date.now() - Math.round(n * 30.44 * 24 * 60 * 60 * 1000);
+}
+
+/**
  * Run an Apify actor synchronously and return its dataset items, normalized to
  * `[{ url, title, snippet }]`. Uses run-sync-get-dataset-items so one HTTPS call both runs the
  * actor and returns results. `freshness` is Google's `tbs` value (e.g. 'qdr:d' = last 24h). Any
@@ -211,8 +232,14 @@ export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) 
     const text = [it.previewDescription, it.text, it.message, it.postText]
       .filter((t) => typeof t === 'string' && t.trim())
       .sort((a, b) => b.length - a.length)[0] || '';
-    if (!text) return null;
-    return { text: text.slice(0, 2000), phone: extractPhone(text) };
+    // Authoritative post date: the FB-posts scraper returns `time` (ISO). This is how we ENFORCE the
+    // recency window — Google's SERP date filter is unreliable for facebook.com (index date, and
+    // multi-month qdr values are ignored). Null when the post carries no parseable timestamp.
+    const rawTime = it.time || it.timestamp || it.date || it.publishTime || null;
+    const parsed = rawTime ? Date.parse(rawTime) : NaN;
+    const postedAt = Number.isFinite(parsed) ? parsed : null;
+    if (!text) return postedAt ? { text: '', phone: null, postedAt } : null;
+    return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt };
   } catch (e) {
     console.error('enrichPost:err', e?.message || e);
     return null;

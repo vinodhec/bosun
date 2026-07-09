@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -97,9 +97,13 @@ export async function runForOrg(
   }
   const { actorId, webhookUrl } = cfg;
   const queries = queriesOverride && queriesOverride.length ? queriesOverride : (cfg.queries || []);
-  // Recency window: explicit override → org config → the 3-month default (so even orgs configured
-  // before freshness existed only pull recent listings, never the entire history).
-  const freshness = freshnessOverride ?? cfg.freshness ?? freshnessForMonths(DEFAULT_FRESHNESS_MONTHS);
+  // Recency window (last N months). Google's `tbs` is a VALID custom date range computed at runtime —
+  // the old stored `qdr:m3` was silently ignored by Google (only qdr:d/w/m/y exist), so any-age posts
+  // leaked through. That SERP filter is best-effort; the AUTHORITATIVE gate is `cutoffMs`, applied to
+  // each post's real FB timestamp after enrichment (see step 3b2).
+  const months = Math.min(60, Math.max(1, Math.floor(Number(cfg.freshnessMonths)) || DEFAULT_FRESHNESS_MONTHS));
+  const freshness = freshnessOverride ?? tbsForMonths(months);
+  const cutoffMs = cutoffMsForMonths(months);
   if (!actorId || !webhookUrl || !queries.length) return { relayed: 0, amountInr: 0 };
 
   // 1) Fetch every query, flatten the results. `maxPages` controls SERP depth per query (supply).
@@ -158,7 +162,23 @@ export async function runForOrg(
       c.listing.snippet = enriched.text;
     }
     if (enriched?.phone) c.listing.phone = enriched.phone;
+    if (enriched?.postedAt) c.listing.postedAt = enriched.postedAt;
   });
+
+  // 3b2) HARD recency gate on the actual FB post date. Drop anything we KNOW is older than the window
+  // (this is what actually enforces "posted in the last N months"). Fail-OPEN when the date is unknown
+  // (enrichment miss) so a scrape hiccup doesn't silently lose fresh leads. postedAt rides to the
+  // webhook so the platform can enforce/display it too.
+  if (cutoffMs) {
+    const before = candidates.length;
+    candidates = candidates.filter((c) => !(c.listing.postedAt && c.listing.postedAt < cutoffMs));
+    const dropped = before - candidates.length;
+    if (dropped) console.log('runSourcingJobs:stale-drop', orgId, JSON.stringify({ dropped, keptAfter: candidates.length, cutoff: new Date(cutoffMs).toISOString().slice(0, 10) }));
+    if (!candidates.length) {
+      console.log('runSourcingJobs:none-after-recency', orgId);
+      return { relayed: 0, amountInr: 0 };
+    }
+  }
 
   // 3c) Relevance gate (only when targeting a specific locality): a cheap deterministic pre-filter,
   // then a Gemini classify that drops posts that aren't genuine listings in/around the target and
