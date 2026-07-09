@@ -215,20 +215,32 @@ export async function runForOrg(
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;
+  const relayedDates = [];
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing }) => {
     const ok = await relayOne({ webhookUrl, secret, orgId, listing });
     if (ok) {
       await seenCol.doc(key).set({
         url: listing.url,
         title: listing.title || '',
+        postedAt: listing.postedAt || null, // FB post date (for recency audits)
         relayedAt: FieldValue.serverTimestamp(),
       });
+      if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
     }
   });
   if (!relayed) {
     console.log('runSourcingJobs:relayed-0', orgId);
     return { relayed: 0, amountInr: 0 };
+  }
+  // Audit: the date span of what we relayed — proves the recency gate holds in the real relay path.
+  if (relayedDates.length) {
+    relayedDates.sort((a, b) => a - b);
+    console.log('runSourcingJobs:relayed-dates', orgId, JSON.stringify({
+      withDate: relayedDates.length, total: relayed,
+      oldest: new Date(relayedDates[0]).toISOString().slice(0, 10),
+      newest: new Date(relayedDates[relayedDates.length - 1]).toISOString().slice(0, 10),
+    }));
   }
 
   // 5) One transactional debit for the whole batch (org may go negative — operator reconciles).
