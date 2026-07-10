@@ -1,9 +1,13 @@
-import { useState } from 'react';
-import { replyToChat, approveChatBuild } from '../firebase/functions.js';
+import { useState, lazy, Suspense } from 'react';
+import { replyToChat, approveChatBuild, getChatMockHtml } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
 import RichText from './RichText.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
+
+// The markup tool pulls in the drawing libraries (fabric, snapDOM) — load it only when the owner
+// opens "Mark up the screen", so it doesn't weigh down the dashboard.
+const MockAnnotator = lazy(() => import('./MockAnnotator.jsx'));
 
 // One "Chat & build" card — the whole thing in a single thread: the back-and-forth where we work out
 // what's needed (we may ask for a screenshot, a page link, a recording or a design), an optional
@@ -15,7 +19,26 @@ export default function ChatCard({ chat: c, onChanged }) {
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [showAnnotator, setShowAnnotator] = useState(false);
+  const [mockHtml, setMockHtml] = useState('');
   const replyImages = useImageAttachments();
+
+  // Open the mark-up tool: fetch the preview's raw HTML (owner-gated) so the annotator can re-render
+  // it same-origin and let the owner draw on it. On apply, the flattened picture rides into a tweak.
+  const openMarkup = async () => {
+    setErr('');
+    try {
+      if (!mockHtml) {
+        const res = await getChatMockHtml({ chatId: c.id });
+        setMockHtml(String(res?.data?.mockHtml || ''));
+      }
+      setShowAnnotator(true);
+    } catch { setErr('We couldn’t open the preview to mark up. Please try again.'); }
+  };
+  const onApplyMarkup = (file, summary) => {
+    replyImages.addFiles([file]);
+    setAnswer((prev) => (prev.trim() ? (summary ? `${prev}\n${summary}` : prev) : summary));
+  };
 
   const turns = Array.isArray(c.turns) ? c.turns : [];
   const waiting = ['clarifying', 'ready_to_build', 'previewing'].includes(c.status) && c.awaitingOwner;
@@ -59,15 +82,29 @@ export default function ChatCard({ chat: c, onChanged }) {
       {/* The optional visual preview, before anything is built. */}
       {canApprove && c.mockUrl && (
         <div className="mt-3">
+          {/* The preview link, surfaced right in the thread as a chat element. */}
+          <div className="flex justify-start">
+            <div className="bubble-agent flex items-center gap-2">
+              <span>✨ Here’s a preview of your screen:</span>
+              <a href={c.mockUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600 hover:underline">
+                Open preview ↗
+              </a>
+            </div>
+          </div>
           <iframe
             src={c.mockUrl}
             sandbox=""
             title="Preview"
-            className="h-[420px] w-full rounded-xl border border-line bg-white shadow-sm"
+            className="mt-3 h-[420px] w-full rounded-xl border border-line bg-white shadow-sm"
           />
-          <a href={c.mockUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs font-medium text-brand-600 hover:underline">
-            Open full screen ↗
-          </a>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <a href={c.mockUrl} target="_blank" rel="noreferrer" className="text-xs font-medium text-brand-600 hover:underline">
+              Open full screen ↗
+            </a>
+            <button onClick={openMarkup} disabled={busy} className="btn btn-outline btn-sm">
+              ✏️ Mark up the preview
+            </button>
+          </div>
         </div>
       )}
 
@@ -170,6 +207,12 @@ export default function ChatCard({ chat: c, onChanged }) {
       )}
 
       {err && <p className="mt-2 text-sm text-bad">{err}</p>}
+
+      {showAnnotator && mockHtml && (
+        <Suspense fallback={null}>
+          <MockAnnotator mockHtml={mockHtml} onApply={onApplyMarkup} onClose={() => setShowAnnotator(false)} />
+        </Suspense>
+      )}
 
       {c.totalPaidInr > 0 && (
         <p className="mt-3 text-xs text-ink-soft">Paid: <span className="font-medium text-ink">{formatINR(c.totalPaidInr)}</span></p>
