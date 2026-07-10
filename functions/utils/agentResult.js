@@ -332,6 +332,13 @@ export async function extractResult(client, sessionId) {
     } else {
       resultSummary = (texts[texts.length - 1] || '').slice(0, 600);
     }
+    // Robustness: if no RESULT_JSON prUrl was found but the agent named the PR in prose
+    // (e.g. "I opened a pull request: https://github.com/…/pull/472"), pull it out — a real
+    // PR must never be lost to a formatting miss (that would wrongly fail + not charge the run).
+    if (!prUrl) {
+      const m = lines.join('\n').match(/https?:\/\/github\.com\/[^\s"')]+\/pull\/\d+/i);
+      if (m) prUrl = m[0];
+    }
   } catch {
     /* best-effort — leave defaults */
   }

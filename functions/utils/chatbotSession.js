@@ -50,8 +50,9 @@ const CHAT_PROTOCOL =
   `words (no files, components, code, CSS, API). If they wanted a PREVIEW (or it's clearly visual and ` +
   `they didn't decline one), ALSO include a single self-contained HTML mock of just the changed screen ` +
   `in ONE fenced \`\`\`html block: all CSS inline, no JavaScript, no external files, made to look like ` +
-  `THEIR site (reuse the real colours/fonts/spacing you saw in the repo), responsive for phones. Do NOT ` +
-  `touch the app or open a PR on a "ready" turn — wait for approval.\n\n` +
+  `THEIR site (reuse the real colours/fonts/spacing you saw in the repo), responsive for phones. Keep ` +
+  `the mock MINIMAL — just enough to show the change; don't over-polish it. Do NOT touch the app or ` +
+  `open a PR on a "ready" turn — wait for approval.\n\n` +
   `Until you are confident, prefer "ask": pose the FEWEST questions in ONE short batch, plain friendly ` +
   `English a shop owner would use. Never output a PR or start building on your own — building only ` +
   `happens after the owner approves, on a later turn when I explicitly tell you to build.\n\n` +
@@ -96,12 +97,22 @@ export function buildChatReply(answer, imageCount = 0) {
 
 // The continue text when the owner APPROVES the build (same session, which already holds the whole
 // conversation + the agreed plan). NOW the agent actually implements it and opens a PR — a normal fix.
+// Efficiency notes fold in the session's own review: the repo is checked out locally, so use the git
+// CLI for commits/pushes and the GitHub tools ONLY to open the PR (avoids the duplicate-fetch pattern);
+// don't re-read files just edited or probe the environment. The RESULT_JSON line is REQUIRED — the
+// poller reads prUrl from it (a missing line makes a real PR look like a failed run).
 export function buildChatBuildInstruction(notes = '') {
-  const extra = notes ? `\n\nThe owner added: "${notes}" — fold this in.` : '';
+  const extra = notes ? `\nThe owner added: "${notes}" — fold this in.\n` : '';
   return (
     `The owner approved. Build it for real now: make the change we agreed in the repo, keep everything ` +
-    `else exactly as it is, and open a pull request. Match the site's existing style and conventions.` +
-    extra
+    `else exactly as it is. Match the site's existing style and conventions.\n` +
+    extra +
+    `The repo is checked out at /workspace/repo — use the git CLI to commit to a new branch and push; ` +
+    `use the GitHub tools ONLY to open the pull request. Don't re-read files you just edited and don't ` +
+    `probe the environment — keep the run tight.\n` +
+    `When done, open the pull request, then on the VERY LAST line append ONLY this machine-readable ` +
+    `result (the owner never sees it):\n` +
+    `RESULT_JSON: {"summary":"<one friendly plain sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<the pull request url>"}`
   );
 }
 
