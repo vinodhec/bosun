@@ -11,7 +11,7 @@ import { extractChatTurn } from '../utils/chatbotSession.js';
 import { extractCompareTurn, renderReportHtml } from '../utils/compareSession.js';
 import { saveReportHtml } from '../utils/compareShots.js';
 import { saveMockHtml } from '../utils/mockStore.js';
-import { priceForPlanning, priceForDesign, priceForCompare, priceForChat, computeCharge } from '../utils/billing.js';
+import { priceForPlanning, priceForDesign, priceForCompare, priceForChat, chatChargeEstimateInr, computeCharge } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -485,9 +485,13 @@ export const pollSessions = onSchedule(
             }
             if (FAILED.has(status)) { await failChat(db, docSnap, task, 'agent_failed', client); continue; }
             await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            // COGS termination: kill the session the moment the running charge (slabbed brackets) would
+            // reach CHATBOT_BUDGET_INR — so a run can never bill past the ₹1500 cap. The $ fallback
+            // (maxBudgetUsd) only applies if the live FX rate can't be read. Runtime is the backstop.
+            const chRate = await getUsdToInrRate().catch(() => null);
+            const overChargeCh = chRate ? chatChargeEstimateInr(costUsd, { rate: chRate }).hardHit : (costUsd > (Number(task.maxBudgetUsd) || 5));
             const overSecCh = activeSec > (Number(task.maxSeconds) || 2400);
-            const overUsdCh = costUsd > (Number(task.maxBudgetUsd) || 5);
-            if (overSecCh || overUsdCh) {
+            if (overSecCh || overChargeCh) {
               try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
               await failChat(db, docSnap, task, overSecCh ? 'timeout' : 'over_budget', client);
             }
