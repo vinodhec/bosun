@@ -7,10 +7,11 @@ import { extractPlan } from '../utils/featurePlan.js';
 import { continueFeatureStep } from '../utils/featureRun.js';
 import { MAX_FEATURE_STEP_CHARGE_INR, FEATURE_MAX_STEPS_PER_SESSION } from '../utils/billing.js';
 import { extractDesignTurn } from '../utils/designSession.js';
+import { extractChatTurn } from '../utils/chatbotSession.js';
 import { extractCompareTurn, renderReportHtml } from '../utils/compareSession.js';
 import { saveReportHtml } from '../utils/compareShots.js';
 import { saveMockHtml } from '../utils/mockStore.js';
-import { priceForPlanning, priceForDesign, priceForCompare, computeCharge } from '../utils/billing.js';
+import { priceForPlanning, priceForDesign, priceForCompare, priceForChat, computeCharge } from '../utils/billing.js';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { fetchPrPreviewUrl, latestWorkflowRun, dispatchWorkflow, getPrHeadRef } from '../utils/github.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -257,6 +258,96 @@ async function failDesign(db, taskSnap, task, reason, client) {
   await deleteSessionFiles(client, task);
 }
 
+// ===== "Chat & build" session finalizers =====
+// A clarify turn either asks (pause for the owner) or is ready-to-build (pause for approval, with an
+// optional visual preview). The BUILD turn (after approval) opens a PR and is the ONLY charged event:
+// the whole session bills ONCE (priceForChat = 3× total COGS, capped). Failed/over-cap → never charged.
+
+// A clarify turn produced questions → show them and pause until the owner replies.
+async function finalizeChatQuestions(db, taskSnap, task, questions) {
+  await db.collection('chats').doc(task.chatId).update({
+    status: 'clarifying',
+    awaitingOwner: true,
+    turns: FieldValue.arrayUnion({ role: 'agent', text: String(questions || 'Could you tell me a little more about what you need?').slice(0, 2000), at: Date.now() }),
+    updatedAt: FieldValue.serverTimestamp(),
+  }).catch((e) => console.warn('finalizeChatQuestions', task.chatId, e?.message || e));
+  await taskSnap.ref.update({ status: 'awaiting' }); // paused; replyToChat flips it back to running
+}
+
+// A clarify turn is READY: the agent understands the request and is waiting to build. Store the plain
+// summary + an optional preview mock, and pause for the owner to approve. NEVER charged here.
+async function finalizeChatReady(db, taskSnap, task, turn) {
+  const mockUrl = turn.mockHtml ? await saveMockHtml(task.chatId, turn.mockHtml) : null; // network — before the update
+  await db.collection('chats').doc(task.chatId).update({
+    status: turn.mockHtml ? 'previewing' : 'ready_to_build',
+    awaitingOwner: true,
+    summary: turn.summary || '',
+    mockHtml: turn.mockHtml || null,
+    mockUrl: mockUrl || null,
+    turns: FieldValue.arrayUnion({ role: 'agent', text: (turn.summary || 'I know what to do — shall I go ahead?').slice(0, 2000), at: Date.now() }),
+    updatedAt: FieldValue.serverTimestamp(),
+  }).catch((e) => console.warn('finalizeChatReady', task.chatId, e?.message || e));
+  await taskSnap.ref.update({ status: 'awaiting' }); // paused; approveChatBuild flips it back to running
+}
+
+// The BUILD turn finished with a PR → charge the WHOLE session once (priceForChat, capped) and mark
+// the chat complete. Idempotent: guarded on the task still 'running'. The PR's preview URL is filled
+// later by the section-(2) preview poller (which also mirrors it onto the chat).
+async function finalizeChatBuilt(db, taskSnap, task, result, costUsd) {
+  const rate = await getUsdToInrRate();
+  const chatRef = db.collection('chats').doc(task.chatId);
+  const orgRef = db.collection('organisations').doc(task.orgId);
+  const taskRef = taskSnap.ref;
+  await db.runTransaction(async (tx) => {
+    const tSnap = await tx.get(taskRef);
+    if (!tSnap.exists || tSnap.data().status !== 'running') return; // already finalized
+    const cSnap = await tx.get(chatRef);
+    if (!cSnap.exists) return;
+    const oSnap = await tx.get(orgRef);
+    // The whole session is one deliverable: charge on its TOTAL COGS (clarify + preview + build),
+    // 3× capped at CHATBOT_BUDGET_INR. One charge, at build completion.
+    const chargeInr = priceForChat(costUsd, { rate });
+    if (chargeInr > 0) {
+      const balance = oSnap.exists ? Number(oSnap.data().balance ?? 0) : 0;
+      tx.update(orgRef, { balance: balance - chargeInr });
+      tx.set(db.collection('transactions').doc(), {
+        orgId: task.orgId, userId: task.userId, type: 'debit', amount: chargeInr,
+        chatId: task.chatId, kind: 'chatbot', createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+    tx.update(chatRef, {
+      status: 'complete',
+      awaitingOwner: false,
+      prUrl: result.prUrl || null,
+      turns: FieldValue.arrayUnion({ role: 'agent', text: (result.resultSummary || 'Done — your change is ready to preview.').slice(0, 2000), at: Date.now() }),
+      chatChargeInr: (Number(cSnap.data().chatChargeInr) || 0) + chargeInr,
+      chatCostUsd: costUsd,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Stamp revenue + COGS on the task so adminMetrics counts this business; arm the preview poller.
+    const prevFinal = Number(tSnap.data().finalCharge) || 0;
+    tx.update(taskRef, {
+      status: 'complete',
+      reviewedCostUsd: costUsd,
+      finalCharge: prevFinal + chargeInr,
+      billed: prevFinal + chargeInr > 0,
+      actualCostUsd: costUsd,
+      actualCostInr: computeCharge(costUsd, { rate }).actualCostInr,
+      prUrl: result.prUrl || null,
+      needsPreview: !!result.prUrl,
+    });
+  });
+}
+
+// A chat session failed / blew its cap → mark the chat failed. NEVER charged (same as a fix).
+async function failChat(db, taskSnap, task, reason, client) {
+  await taskSnap.ref.update({ status: 'failed', error: reason });
+  if (task.chatId) {
+    await db.collection('chats').doc(task.chatId).update({ status: 'failed', error: reason }).catch(() => {});
+  }
+  await deleteSessionFiles(client, task);
+}
+
 // Structured per-round usage line for Cloud Logging. The optimisation dashboard: token
 // breakdown, cache-hit ratio, and the THIS-round split (cumulative minus what prior rounds
 // already accounted for). Emitted only on a terminal transition so there's one clean line
@@ -363,6 +454,42 @@ export const pollSessions = onSchedule(
             if (overSecC || overUsdC) {
               try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
               await failCompare(db, docSnap, task, overSecC ? 'timeout' : 'over_budget', client);
+            }
+            continue;
+          }
+
+          // Chat & build sessions are multi-turn AND terminal: while clarifying, a turn either asks
+          // (pause) or is ready-to-build (pause for approval, optional preview); once the owner approves
+          // (chat.status 'building'), the DONE turn is the real build (a PR) — charge the whole session
+          // ONCE. Same cumulative cap guards; a runaway is terminated and never charged.
+          if (task.kind === 'chatbot') {
+            if (DONE.has(status)) {
+              const chatSnap = await db.collection('chats').doc(task.chatId).get();
+              const chatStatus = chatSnap.exists ? chatSnap.data().status : '';
+              if (chatStatus === 'building') {
+                logAgentUsage('done', docSnap.id, task, bd, roundUsd, roundSec);
+                const result = await extractResult(client, task.sessionId);
+                if (result.prUrl) {
+                  await finalizeChatBuilt(db, docSnap, task, result, costUsd);
+                  await deleteSessionFiles(client, task);
+                } else {
+                  // Build turn finished without a PR — treat as a failure (never charged), don't loop.
+                  await failChat(db, docSnap, task, 'no_pr', client);
+                }
+              } else {
+                const turn = await extractChatTurn(client, task.sessionId);
+                if (turn.mode === 'ready') await finalizeChatReady(db, docSnap, task, turn);
+                else await finalizeChatQuestions(db, docSnap, task, turn.questions);
+              }
+              continue;
+            }
+            if (FAILED.has(status)) { await failChat(db, docSnap, task, 'agent_failed', client); continue; }
+            await docSnap.ref.update({ liveCostUsd: costUsd, liveActiveSeconds: activeSec, liveUpdatedAt: FieldValue.serverTimestamp() });
+            const overSecCh = activeSec > (Number(task.maxSeconds) || 2400);
+            const overUsdCh = costUsd > (Number(task.maxBudgetUsd) || 5);
+            if (overSecCh || overUsdCh) {
+              try { await client.beta.sessions.cancel(task.sessionId); } catch { /* best-effort */ }
+              await failChat(db, docSnap, task, overSecCh ? 'timeout' : 'over_budget', client);
             }
             continue;
           }
@@ -510,6 +637,8 @@ export const pollSessions = onSchedule(
         const tries = (t.previewTries || 0) + 1;
         if (url) {
           await docSnap.ref.update({ previewUrl: url, needsPreview: false });
+          // Chat & build: surface the live preview on the chat card (the customer never sees the PR).
+          if (t.chatId) await db.collection('chats').doc(t.chatId).update({ previewUrl: url }).catch(() => {});
         } else {
           await docSnap.ref.update({ previewTries: tries, needsPreview: tries < MAX_PREVIEW_TRIES });
         }

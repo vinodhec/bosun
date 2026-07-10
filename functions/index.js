@@ -16,6 +16,7 @@ export { planDesign, replyToClarify, refineMockup, approveDesign, listMyDesigns,
 // Size up the competition → code-aware comparison vs competitors, a two-sided scorecard + scoped
 // actions that route into Fix / Design / Plan. Clarify-first; charged when the report is ready.
 export { startComparison, replyToComparison, refineComparison, listMyComparisons } from './handlers/compareTasks.js';
+export { startChat, replyToChat, approveChatBuild, getChatMockHtml, listMyChats } from './handlers/chatbotTasks.js';
 
 // Operator-only admin callables — credits live at the organisation level.
 export {

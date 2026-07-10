@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrgs } from '../hooks/useOrgs.js';
-import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, editFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, startComparison, listMyComparisons, setActiveOrg, shareSession, unshareSession, shareFeature, unshareFeature } from '../firebase/functions.js';
+import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, editFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, startComparison, listMyComparisons, startChat, listMyChats, setActiveOrg, shareSession, unshareSession, shareFeature, unshareFeature } from '../firebase/functions.js';
 import { useLocation } from 'react-router-dom';
 import Navbar from '../components/Navbar.jsx';
 import ShareControl from '../components/ShareControl.jsx';
@@ -9,6 +9,7 @@ import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import IdealPromptTip from '../components/IdealPromptTip.jsx';
 import DesignCard from '../components/DesignCard.jsx';
 import ComparisonCard from '../components/ComparisonCard.jsx';
+import ChatCard from '../components/ChatCard.jsx';
 import Leaderboard from '../components/Leaderboard.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
@@ -83,6 +84,7 @@ export default function Dashboard() {
   const [features, setFeatures] = useState(null);
   const [designs, setDesigns] = useState(null);
   const [comparisons, setComparisons] = useState(null);
+  const [chats, setChats] = useState(null);
   // Cross-tab navigation: an approved design hands off to a feature (and links back). `focus` switches
   // the tab and remembers which card to scroll to + briefly highlight.
   const [focus, setFocus] = useState(null); // { mode, id }
@@ -130,15 +132,24 @@ export default function Dashboard() {
       setComparisons((prev) => prev ?? []);
     }
   }, [orgId]);
+  const refreshChats = useCallback(async (oid = orgId) => {
+    if (!oid) { setChats([]); return; }
+    try {
+      const { data } = await listMyChats({ orgId: oid });
+      setChats(data?.chats ?? []);
+    } catch {
+      setChats((prev) => prev ?? []);
+    }
+  }, [orgId]);
   const refreshAll = useCallback(async (oid = orgId) => {
-    await Promise.all([refresh(oid), refreshFeatures(oid), refreshDesigns(oid), refreshComparisons(oid)]);
-  }, [refresh, refreshFeatures, refreshDesigns, refreshComparisons, orgId]);
+    await Promise.all([refresh(oid), refreshFeatures(oid), refreshDesigns(oid), refreshComparisons(oid), refreshChats(oid)]);
+  }, [refresh, refreshFeatures, refreshDesigns, refreshComparisons, refreshChats, orgId]);
 
   // Switch the active org: optimistic local select, clear the lists, persist the choice, reload.
   const switchOrg = useCallback(async (id) => {
     if (!id || id === orgId) return;
     setSelectedOrgId(id);
-    setSessions(null); setFeatures(null); setDesigns(null); setComparisons(null);
+    setSessions(null); setFeatures(null); setDesigns(null); setComparisons(null); setChats(null);
     try { await setActiveOrg({ orgId: id }); } catch { /* selection still applies locally */ }
     refreshAll(id);
   }, [orgId, refreshAll]);
@@ -158,6 +169,9 @@ export default function Dashboard() {
       setDesigns((prev) => { if (prev?.some((d) => d.status === 'clarifying' && !d.awaitingOwner)) live = true; return prev; });
       // A comparison is live only while the agent is analysing (not while waiting on the owner).
       setComparisons((prev) => { if (prev?.some((c) => c.status === 'analysing' && !c.awaitingOwner)) live = true; return prev; });
+      // A chat is live while the agent is working a turn (not awaiting the owner) or building, and
+      // while a just-built change is waiting for its preview link.
+      setChats((prev) => { if (prev?.some((c) => (c.status === 'clarifying' && !c.awaitingOwner) || c.status === 'building' || (c.status === 'complete' && !c.previewUrl))) live = true; return prev; });
       if (live) refreshAll();
     }, 4000);
     return () => clearInterval(id);
@@ -238,7 +252,25 @@ export default function Dashboard() {
       setBusy(false);
     }
   };
-  const onSubmit = mode === 'feature' ? onPlan : mode === 'design' ? onDesign : mode === 'compare' ? onCompare : onFix;
+  const onChat = async () => {
+    if (!problem.trim()) return;
+    setBusy(true); setErr('');
+    try {
+      await startChat({
+        orgId,
+        prompt: problem.trim(),
+        images: images.map((i) => ({ mediaType: i.mediaType, data: i.data })),
+        documents: documents.map((d) => ({ name: d.name, text: d.text })),
+      });
+      setProblem(''); resetImages(); resetDocs();
+      await refreshAll();
+    } catch (e) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const onSubmit = mode === 'chat' ? onChat : mode === 'feature' ? onPlan : mode === 'design' ? onDesign : mode === 'compare' ? onCompare : onFix;
 
   // Act on a comparison finding → route it into the matching tool, prefilled, then jump to that tab.
   const routeFinding = useCallback(async (scope, text) => {
@@ -306,6 +338,9 @@ export default function Dashboard() {
 
           <section className="card p-5 sm:p-6">
             <div className="mb-5 tab-group">
+              <button type="button" onClick={() => { setMode('chat'); setErr(''); }} className={tabCls(mode === 'chat')}>
+                Chat &amp; build
+              </button>
               <button type="button" onClick={() => { setMode('fix'); setErr(''); }} className={tabCls(mode === 'fix')}>
                 Fix something
               </button>
@@ -321,10 +356,11 @@ export default function Dashboard() {
             </div>
 
             <h1 className="text-xl font-bold tracking-tight text-ink">
-              {mode === 'feature' ? 'What would you like to add to your website?'
-                : mode === 'design' ? 'What screen would you like us to design?'
-                  : mode === 'compare' ? 'Who would you like to compare against?'
-                    : 'What’s broken on your website?'}
+              {mode === 'chat' ? 'What would you like to change or add?'
+                : mode === 'feature' ? 'What would you like to add to your website?'
+                  : mode === 'design' ? 'What screen would you like us to design?'
+                    : mode === 'compare' ? 'Who would you like to compare against?'
+                      : 'What’s broken on your website?'}
             </h1>
             {connected && (
               <p className="mt-1 text-sm text-ink-soft">
@@ -335,13 +371,15 @@ export default function Dashboard() {
               <ScreenshotComposer
                 value={problem}
                 onChange={setProblem}
-                placeholder={mode === 'feature'
-                  ? 'Example: Let customers book an appointment and get an email confirmation'
-                  : mode === 'design'
-                    ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
-                    : mode === 'compare'
-                      ? 'Example: Compare us to our main competitors — paste their website links'
-                      : 'Example: My menu disappears on mobile phone'}
+                placeholder={mode === 'chat'
+                  ? 'Example: Add a “Pin to top” button on my properties page — tell me what you need and I’ll ask anything I’m unsure about'
+                  : mode === 'feature'
+                    ? 'Example: Let customers book an appointment and get an email confirmation'
+                    : mode === 'design'
+                      ? 'Example: A Contact Us page with a short intro and a simple enquiry form'
+                      : mode === 'compare'
+                        ? 'Example: Compare us to our main competitors — paste their website links'
+                        : 'Example: My menu disappears on mobile phone'}
                 images={images}
                 imgErr={imgErr}
                 dragging={dragging}
@@ -389,15 +427,17 @@ export default function Dashboard() {
                 className="btn btn-primary w-full sm:w-auto"
               >
                 {busy
-                  ? (mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
-                  : (mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
+                  ? (mode === 'chat' ? 'Starting…' : mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
+                  : (mode === 'chat' ? 'Start Chat →' : mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
               </button>
               {connected ? null : (
                 <span className="text-sm text-ink-soft">Connect a repository to start.</span>
               )}
             </div>
             <p className="mt-3 text-sm text-ink-soft">
-              {mode === 'feature'
+              {mode === 'chat'
+                ? 'Tell us what you need in plain words. We’ll ask anything we’re unsure about — a screenshot, a page link or a recording all help — and can show you a preview first. You’re only charged once, after you approve and the change is made.'
+                : mode === 'feature'
                 ? 'We’ll look at your website and your design, then show you a plan to approve before anything is built. There’s a small charge to plan it; then you pay for each step as it’s done.'
                 : mode === 'design'
                   ? 'We’ll ask a couple of quick questions, then show you how your screen will look — on your real site — before anything is built. There’s a small charge to design it; the build is priced separately when you approve.'
@@ -408,7 +448,17 @@ export default function Dashboard() {
           </section>
 
           {/* Each tab shows only its own list, so what's below stays relevant to what you're doing:
-            Design a screen → your designs · Plan a feature → your features · Fix something → fixes. */}
+            Chat & build → your chats · Design a screen → your designs · Plan a feature → your features · Fix something → fixes. */}
+          {mode === 'chat' && Array.isArray(chats) && chats.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="section-label">Your chats</h2>
+              {chats.map((c) => (
+                <div key={c.id} ref={focus?.mode === 'chat' && focus.id === c.id ? focusRef : null}>
+                  <ChatCard chat={c} onChanged={refreshAll} />
+                </div>
+              ))}
+            </section>
+          )}
           {mode === 'design' && Array.isArray(designs) && designs.length > 0 && (
             <section className="space-y-3">
               <h2 className="section-label">Your designs</h2>

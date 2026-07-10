@@ -52,6 +52,14 @@ export const replyToComparison = httpsCallable(functions, 'replyToComparison');
 export const refineComparison = httpsCallable(functions, 'refineComparison');
 export const listMyComparisons = httpsCallable(functions, 'listMyComparisons');
 
+// "Chat & build": one warm session that clarifies (asking for a screenshot / page link / recording /
+// design when it helps) then builds the change on approval — all in one thread. Charged once, on build.
+export const startChat = httpsCallable(functions, 'startChat');
+export const replyToChat = httpsCallable(functions, 'replyToChat');
+export const approveChatBuild = httpsCallable(functions, 'approveChatBuild');
+export const getChatMockHtml = httpsCallable(functions, 'getChatMockHtml');
+export const listMyChats = httpsCallable(functions, 'listMyChats');
+
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
 export const adminAddCredits = httpsCallable(functions, 'adminAddCredits');

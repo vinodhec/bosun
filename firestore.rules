@@ -79,6 +79,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Chats — a "chat & build" session: the clarify chat, an optional preview mock, and (after the
+    // owner approves) the built change. Owner-read; all writes backend-only (the session finalizer
+    // debits the wallet ONCE on build completion). The customer UI reads chats via the listMyChats
+    // callable, not directly.
+    match /chats/{chatId} {
+      allow read:  if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Transactions (credits/debits ledger) — org-scoped read; backend-only writes.
     match /transactions/{txnId} {
       allow read:  if memberOf(resource.data.orgId);

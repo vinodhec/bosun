@@ -204,6 +204,43 @@ export function priceForCompare(costUsd, { rate = DEFAULT_USD_TO_INR, isRefine =
 }
 
 /**
+ * "Chat & build" pricing (the assistant tab). ONE warm session clarifies with the owner — asking for
+ * a screenshot / page link / Jam recording / Figma link so it never explores blind — then, once the
+ * owner approves, builds the change and opens a PR in the SAME session. The whole session is one
+ * deliverable, so there is ONE charge at build completion: a flat CHAT_MULTIPLIER × the session's
+ * TOTAL actual COGS (inflated by Anthropic GST — the clarify turns are part of that cost, by design),
+ * rounded UP, clamped to CHATBOT_BUDGET_INR. No per-turn charge: clarify + optional preview are never
+ * billed on their own, and a chat the owner abandons before approving a build is never charged at all
+ * (the same COGS exposure planning already carries).
+ *
+ * Two budget rails, both expressed against the customer CHARGE:
+ *   - CHATBOT_BUDGET_INR (hard)  the charge ceiling; the poller also terminates the session at the
+ *                                COGS that maps to it (maxBudgetUsd), so a run can't bill past it.
+ *   - CHATBOT_SOFT_INR   (soft)  once the running charge estimate crosses this, the handler stops
+ *                                accepting new owner turns (~₹200 headroom left to finish the build).
+ * Tune the multiplier + rails here and nowhere else.
+ */
+export const CHAT_MULTIPLIER = FEATURE_STEP_MULTIPLIER; // 3× — consistent with the build pipeline it feeds
+export const CHATBOT_BUDGET_INR = 1500;
+export const CHATBOT_SOFT_INR = 1300;
+export function priceForChat(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  const raw = Math.ceil(usdToInr(effectiveUsd, rate) * CHAT_MULTIPLIER);
+  return Math.min(raw, CHATBOT_BUDGET_INR);
+}
+
+/**
+ * Running CHARGE estimate for an in-flight chat, used only for the soft/hard rails (not billed).
+ * Same math as priceForChat but returns the raw (uncapped) figure too so the handler can tell
+ * "approaching the cap" from "already at it".
+ */
+export function chatChargeEstimateInr(costUsd, { rate = DEFAULT_USD_TO_INR } = {}) {
+  const effectiveUsd = Math.max(0, Number(costUsd) || 0) * (1 + ANTHROPIC_GST_RATE);
+  const raw = Math.ceil(usdToInr(effectiveUsd, rate) * CHAT_MULTIPLIER);
+  return { raw, capped: Math.min(raw, CHATBOT_BUDGET_INR), softHit: raw >= CHATBOT_SOFT_INR, hardHit: raw >= CHATBOT_BUDGET_INR };
+}
+
+/**
  * Canonical charge for a completed task.
  * @param {number} actualCostUsd  cost reported by the agent run
  * @param {{rate?: number}} [opts]

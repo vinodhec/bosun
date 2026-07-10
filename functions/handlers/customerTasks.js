@@ -44,12 +44,12 @@ export const listMySessions = onCall({ region: 'asia-south1' }, async (request) 
     .get();
 
   return {
-    // Feature steps, design builds AND comparison sessions are filtered out here — they belong to a
-    // feature/design/comparison and are shown inside that card (listMyFeatures / listMyDesigns /
-    // listMyComparisons), never as standalone fixes. sessionView is the shared task → safe-view
-    // projection used by all of them.
+    // Feature steps, design builds, comparison AND chat sessions are filtered out here — they belong
+    // to a feature/design/comparison/chat and are shown inside that card (listMyFeatures /
+    // listMyDesigns / listMyComparisons / listMyChats), never as standalone fixes. sessionView is the
+    // shared task → safe-view projection used by all of them.
     sessions: snap.docs
-      .filter((d) => !d.data().featureId && !d.data().designId && !d.data().comparisonId)
+      .filter((d) => !d.data().featureId && !d.data().designId && !d.data().comparisonId && !d.data().chatId)
       .map((d) => sessionView(d.data(), d.id, { userCanDeployProd, deploy })),
   };
 });
