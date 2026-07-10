@@ -16,7 +16,7 @@
 // chats/{id}.status: clarifying → (ready_to_build | previewing) → building → complete (failed on a bad session).
 
 import { startFixSession, continueFixSession } from './claudeAgent.js';
-import { extractJamUrl } from './agentResult.js';
+import { extractJamUrl, BUILD_EFFICIENCY } from './agentResult.js';
 
 export const MAX_CLARIFY_TURNS = 6; // owner replies that resume the chat before we nudge toward a build
 
@@ -97,19 +97,16 @@ export function buildChatReply(answer, imageCount = 0) {
 
 // The continue text when the owner APPROVES the build (same session, which already holds the whole
 // conversation + the agreed plan). NOW the agent actually implements it and opens a PR — a normal fix.
-// Efficiency notes fold in the session's own review: the repo is checked out locally, so use the git
-// CLI for commits/pushes and the GitHub tools ONLY to open the PR (avoids the duplicate-fetch pattern);
-// don't re-read files just edited or probe the environment. The RESULT_JSON line is REQUIRED — the
-// poller reads prUrl from it (a missing line makes a real PR look like a failed run).
+// Shares BUILD_EFFICIENCY (git CLI, fewest edits, git-diff verify, no npm/lint, no env probe) with the
+// fix/feature pipeline. The RESULT_JSON line is REQUIRED — the poller reads prUrl from it (a missing
+// line makes a real PR look like a failed run).
 export function buildChatBuildInstruction(notes = '') {
   const extra = notes ? `\nThe owner added: "${notes}" — fold this in.\n` : '';
   return (
     `The owner approved. Build it for real now: make the change we agreed in the repo, keep everything ` +
     `else exactly as it is. Match the site's existing style and conventions.\n` +
     extra +
-    `The repo is checked out at /workspace/repo — use the git CLI to commit to a new branch and push; ` +
-    `use the GitHub tools ONLY to open the pull request. Don't re-read files you just edited and don't ` +
-    `probe the environment — keep the run tight.\n` +
+    `${BUILD_EFFICIENCY} Commit to a NEW branch and open the pull request.\n` +
     `When done, open the pull request, then on the VERY LAST line append ONLY this machine-readable ` +
     `result (the owner never sees it):\n` +
     `RESULT_JSON: {"summary":"<one friendly plain sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<the pull request url>"}`

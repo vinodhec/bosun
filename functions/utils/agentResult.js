@@ -22,6 +22,17 @@ export const MODEL_PRICES = {
   haiku:  { input: 1,  output: 5,  cacheRead: 0.1, cacheWrite5m: 1.25,  cacheWrite1h: 2  },
 };
 
+// Shared build-efficiency guidance appended to every build instruction (fix, revision, feature
+// step, design build, chatbot). Every line is a COGS or latency saver surfaced by session
+// self-reviews — keep them here so the wording can't drift across the prompts that reuse it.
+export const BUILD_EFFICIENCY =
+  `The repo is checked out locally at /workspace/repo — use the git CLI to commit and push; use the ` +
+  `GitHub tools ONLY to open the pull request. Never re-fetch a file through the GitHub API (it's ` +
+  `already local and git handles SHAs) and don't re-read a file you already read. When you edit, ` +
+  `make the FEWEST, largest edits rather than many small ones. Verify a change with \`git diff\`, ` +
+  `not by re-reading the whole file. Do NOT run npm install, builds, or linters (the sandbox has no ` +
+  `node_modules — they only waste time and fail), and don't probe the environment.`;
+
 /** Map a managed-agent model id to a price family ('opus'|'sonnet'|'haiku'), or null if unknown. */
 export function modelFamily(modelId) {
   const id = String(modelId || '').toLowerCase();
@@ -262,10 +273,7 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], fig
     `If you had to discover something AGENTS.md should have told you (where a page lives, the ` +
     `project's auth/data/styling pattern), append a one-or-two-line note about it to AGENTS.md in ` +
     `the same pull request so the next change is faster. ` +
-    `The repo is checked out locally at /workspace/repo — use the git CLI to commit to a new branch ` +
-    `and push; use the GitHub tools ONLY to open the pull request. Do NOT re-fetch a file through the ` +
-    `GitHub API to get its SHA (the files are already local — git handles that), and don't probe the ` +
-    `environment. Keep the pull request description ` +
+    `${BUILD_EFFICIENCY} Commit to a NEW branch and open the pull request. Keep the pull request description ` +
     `SHORT — two to four plain sentences on what changed and why; no headings, checklists, or ` +
     `file-by-file breakdowns.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
@@ -290,9 +298,8 @@ export function buildRevisePrompt(changes, imageCount = 0, figmaDesign = null) {
     screenshotNote +
     jamNote(changes) +
     figmaNote(figmaDesign) +
-    `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
-    `do NOT open a new one. Make the smallest safe change, then commit and push with the git CLI (the repo is ` +
-    `local at /workspace/repo — don't re-fetch files through the GitHub API for a SHA). ` +
+    `Continue in this SAME session. Apply the smallest safe change to the SAME branch and UPDATE the existing ` +
+    `pull request — do NOT open a new one. ${BUILD_EFFICIENCY} ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
