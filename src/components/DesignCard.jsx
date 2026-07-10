@@ -2,6 +2,7 @@ import { useState, lazy, Suspense } from 'react';
 import { replyToClarify, approveDesign, refineMockup, shareDesign, unshareDesign } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
+import RichText from './RichText.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 
 // The markup tool pulls in the screenshot + drawing libraries (fabric, snapDOM) — load them only
@@ -80,7 +81,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
           {turns.map((t, i) => (
             <div key={i} className={t.role === 'owner' ? 'flex justify-end' : 'flex justify-start'}>
               <div className={t.role === 'owner' ? 'bubble-owner' : 'bubble-agent'}>
-                {t.text}
+                <RichText text={t.text} />
               </div>
             </div>
           ))}

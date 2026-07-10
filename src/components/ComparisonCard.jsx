@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { replyToComparison, refineComparison } from '../firebase/functions.js';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
+import RichText from './RichText.jsx';
 import { formatINR } from '@shared/currency.js';
 
 // One "Size up the competition" card — the clarify chat, then a two-sided scorecard (where rivals beat
@@ -60,8 +61,8 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
         <div className="mt-3 space-y-2">
           {turns.map((t, i) => (
             <div key={i} className={t.role === 'owner' ? 'flex justify-end' : 'flex justify-start'}>
-              <div className={t.role === 'owner' ? 'bubble-owner whitespace-pre-wrap' : 'bubble-agent whitespace-pre-wrap'}>
-                {t.text}
+              <div className={t.role === 'owner' ? 'bubble-owner' : 'bubble-agent'}>
+                <RichText text={t.text} />
               </div>
             </div>
           ))}
