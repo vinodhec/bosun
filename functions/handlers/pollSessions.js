@@ -2,7 +2,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import Anthropic from '@anthropic-ai/sdk';
 import { markRoundReady, markRoundFailure, chargeCiRun } from '../utils/finalize.js';
-import { usageBreakdown, extractResult } from '../utils/agentResult.js';
+import { usageBreakdown, extractResult, usageFromEvents } from '../utils/agentResult.js';
 import { extractPlan } from '../utils/featurePlan.js';
 import { continueFeatureStep } from '../utils/featureRun.js';
 import { MAX_FEATURE_STEP_CHARGE_INR, FEATURE_MAX_STEPS_PER_SESSION } from '../utils/billing.js';
@@ -391,9 +391,18 @@ export const pollSessions = onSchedule(
         try {
           const session = await client.beta.sessions.retrieve(task.sessionId);
           const bd = usageBreakdown(session); // one parse: cost + token/cache observability
-          const costUsd = bd.totalUsd; // cumulative across rounds
+          let costUsd = bd.totalUsd; // cumulative across rounds (session.usage — can lag low)
           const activeSec = bd.runtimeSec;
           const status = String(session?.status || '');
+          // On a terminal turn we BILL, so read the AUTHORITATIVE cost by summing the per-request
+          // model_usage from span.model_request_end events (matches the Console). session.usage is a
+          // rollup that lags low and was under-charging real builds; the events are final. Mid-flight
+          // polls keep the cheap session.usage read for the cap guards. Never lower the figure — only
+          // correct it upward — so a partial event list can't reduce a charge.
+          if (DONE.has(status)) {
+            const ev = await usageFromEvents(client, task.sessionId, { family: bd.family, runtimeSec: activeSec });
+            if (ev && ev.totalUsd > costUsd) costUsd = ev.totalUsd;
+          }
           // THIS round's split, used for both the cap checks below and the usage log.
           const roundUsd = costUsd - (Number(task.reviewedCostUsd) || 0);
           const roundSec = activeSec - (Number(task.reviewedSeconds) || 0);

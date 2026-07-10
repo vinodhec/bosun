@@ -98,6 +98,47 @@ export function sessionCostUsd(session) {
   return usageBreakdown(session).totalUsd;
 }
 
+/**
+ * AUTHORITATIVE token cost, summed from the per-request `model_usage` on every
+ * `span.model_request_end` event — the same figures the Console reports. Use this to BILL:
+ * `session.usage` is a rollup that can lag low for minutes while tokens burn (it under-charged
+ * real builds), whereas the model_request_end events are final and complete. Cache-creation is
+ * priced at the 5-minute ephemeral rate (managed agents use 5m cache writes), matching the
+ * Console's cache-creation line. Returns null on any failure so callers fall back to session.usage.
+ * `family` should be the session's price family (from usageBreakdown); `runtimeSec` is added at
+ * the session-hour rate, same as usageBreakdown.
+ */
+export async function usageFromEvents(client, sessionId, { family = 'opus', runtimeSec = 0 } = {}) {
+  const price = MODEL_PRICES[family] || MODEL_PRICES.opus;
+  let input = 0, output = 0, cacheRead = 0, cacheCreation = 0, seen = 0;
+  try {
+    const res = await client.beta.sessions.events.list(sessionId);
+    const events = res?.data ?? res?.body?.data ?? (Array.isArray(res) ? res : []);
+    for (const ev of events) {
+      if (ev?.type === 'span.model_request_end' && ev.model_usage) {
+        const m = ev.model_usage;
+        input += Number(m.input_tokens) || 0;
+        output += Number(m.output_tokens) || 0;
+        cacheRead += Number(m.cache_read_input_tokens) || 0;
+        cacheCreation += Number(m.cache_creation_input_tokens) || 0;
+        seen += 1;
+      }
+    }
+  } catch (e) {
+    console.warn('usageFromEvents', sessionId, e?.message || e);
+    return null;
+  }
+  if (!seen) return null; // no model_request_end events yet — let the caller keep session.usage
+  const tokenUsd =
+    (input * price.input +
+      output * price.output +
+      cacheRead * price.cacheRead +
+      cacheCreation * price.cacheWrite5m) /
+    1e6;
+  const runtimeUsd = (Number(runtimeSec) || 0) / 3600 * sessionHourUsd();
+  return { input, output, cacheRead, cacheCreation, requests: seen, tokenUsd, runtimeUsd, totalUsd: tokenUsd + runtimeUsd };
+}
+
 // A jam.dev share link the owner pasted into their problem text. Jam captures the bug with the
 // console errors, failed network requests, and exact repro steps already attached — far richer
 // than prose — so when one is present we point the agent at it via the jam MCP tools.
@@ -221,7 +262,10 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], fig
     `If you had to discover something AGENTS.md should have told you (where a page lives, the ` +
     `project's auth/data/styling pattern), append a one-or-two-line note about it to AGENTS.md in ` +
     `the same pull request so the next change is faster. ` +
-    `Commit to a new branch, push it, and open a pull request. Keep the pull request description ` +
+    `The repo is checked out locally at /workspace/repo — use the git CLI to commit to a new branch ` +
+    `and push; use the GitHub tools ONLY to open the pull request. Do NOT re-fetch a file through the ` +
+    `GitHub API to get its SHA (the files are already local — git handles that), and don't probe the ` +
+    `environment. Keep the pull request description ` +
     `SHORT — two to four plain sentences on what changed and why; no headings, checklists, or ` +
     `file-by-file breakdowns.\n\n` +
     `Then reply with a short, friendly, plain-English summary (no technical jargon). ` +
@@ -247,7 +291,8 @@ export function buildRevisePrompt(changes, imageCount = 0, figmaDesign = null) {
     jamNote(changes) +
     figmaNote(figmaDesign) +
     `Continue in this SAME session. Apply the changes to the SAME branch and UPDATE the existing pull request — ` +
-    `do NOT open a new one. Make the smallest safe change, commit, and push to the same branch. ` +
+    `do NOT open a new one. Make the smallest safe change, then commit and push with the git CLI (the repo is ` +
+    `local at /workspace/repo — don't re-fetch files through the GitHub API for a SHA). ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +
     `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
     `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +

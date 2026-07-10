@@ -61,7 +61,8 @@ function buildAgentPrompt(feature, stepIndex, { sameSession = false } = {}) {
       `Good — that step is done. Now do step ${stepIndex + 1} of ${total} of the same feature ` +
       `(the full plan is in the first message):\n${body}\n\n` +
       `Continue in THIS session, building on the steps you just completed. Keep working on the SAME ` +
-      `branch and UPDATE the same pull request — do NOT open a new one.\n` +
+      `branch and UPDATE the same pull request — do NOT open a new one. Commit and push with the git ` +
+      `CLI (the repo is local — don't re-fetch files through the GitHub API for a SHA).\n` +
       `If you already built part or all of this step while completing the earlier ones, do NOT redo ` +
       `or re-explore it — quickly confirm it's in place and say so in your summary.\n\n` +
       `When done, reply with a short friendly summary and append the same RESULT_JSON last line as ` +
