@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { replyToChat, approveChatBuild } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
+import RichText from './RichText.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 
 // One "Chat & build" card — the whole thing in a single thread: the back-and-forth where we work out
@@ -49,7 +50,7 @@ export default function ChatCard({ chat: c, onChanged }) {
         <div className="mt-3 space-y-2">
           {turns.map((t, i) => (
             <div key={i} className={t.role === 'owner' ? 'flex justify-end' : 'flex justify-start'}>
-              <div className={t.role === 'owner' ? 'bubble-owner' : 'bubble-agent'}>{t.text}</div>
+              <div className={t.role === 'owner' ? 'bubble-owner' : 'bubble-agent'}><RichText text={t.text} /></div>
             </div>
           ))}
         </div>
