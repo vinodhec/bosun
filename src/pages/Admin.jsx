@@ -21,6 +21,7 @@ import {
   adminListTasks,
   adminListFeatures,
   adminListDesigns,
+  adminListChats,
   adminMetrics,
   confirmQuote,
   approveFix,
@@ -1044,6 +1045,121 @@ function Designs({ orgs }) {
   );
 }
 
+// Plain-English lifecycle labels for a "Chat & build" session + the badge tones.
+const CHAT_STATUS = {
+  clarifying: 'Clarifying…',
+  ready_to_build: 'Ready to build',
+  previewing: 'Previewing mock',
+  building: 'Building',
+  complete: 'Complete ✅',
+  failed: 'Failed',
+};
+const CHAT_TONE = {
+  clarifying: 'bg-blue-50 text-blue-700',
+  ready_to_build: 'bg-amber-50 text-amber-700',
+  previewing: 'bg-amber-50 text-amber-700',
+  building: 'bg-blue-50 text-blue-700',
+  complete: 'bg-green-50 text-green-700',
+  failed: 'bg-rose-50 text-rose-700',
+};
+
+// "Chat & build" — its OWN group in the admin, separate from the raw fix Sessions list (mirrors
+// Plan a feature / Design a screen). Pick an org (or all). Each chat is one warm session that
+// clarifies then builds, billed ONCE when the build completes. Shows the lifecycle, the single
+// charge + COGS/margin, and — operator-only — the session trace + PR + mock + preview links.
+function Chats({ orgs }) {
+  const [orgId, setOrgId] = useState(''); // '' = not yet selected
+  const [chats, setChats] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const orgName = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+
+  const load = async (id) => {
+    if (!id) return;
+    setBusy(true); setErr('');
+    try {
+      const { data } = await adminListChats(id === '*' ? {} : { orgId: id });
+      setChats(data.chats || []);
+    } catch (e) {
+      console.error('adminListChats failed:', e);
+      setErr(`Failed to load chats.${e?.message ? ` (${e.message})` : ''}`);
+    }
+    finally { setBusy(false); }
+  };
+
+  // Refresh while anything is mid-flight so the breakdown tracks the poller's per-minute snapshots.
+  useEffect(() => {
+    const inFlight = chats.some((c) => ['clarifying', 'building', 'previewing'].includes(c.status));
+    if (!inFlight) return undefined;
+    const t = setInterval(() => load(orgId), 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats, orgId]);
+
+  const pick = (id) => { setOrgId(id); load(id); };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-ink">Chat &amp; build</h2>
+        <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+          disabled={busy} onClick={() => load(orgId)}>Refresh</button>
+      </div>
+      <p className="text-xs text-ink-soft">
+        One warm session that chats to clarify, then builds. The whole session is billed once (3× its
+        own cost, capped) when the build completes — nothing before then.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="">Select organisation…</option>
+        <option value="*">All organisations</option>
+        {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+      </select>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {busy && chats.length === 0 && <p className="text-sm text-ink-soft">Loading…</p>}
+      {!busy && orgId && chats.length === 0 && <p className="text-sm text-ink-soft">No chats yet.</p>}
+
+      <ul className="space-y-3">
+        {chats.map((c) => (
+          <li key={c.id} className="rounded-xl border border-line p-3">
+            <div className="flex items-start justify-between gap-3">
+              <span className="font-medium text-ink">{c.prompt}</span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${CHAT_TONE[c.status] || 'bg-slate-100 text-slate-600'}`}>
+                {CHAT_STATUS[c.status] || c.status}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-ink-soft">
+              {orgId === '*' && c.orgId ? `${orgName[c.orgId] || c.orgId} · ` : ''}
+              {c.createdAt ? new Date(c.createdAt).toLocaleString('en-IN') : ''}
+              {c.userEmail ? ` · ${c.userEmail}` : ''}
+              {c.turnCount ? ` · ${c.turnCount} message${c.turnCount === 1 ? '' : 's'}` : ''}
+            </div>
+            {c.summary && <p className="mt-1 text-xs text-ink-soft">{c.summary}</p>}
+            {c.error && <p className="mt-1 text-xs text-bad">error: {c.error}</p>}
+
+            {/* The single charge + its COGS/margin (billed once, at build completion). */}
+            <div className="mt-2 rounded-lg bg-canvas/50 p-2">
+              <MarginLine label="Total" paidInr={c.paidInr} costInr={c.costInr} />
+              <div className="mt-1 text-[11px] text-ink-soft">
+                cost <span className="font-semibold text-ink">{inrPrecise(c.costInr)}</span>
+                {' '}({fmtUSD(c.costUsd)})
+              </div>
+            </div>
+
+            {(c.prUrl || c.previewUrl || c.mockUrl || c.sessionUrl) && (
+              <div className="mt-2 flex gap-3 text-xs">
+                {c.prUrl && <a href={c.prUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">PR →</a>}
+                {c.previewUrl && <a href={c.previewUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Preview →</a>}
+                {c.mockUrl && <a href={c.mockUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Mock →</a>}
+                {c.sessionUrl && <a href={c.sessionUrl} target="_blank" rel="noreferrer" className="font-semibold text-brand-600">Session →</a>}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function Admin() {
   const [orgs, setOrgs] = useState([]);
   const [metrics, setMetrics] = useState(null);
@@ -1361,6 +1477,8 @@ export default function Admin() {
         <Features orgs={orgs} />
 
         <Designs orgs={orgs} />
+
+        <Chats orgs={orgs} />
 
         <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
           <div className="flex items-center justify-between gap-3">

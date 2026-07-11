@@ -392,6 +392,10 @@ export async function markRoundFailure(taskId, { error, actualCostUsd } = {}) {
       actualCostUsd: costUsd,
       actualCostInr: costInr,
       completedAt: FieldValue.serverTimestamp(),
+      // `session.usage` (and the events, right after a mid-request cancel) can read low for a
+      // minute or two, so this figure may under-record the loss. Flag it for reconcileFailedCosts
+      // to re-read once the session settles and correct the COGS upward. (Cleared to `true` there.)
+      costReconciled: false,
     });
     logBillingEvent('failed', {
       taskId, orgId: task.orgId, complexity: task.complexity || null,

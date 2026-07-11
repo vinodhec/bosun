@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 
-const PROJECT = 'bosun-76bba';
+const PROJECT = 'mybosun-55015';
 const ORG_ID = process.env.ORG_ID || 'q0u3BNn2Hy7CowRYEilC';
 const UID = process.env.UID || 'Ms7OAjDmChSwPsLtcRCApiR4nHO2';
 const ASK = process.argv[2] ||

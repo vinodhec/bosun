@@ -79,6 +79,7 @@ export const adminRunFix = httpsCallable(functions, 'adminRunFix');
 export const adminListTasks = httpsCallable(functions, 'adminListTasks');
 export const adminListFeatures = httpsCallable(functions, 'adminListFeatures');
 export const adminListDesigns = httpsCallable(functions, 'adminListDesigns');
+export const adminListChats = httpsCallable(functions, 'adminListChats');
 export const adminStopTask = httpsCallable(functions, 'adminStopTask');
 export const deployTesting = httpsCallable(functions, 'deployTesting');
 export const deployProd = httpsCallable(functions, 'deployProd');

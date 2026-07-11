@@ -11,7 +11,7 @@
  *   cd functions && ANTHROPIC_API_KEY=sk-ant-... ORG_ID=q0u3BNn2Hy7CowRYEilC \
  *     node scripts/validate-chat.mjs ["what to change or add"]
  *
- * Uses Application Default Credentials for bosun-76bba (gcloud ADC). AGENT/ENV ids come from .env.
+ * Uses Application Default Credentials for mybosun-55015 (gcloud ADC). AGENT/ENV ids come from .env.
  * NOTE: this opens a REAL PR on the org's repo (the build turn is the whole point) — run against a
  * test org/repo, and close the PR after.
  */
@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
-const PROJECT = process.env.GCLOUD_PROJECT_OVERRIDE || 'bosun-76bba';
+const PROJECT = process.env.GCLOUD_PROJECT_OVERRIDE || 'mybosun-55015';
 const BUCKET = `${PROJECT}.firebasestorage.app`;
 process.env.MOCKSHOTS_BUCKET ||= BUCKET; // mockStore.js reads this
 

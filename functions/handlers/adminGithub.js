@@ -535,6 +535,61 @@ export const adminListDesigns = onCall({ region: 'asia-south1' }, async (request
   return { designs };
 });
 
+// "Chat & build" — its OWN admin group, separate from the raw fix Sessions list (mirrors Plan a
+// feature / Design a screen). Pick an org (or all). Each chat is one warm session that clarifies
+// then builds, billed ONCE (priceForChat) when the build completes. Shows the lifecycle, the single
+// charge + its COGS/margin, and — operator-only — a deep link to the session trace + the PR/mock/
+// preview. The charge + COGS live on the chat doc (chatChargeInr / chatCostUsd); we don't need the
+// linked task for the P&L, but we deep-link the session via the chat's own sessionId.
+export const adminListChats = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  const db = getFirestore();
+  let q = db.collection('chats');
+  if (orgId) q = q.where('orgId', '==', orgId);
+  const snap = await q.orderBy('createdAt', 'desc').limit(50).get();
+  const docs = snap.docs;
+  if (!docs.length) return { chats: [] };
+
+  // Trigger emails (who started the chat) in one batched fetch.
+  const uids = [...new Set(docs.map((d) => d.data().userId).filter(Boolean))];
+  const emailByUid = {};
+  if (uids.length) {
+    const userSnaps = await db.getAll(...uids.map((u) => db.collection('users').doc(u)));
+    for (const us of userSnaps) if (us.exists) emailByUid[us.id] = us.data().email ?? null;
+  }
+
+  const chats = docs.map((d) => {
+    const c = d.data();
+    const paidInr = Number(c.chatChargeInr) || 0;
+    const costUsd = Number(c.chatCostUsd) || 0;
+    const costInr = usdToInr(costUsd);
+    return {
+      id: d.id,
+      orgId: c.orgId ?? null,
+      prompt: c.prompt || '',
+      status: c.status || 'clarifying', // clarifying | ready_to_build | previewing | building | complete | failed
+      error: c.error ?? null,
+      summary: c.summary || '',
+      turnCount: Array.isArray(c.turns) ? c.turns.length : 0,
+      // The single charge + its COGS/margin (billed once, at build completion).
+      paidInr,
+      costUsd,
+      costInr,
+      marginInr: paidInr - costInr,
+      // Operator-only deep links: the session trace + PR + the visual mock + the live preview.
+      sessionUrl: platformSessionUrl(c.sessionId),
+      prUrl: c.prUrl ?? null,
+      mockUrl: c.mockUrl ?? null,
+      previewUrl: c.previewUrl ?? null,
+      createdAt: c.createdAt?.toMillis?.() ?? null,
+      userEmail: c.userId ? (emailByUid[c.userId] ?? null) : null,
+    };
+  });
+
+  return { chats };
+});
+
 // Deploy to TESTING = merge the PR into its base (main). The push triggers the
 // customer's deploy-testing GitHub Action (Vercel testing + Firebase testing).
 // Operator kill-switch: stop a queued/running fix mid-flight. Cancels the agent session and

@@ -29,6 +29,20 @@ async function deleteSessionFiles(client, task) {
     try { await client.beta.files.delete(fid); } catch { /* best-effort */ }
   }
 }
+
+// The authoritative COGS to book on a FAILED/timed-out/over-budget round. The `session.usage`
+// rollup can read $0 for minutes while tokens burn, so booking it under-records the loss (a
+// timed-out $2 run booked as ₹1). The per-request `span.model_request_end` events are the figure
+// the Console bills on — the same source markRoundReady uses on success — so read those and take
+// the higher number. Right after a mid-request cancel the last event may not have landed yet;
+// reconcileFailedCosts (below) sweeps up that tail once the session settles.
+async function authoritativeFailUsd(client, sessionId, bd, fallbackUsd) {
+  try {
+    const ev = await usageFromEvents(client, sessionId, { family: bd.family, runtimeSec: bd.runtimeSec });
+    if (ev && ev.totalUsd > fallbackUsd) return ev.totalUsd;
+  } catch { /* keep fallback */ }
+  return fallbackUsd;
+}
 const MAX_PREVIEW_TRIES = 12; // ~12 min before we give up waiting for the Vercel preview
 
 // A planning session (kind:'planning') ended without a usable plan → mark the planning task failed
@@ -564,7 +578,7 @@ export const pollSessions = onSchedule(
             }
             if (FAILED.has(status)) {
               logAgentUsage('failed', docSnap.id, task, bd, roundUsd, roundSec);
-              await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
+              await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: await authoritativeFailUsd(client, task.sessionId, bd, costUsd) });
               await deleteSessionFiles(client, task);
               continue;
             }
@@ -585,7 +599,7 @@ export const pollSessions = onSchedule(
           }
           if (FAILED.has(status)) {
             logAgentUsage('failed', docSnap.id, task, bd, roundUsd, roundSec);
-            await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: costUsd });
+            await markRoundFailure(docSnap.id, { error: 'agent_failed', actualCostUsd: await authoritativeFailUsd(client, task.sessionId, bd, costUsd) });
             await deleteSessionFiles(client, task);
             continue;
           }
@@ -612,7 +626,7 @@ export const pollSessions = onSchedule(
           if (roundSec > maxSec) {
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
             logAgentUsage('timeout', docSnap.id, task, bd, roundUsd, roundSec);
-            await markRoundFailure(docSnap.id, { error: 'timeout', actualCostUsd: costUsd });
+            await markRoundFailure(docSnap.id, { error: 'timeout', actualCostUsd: await authoritativeFailUsd(client, task.sessionId, bd, costUsd) });
             await deleteSessionFiles(client, task);
             continue;
           }
@@ -620,7 +634,7 @@ export const pollSessions = onSchedule(
           if (roundUsd > cap) {
             try { await client.beta.sessions.cancel(task.sessionId); } catch { /* CONFIRM cancel */ }
             logAgentUsage('over_budget', docSnap.id, task, bd, roundUsd, roundSec);
-            await markRoundFailure(docSnap.id, { error: 'over_budget', actualCostUsd: costUsd });
+            await markRoundFailure(docSnap.id, { error: 'over_budget', actualCostUsd: await authoritativeFailUsd(client, task.sessionId, bd, costUsd) });
             await deleteSessionFiles(client, task);
             continue;
           }
@@ -736,6 +750,63 @@ export const pollSessions = onSchedule(
       } catch (e) {
         console.error('pollSessions:fbpreview', docSnap.id, e?.message || e);
       }
+    }
+  }
+);
+
+// Backstop for the failure-cost under-count. When a round fails / times out / goes over budget,
+// the `session.usage` rollup — and even the per-request events, right after a mid-request cancel —
+// can still read low for a minute or two, so `markRoundFailure` may book the loss too cheap (an
+// $2 timed-out run recorded as ₹1). markRoundFailure stamps `costReconciled:false` on every
+// failure; this sweep re-reads each one once its session has SETTLED and corrects actualCostUsd/Inr
+// UPWARD to the authoritative figure the Console bills on. Purely a COGS/analytics correction —
+// failures are never charged, so the customer wallet is never touched.
+export const reconcileFailedCosts = onSchedule(
+  { region: 'asia-south1', schedule: 'every 15 minutes', secrets: [ANTHROPIC_API_KEY] },
+  async () => {
+    const db = getFirestore();
+    // Single-field equality query — no composite index. Only failures carry `costReconciled`, so
+    // this returns exactly the failed tasks not yet reconciled, and each pass drains up to 50.
+    const snap = await db.collection('tasks').where('costReconciled', '==', false).limit(50).get();
+    if (snap.empty) return;
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      defaultHeaders: { 'anthropic-beta': BETA },
+    });
+    const rate = await getUsdToInrRate();
+    for (const docSnap of snap.docs) {
+      const t = docSnap.data();
+      if (!t.sessionId) { await docSnap.ref.update({ costReconciled: true }); continue; }
+      let settled = 0;
+      try {
+        const session = await client.beta.sessions.retrieve(t.sessionId);
+        const st = String(session?.status || '');
+        if (st === 'running' || st === 'rescheduling') continue; // not settled yet — retry next tick
+        const bd = usageBreakdown(session);
+        settled = bd.totalUsd;
+        try {
+          const ev = await usageFromEvents(client, t.sessionId, { family: bd.family, runtimeSec: bd.runtimeSec });
+          if (ev && ev.totalUsd > settled) settled = ev.totalUsd;
+        } catch { /* keep session.usage */ }
+      } catch {
+        // Session deleted / expired / owned by a different API key — unrecoverable. Stop retrying it.
+        await docSnap.ref.update({ costReconciled: true });
+        continue;
+      }
+      // Mirror markRoundFailure's own-COGS math so a failed feature step isn't over-booked with
+      // earlier warm-session steps' cumulative usage.
+      const priorRounds = Array.isArray(t.rounds) ? t.rounds : [];
+      const priorCostUsd = priorRounds.reduce((a, r) => a + (Number(r.actualCostUsd) || 0), 0);
+      const reviewed = Number(t.reviewedCostUsd) || 0;
+      const corrected = priorCostUsd + Math.max(0, settled - reviewed);
+      const booked = Number(t.actualCostUsd) || 0;
+      const patch = { costReconciled: true, costReconciledAt: FieldValue.serverTimestamp() };
+      if (corrected > booked + 1e-4) {
+        patch.actualCostUsd = corrected;
+        patch.actualCostInr = computeCharge(corrected, { rate }).actualCostInr;
+        patch.costWasBookedUsd = booked; // keep the original for audit
+      }
+      await docSnap.ref.update(patch);
     }
   }
 );

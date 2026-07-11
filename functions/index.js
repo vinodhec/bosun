@@ -58,6 +58,7 @@ export {
   adminListTasks,
   adminListFeatures,
   adminListDesigns,
+  adminListChats,
   adminStopTask,
   deployTesting,
   deployProd,
@@ -70,7 +71,7 @@ export {
 } from './handlers/adminGithub.js';
 
 // Scheduled: finalize finished sessions → bill the org; terminate over-budget ones.
-export { pollSessions } from './handlers/pollSessions.js';
+export { pollSessions, reconcileFailedCosts } from './handlers/pollSessions.js';
 
 // Scheduled: relay fresh sourced property listings to each org's webhook → bill per listing.
 export { runSourcingJobs } from './handlers/runSourcingJobs.js';

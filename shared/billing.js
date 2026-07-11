@@ -340,7 +340,10 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
  * blind and a "simple" run can blow 7× past its budget before the cost finally lands. Active
  * runtime is always reported, so a tight per-tier time cap reliably bounds the worst case.
  * Set with headroom over real completion times (simple ~2m, medium ~4m, complex ~11m seen):
- *   simple : 300s (5m)   medium : 480s (8m)   complex : 900s (15m)
+ *   simple : 300s (5m)   medium : 600s (10m)   complex : 900s (15m)
+ * (medium bumped 480→600s on 2026-07-11: a real medium fix was killed at 8m09s — 9s from done —
+ *  and booked as a total loss. The $ budget cap ($3) stays the runaway governor; an outlier that
+ *  runs long is margin-positive to finish, and if it still fails reconcileFailedCosts books it right.)
  * `minInr`/`maxInr` are retained for the legacy estimate UI; with fixed pricing the
  * estimate IS `priceInr`.
  *
@@ -354,7 +357,7 @@ export function estimateRange(maxBudgetUsd, { rate = DEFAULT_USD_TO_INR } = {}) 
 // logs in ~2 days, then drop this note. Complex left as-is.
 export const COMPLEXITY_TIERS = {
   simple:  { maxBudgetUsd: 0.90, maxSeconds: 300, priceInr: 149, minInr: 149, maxInr: 149 },
-  medium:  { maxBudgetUsd: 3.00, maxSeconds: 480, priceInr: 375, minInr: 375, maxInr: 375 },
+  medium:  { maxBudgetUsd: 3.00, maxSeconds: 600, priceInr: 375, minInr: 375, maxInr: 375 },
   complex: { maxBudgetUsd: 3.00, maxSeconds: 900, priceInr: 749, minInr: 749, maxInr: 749 },
 };
 
