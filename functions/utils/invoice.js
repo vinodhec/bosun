@@ -2,7 +2,9 @@
 // credited amount as taxable value + 18% GST (see shared/billing.js#gstBreakdown). Pure helpers
 // only — the atomic Firestore reads/writes (counter + invoice doc) live in admin.js so they run
 // inside the same transaction as the credit. Invoices are backend-only writes (cardinal rule).
+import qrcode from 'qrcode-generator';
 import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE } from '../shared/billing.js';
+import { SIGNATURE_DATA_URI } from './signatureAsset.js';
 
 // The GST-registered supplier. Invoices show THIS legal name only — never the "Bosun" brand.
 // NOTE: `address` is legally required on a tax invoice — fill the real registered address before
@@ -16,10 +18,19 @@ export const SUPPLIER = {
   address: '96 N.M.K Compound, Old Karur Road, opp PWD office, Konavaikkal, Erode, Tamil Nadu - 638002',
   pincode: '638002',
   phone: '9443025052, 9443125052',
-  bank: { name: 'ICICI Bank', account: '606205039174', ifsc: 'ICIC0006062' },
+  // Optional logo shown top-left of the invoice. Must be an inline data URI (the invoice HTML
+  // is self-contained) e.g. 'data:image/png;base64,....'. Empty = no logo.
+  logoDataUri: '',
+  // Scanned signature (+ printed name) of the proprietor / authorized signatory, shown above the
+  // "Authorized Signatory" line. Inline transparent-PNG data URI. Empty = printed line only.
+  signatureDataUri: SIGNATURE_DATA_URI,
+  bank: { name: 'ICICI Bank, Erode Main Branch', account: '606205039174', ifsc: 'ICIC0006062', holder: 'SRI BALAMURUGAN TRADERS' },
+  // NPCI IFSC-based UPI handle (account@ifsc.ifsc.npci) — lets a per-invoice "scan to pay" QR
+  // be generated for the EXACT invoice amount (see upiQrSvg). Not a fixed-amount static QR.
+  upi: { vpa: '606205039174@ICIC0006062.ifsc.npci', name: 'SRI BALAMURUGAN TRADERS' },
 };
 
-const INVOICE_PREFIX = 'SBT'; // Sri BalaMurugan Traders
+const INVOICE_PREFIX = 'SBMT'; // Sri BalaMurugan Traders
 
 /** Indian financial year label for a date: Apr 1–Mar 31 → 'YYYY-YY' (e.g. 2026-27). */
 export function financialYear(date = new Date()) {
@@ -88,9 +99,32 @@ export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, tx
     sgstInr: gst.sgst,
     igstInr: gst.igst,
     taxInr: gst.tax,
-    totalInr: gst.total,
-    creditInr: Math.round(Number(taxableInr)), // credits actually added to the wallet
+    totalInr: gst.total,                                  // taxable + tax, to the paise (for GST returns)
+    roundOffInr: Math.round((Math.round(gst.total) - gst.total) * 100) / 100,
+    payableInr: Math.round(gst.total),                    // rounded to whole rupee — what the customer pays
+    creditInr: Math.round(Number(taxableInr)),            // credits actually added to the wallet
   };
+}
+
+// Indian-system number to words for whole rupees (…Thousand, …Lakh, …Crore). e.g. 234560 →
+// "Two Lakh Thirty Four Thousand Five Hundred Sixty Rupees only".
+export function amountInWords(num) {
+  num = Math.round(Number(num) || 0);
+  if (num === 0) return 'Zero Rupees only';
+  const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
+    'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+  const two = (n) => (n < 20 ? ones[n] : tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : ''));
+  const three = (n) => (Math.floor(n / 100) ? ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + two(n % 100) : '') : two(n % 100));
+  let w = '';
+  const crore = Math.floor(num / 10000000); num %= 10000000;
+  const lakh = Math.floor(num / 100000); num %= 100000;
+  const thousand = Math.floor(num / 1000); num %= 1000;
+  if (crore) w += three(crore) + ' Crore ';
+  if (lakh) w += two(lakh) + ' Lakh ';
+  if (thousand) w += two(thousand) + ' Thousand ';
+  if (num) w += three(num) + ' ';
+  return w.trim() + ' Rupees only';
 }
 
 /** The safe list-view shape (no need to ship the full frozen snapshot to list rows). */
@@ -101,7 +135,7 @@ export function invoiceSummary(inv) {
     buyerName: inv.buyer?.legalName || null,
     taxableInr: inv.taxableInr,
     taxInr: inv.taxInr,
-    totalInr: inv.totalInr,
+    totalInr: inv.payableInr ?? inv.totalInr,
     creditInr: inv.creditInr,
     status: inv.status || 'issued',
   };
@@ -110,12 +144,30 @@ export function invoiceSummary(inv) {
 const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// Per-invoice UPI "scan to pay" QR (inline SVG) encoding the EXACT amount payable + the invoice
+// number as the note — NOT a fixed-amount static QR. Empty string if no UPI handle configured.
+function upiQrSvg(upi, amountInr, note) {
+  if (!upi?.vpa) return '';
+  const uri = `upi://pay?pa=${upi.vpa}&pn=${encodeURIComponent(upi.name || '')}` +
+    `&am=${Number(amountInr).toFixed(2)}&cu=INR&tn=${encodeURIComponent(note || '')}`;
+  const qr = qrcode(0, 'M');
+  qr.addData(uri);
+  qr.make();
+  return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+}
+
 /** Self-contained printable HTML for one invoice (customer opens it and saves as PDF). */
 export function renderInvoiceHtml(inv) {
   const d = new Date(inv.issuedAtMs || Date.now());
   const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
   const s = inv.supplier || {};
   const b = inv.buyer || {};
+  const posState = b.state || s.state;
+  const posCode = b.stateCode || (b.intraState ? s.stateCode : null);
+  const placeOfSupply = posCode ? `${posState} (State code ${posCode})` : (b.placeOfSupply || posState);
+  const payable = inv.payableInr ?? Math.round(inv.totalInr);
+  const roundOff = inv.roundOffInr ?? Math.round((payable - inv.totalInr) * 100) / 100;
+  const qr = upiQrSvg(s.upi, payable, inv.number);
   const taxRows = inv.igstInr
     ? `<tr><td>IGST @ ${Math.round(inv.gstRate * 100)}%</td><td class="r">${inr(inv.igstInr)}</td></tr>`
     : `<tr><td>CGST @ ${Math.round(inv.gstRate * 50)}%</td><td class="r">${inr(inv.cgstInr)}</td></tr>
@@ -131,10 +183,16 @@ export function renderInvoiceHtml(inv) {
   th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#888;border-bottom:1px solid #ccc}
   .r{text-align:right} .totals{margin-left:auto;width:280px;margin-top:12px}
   .totals td{border:0;padding:4px 10px} .grand{font-weight:700;font-size:16px;border-top:2px solid #111}
-  .foot{margin-top:28px;font-size:12px;color:#555} @media print{body{margin:0}}
+  .foot{margin-top:24px;font-size:12px;color:#444;border-top:1px solid #eee;padding-top:14px}
+  .payrow{display:flex;gap:20px;align-items:flex-start;justify-content:space-between}
+  .qrwrap{width:112px;height:112px;flex:none} .qrwrap svg{width:100%;height:100%;display:block}
+  .sign{text-align:center;min-width:190px}
+  .sigspace{min-height:56px;display:flex;align-items:flex-end;justify-content:center}
+  .sigspace img{max-height:64px;max-width:200px}
+  .sigline{border-top:1px solid #999;padding-top:4px;margin-top:2px} @media print{body{margin:0}}
 </style></head><body>
   <div class="head">
-    <div><h1>${esc(s.legalName)}</h1>
+    <div>${s.logoDataUri ? `<img src="${s.logoDataUri}" alt="" style="max-height:52px;max-width:200px;margin-bottom:8px;display:block" />` : ''}<h1>${esc(s.legalName)}</h1>
       ${s.address ? `<div class="muted">${esc(s.address)}</div>` : ''}
       ${s.phone ? `<div class="muted">Ph: ${esc(s.phone)}</div>` : ''}
       <div class="muted">GSTIN: ${esc(s.gstin)}</div></div>
@@ -145,7 +203,7 @@ export function renderInvoiceHtml(inv) {
     <div><div class="lbl">Bill to</div><div style="font-weight:600">${esc(b.legalName)}</div>
       ${b.address ? `<div class="muted">${esc(b.address)}</div>` : ''}
       ${b.gstin ? `<div class="muted">GSTIN: ${esc(b.gstin)}</div>` : `<div class="muted">Unregistered</div>`}</div>
-    <div><div class="lbl">Place of supply</div><div>${esc(b.placeOfSupply || s.state)}</div>
+    <div><div class="lbl">Place of supply</div><div>${esc(placeOfSupply)}</div>
       <div class="lbl" style="margin-top:8px">Reverse charge</div><div>No</div></div>
   </div>
   <table><thead><tr><th>Description</th><th>SAC</th><th class="r">Taxable value</th></tr></thead>
@@ -153,11 +211,28 @@ export function renderInvoiceHtml(inv) {
   <table class="totals"><tbody>
     <tr><td>Taxable value</td><td class="r">${inr(inv.taxableInr)}</td></tr>
     ${taxRows}
-    <tr class="grand"><td>Total</td><td class="r">${inr(inv.totalInr)}</td></tr>
+    ${roundOff ? `<tr><td>Round off</td><td class="r">${roundOff < 0 ? '−' : '+'}${inr(Math.abs(roundOff))}</td></tr>` : ''}
+    <tr class="grand"><td>Total</td><td class="r">${inr(payable)}</td></tr>
   </tbody></table>
+  <div style="clear:both"></div>
+  <div style="margin-top:10px;font-size:12px"><span class="lbl" style="display:inline">Amount in words:</span> <b>${esc(amountInWords(payable))}</b></div>
   <div class="foot">
-    ${s.bank ? `<div>Bank: ${esc(s.bank.name)} · A/C ${esc(s.bank.account)} · IFSC ${esc(s.bank.ifsc)}</div>` : ''}
-    <div style="margin-top:10px">This is a computer-generated tax invoice.</div>
+    <div class="payrow">
+      ${qr ? `<div class="qrwrap">${qr}</div>` : ''}
+      <div style="flex:1">
+        <div class="lbl">Pay by UPI / bank transfer</div>
+        ${s.bank ? `<div style="font-weight:600">${esc(s.bank.holder || s.legalName)}</div>
+        <div>${esc(s.bank.name)}</div>
+        <div>A/C ${esc(s.bank.account)} · IFSC ${esc(s.bank.ifsc)}</div>` : ''}
+        ${qr ? `<div style="margin-top:4px">Scan to pay ${inr(payable)}</div>` : ''}
+      </div>
+      <div class="sign">
+        <div style="font-weight:600">For ${esc(s.legalName)}</div>
+        <div class="sigspace">${s.signatureDataUri ? `<img src="${s.signatureDataUri}" alt="signature" />` : ''}</div>
+        <div class="sigline">Authorized Signatory</div>
+      </div>
+    </div>
+    <div class="muted" style="margin-top:14px">Subject to Erode, Tamil Nadu jurisdiction. E. &amp; O.E.</div>
   </div>
 </body></html>`;
 }
