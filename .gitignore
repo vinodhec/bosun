@@ -22,6 +22,7 @@ functions/shared/
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+functions/_rdep.log
 
 # os
 .DS_Store

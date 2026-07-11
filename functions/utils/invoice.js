@@ -5,6 +5,7 @@
 import qrcode from 'qrcode-generator';
 import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE } from '../shared/billing.js';
 import { SIGNATURE_DATA_URI } from './signatureAsset.js';
+import { LOGO_DATA_URI } from './logoAsset.js';
 
 // The GST-registered supplier. Invoices show THIS legal name only — never the "Bosun" brand.
 // NOTE: `address` is legally required on a tax invoice — fill the real registered address before
@@ -18,9 +19,8 @@ export const SUPPLIER = {
   address: '96 N.M.K Compound, Old Karur Road, opp PWD office, Konavaikkal, Erode, Tamil Nadu - 638002',
   pincode: '638002',
   phone: '9443025052, 9443125052',
-  // Optional logo shown top-left of the invoice. Must be an inline data URI (the invoice HTML
-  // is self-contained) e.g. 'data:image/png;base64,....'. Empty = no logo.
-  logoDataUri: '',
+  // Logo (Murugan emblem) shown top-left of the invoice. Inline data URI (self-contained HTML).
+  logoDataUri: LOGO_DATA_URI,
   // Scanned signature (+ printed name) of the proprietor / authorized signatory, shown above the
   // "Authorized Signatory" line. Inline transparent-PNG data URI. Empty = printed line only.
   signatureDataUri: SIGNATURE_DATA_URI,
@@ -83,7 +83,9 @@ export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, tx
     txnId: txnId || null,
     issuedBy: by || null,
     issuedAtMs: issuedAtMs || Date.now(),
-    supplier: { ...SUPPLIER },
+    // Snapshot supplier WITHOUT the heavy branding data URIs (identical on every invoice) — the
+    // renderer pulls the logo/signature from the live SUPPLIER constant, keeping each doc tiny.
+    supplier: (({ logoDataUri, signatureDataUri, ...rest }) => rest)(SUPPLIER),
     buyer,
     reverseCharge: false,
     lineItems: [
@@ -162,7 +164,8 @@ function upiQrSvg(upi, amountInr, note) {
 export function renderInvoiceHtml(inv) {
   const d = new Date(inv.issuedAtMs || Date.now());
   const date = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const s = inv.supplier || {};
+  // Branding (logo/signature) comes from the live SUPPLIER constant, not the (stripped) snapshot.
+  const s = { ...inv.supplier, logoDataUri: SUPPLIER.logoDataUri, signatureDataUri: SUPPLIER.signatureDataUri };
   const b = inv.buyer || {};
   const posState = b.state || s.state;
   const posCode = b.stateCode || (b.intraState ? s.stateCode : null);
