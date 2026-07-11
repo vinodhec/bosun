@@ -225,6 +225,7 @@ export const adminListUsers = onCall({ region: REGION }, async (request) => {
       uid: d.id,
       email: d.data().email ?? null,
       canDeployProd: d.data().canDeployProd === true,
+      canViewInvoices: d.data().canViewInvoices === true,
       orgIds: Array.isArray(d.data().orgIds) ? d.data().orgIds : (d.data().orgId ? [d.data().orgId] : []),
     }))
     .sort((a, b) => (a.email || '').localeCompare(b.email || ''));
@@ -244,6 +245,21 @@ export const adminSetUserDeploy = onCall({ region: REGION }, async (request) => 
   if (!(await ref.get()).exists) throw new HttpsError('not-found', 'User not found.');
   await ref.update({ canDeployProd });
   return { uid, canDeployProd };
+});
+
+// Grant / revoke a single user's permission to VIEW their org's tax invoices. Off by default —
+// invoices are visible only to the specific people the operator grants (e.g. the owner/finance
+// contact), not every org member. Enforced server-side in listMyInvoices / getMyInvoiceHtml.
+export const adminSetUserInvoices = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const uid = String(request.data?.uid ?? '').trim();
+  const canViewInvoices = request.data?.canViewInvoices === true;
+  if (!uid) throw new HttpsError('invalid-argument', 'uid required.');
+  const db = getFirestore();
+  const ref = db.collection('users').doc(uid);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'User not found.');
+  await ref.update({ canViewInvoices });
+  return { uid, canViewInvoices };
 });
 
 // Quote a BIG job (a 'large' task parked in needs_quote / needs_requote). The operator

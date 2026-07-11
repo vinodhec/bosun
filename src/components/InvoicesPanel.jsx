@@ -1,35 +1,33 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listMyInvoices, getMyInvoiceHtml } from '@/firebase/functions';
 
 const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const date = (ms) => (ms ? new Date(ms).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
 
-// Customer view of GST tax invoices (issued when the team adds credits to the wallet). Loads on
-// first open so it costs nothing on a normal dashboard visit. Each invoice opens as a printable
-// page the owner can save as a PDF.
+// Customer view of GST tax invoices (issued when the team adds credits to the wallet). Visibility
+// is granted per-user by the operator: on mount we ask the backend whether this person is allowed;
+// if not, the whole panel renders nothing. Each invoice opens as a printable page to save as a PDF.
 export default function InvoicesPanel({ orgId }) {
+  const [allowed, setAllowed] = useState(null); // null = checking, false = hide, true = show
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  async function toggle() {
-    const next = !open;
-    setOpen(next);
-    if (next && rows === null) await load();
-  }
-
-  async function load() {
+  // One lightweight call on mount / org switch decides both access AND fills the list.
+  useEffect(() => {
+    let live = true;
     setBusy(true); setErr('');
-    try {
-      const { data } = await listMyInvoices(orgId ? { orgId } : {});
-      setRows(data?.invoices || []);
-    } catch (e) {
-      setErr('Could not load invoices.');
-    } finally {
-      setBusy(false);
-    }
-  }
+    listMyInvoices(orgId ? { orgId } : {})
+      .then(({ data }) => {
+        if (!live) return;
+        setAllowed(data?.allowed !== false);
+        setRows(data?.invoices || []);
+      })
+      .catch(() => { if (live) { setAllowed(false); } })
+      .finally(() => { if (live) setBusy(false); });
+    return () => { live = false; };
+  }, [orgId]);
 
   async function download(id) {
     try {
@@ -45,9 +43,12 @@ export default function InvoicesPanel({ orgId }) {
     }
   }
 
+  // Hidden entirely while checking access and for users without the grant.
+  if (allowed !== true) return null;
+
   return (
     <div className="w-full sm:w-auto">
-      <button type="button" onClick={toggle} className="text-sm font-medium text-brand-700 hover:underline">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="text-sm font-medium text-brand-700 hover:underline">
         {open ? 'Hide invoices' : 'Invoices'}
       </button>
       {open && (

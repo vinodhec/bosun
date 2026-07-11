@@ -10,6 +10,9 @@ import {
   adminSetOrgApproval,
   adminListUsers,
   adminSetUserDeploy,
+  adminSetUserInvoices,
+  adminListInvoices,
+  adminInvoiceHtml,
   adminQuoteTask,
   adminStopTask,
   adminSetGithubRepo,
@@ -438,15 +441,21 @@ function Ledger({ orgs }) {
 function DeployAccess({ orgs }) {
   const [orgId, setOrgId] = useState('');
   const [users, setUsers] = useState([]);
+  const [invoices, setInvoices] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
   const load = async (id) => {
-    setOrgId(id); setUsers([]); setErr(''); setMsg('');
+    setOrgId(id); setUsers([]); setInvoices([]); setErr(''); setMsg('');
     if (!id) return;
     setBusy(true);
-    try { const { data } = await adminListUsers({ orgId: id }); setUsers(data.users || []); }
+    try {
+      const { data } = await adminListUsers({ orgId: id });
+      setUsers(data.users || []);
+      const inv = await adminListInvoices({ orgId: id });
+      setInvoices(inv.data?.invoices || []);
+    }
     catch { setErr('Failed to load people.'); }
     finally { setBusy(false); }
   };
@@ -460,6 +469,28 @@ function DeployAccess({ orgs }) {
       setMsg(`${u.email || 'User'} ${next ? 'can now go live.' : 'is testing-only now.'}`);
     } catch { setErr('Could not update that person.'); }
     finally { setBusy(false); }
+  };
+
+  const toggleInvoices = async (u) => {
+    setBusy(true); setErr(''); setMsg('');
+    const next = !u.canViewInvoices;
+    try {
+      await adminSetUserInvoices({ uid: u.uid, canViewInvoices: next });
+      setUsers((list) => list.map((x) => (x.uid === u.uid ? { ...x, canViewInvoices: next } : x)));
+      setMsg(`${u.email || 'User'} ${next ? 'can now see invoices.' : 'can no longer see invoices.'}`);
+    } catch { setErr('Could not update that person.'); }
+    finally { setBusy(false); }
+  };
+
+  // Open one invoice as a printable page (save/print as PDF).
+  const openInvoice = async (id) => {
+    try {
+      const { data } = await adminInvoiceHtml({ invoiceId: id });
+      const w = window.open('', '_blank');
+      if (!w) return;
+      w.document.write(data.html); w.document.close(); w.focus();
+      setTimeout(() => w.print(), 400);
+    } catch { setErr('Could not open that invoice.'); }
   };
 
   // Org-name lookup for the membership chips.
@@ -505,7 +536,7 @@ function DeployAccess({ orgs }) {
             <li key={u.uid} className="space-y-2 rounded-lg border border-line p-3 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <span className="truncate text-ink">{u.email || u.uid}</span>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                   <span className={`text-xs ${u.canDeployProd ? 'text-green-700' : 'text-ink-soft'}`}>
                     {u.canDeployProd ? 'can go live' : 'testing only'}
                   </span>
@@ -515,6 +546,16 @@ function DeployAccess({ orgs }) {
                     onClick={() => toggle(u)}
                   >
                     {u.canDeployProd ? 'Revoke go-live' : 'Allow go-live'}
+                  </button>
+                  <span className={`text-xs ${u.canViewInvoices ? 'text-green-700' : 'text-ink-soft'}`}>
+                    {u.canViewInvoices ? 'sees invoices' : 'no invoices'}
+                  </span>
+                  <button
+                    className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50 disabled:opacity-60"
+                    disabled={busy}
+                    onClick={() => toggleInvoices(u)}
+                  >
+                    {u.canViewInvoices ? 'Hide invoices' : 'Allow invoices'}
                   </button>
                 </div>
               </div>
@@ -544,6 +585,34 @@ function DeployAccess({ orgs }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {orgId && (
+        <div className="mt-5 border-t border-line pt-4">
+          <h3 className="mb-2 text-sm font-semibold text-ink">Invoices</h3>
+          {invoices.length === 0 ? (
+            <p className="text-xs text-ink-soft">No invoices for this organisation yet — one is created each time you add credits.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {invoices.map((iv) => (
+                <li key={iv.id} className="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-ink">{iv.number}</p>
+                    <p className="text-xs text-ink-soft">
+                      {iv.issuedAtMs ? new Date(iv.issuedAtMs).toLocaleDateString('en-IN') : ''} · {formatINR(iv.totalInr)} · {iv.buyerName || '—'}
+                    </p>
+                  </div>
+                  <button
+                    className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50"
+                    onClick={() => openInvoice(iv.id)}
+                  >
+                    Download
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </section>
   );

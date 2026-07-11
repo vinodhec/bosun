@@ -13,7 +13,9 @@ export const SUPPLIER = {
   gstin: '33ACJPT9393A1ZC',
   stateCode: '33',
   state: 'Tamil Nadu',
-  address: '', // TODO: registered address (mandatory on the invoice)
+  address: '96 N.M.K Compound, Old Karur Road, opp PWD office, Konavaikkal, Erode, Tamil Nadu - 638002',
+  pincode: '638002',
+  phone: '9443025052, 9443125052',
   bank: { name: 'ICICI Bank', account: '606205039174', ifsc: 'ICIC0006062' },
 };
 
@@ -132,6 +134,7 @@ export function renderInvoiceHtml(inv) {
   <div class="head">
     <div><h1>${esc(s.legalName)}</h1>
       ${s.address ? `<div class="muted">${esc(s.address)}</div>` : ''}
+      ${s.phone ? `<div class="muted">Ph: ${esc(s.phone)}</div>` : ''}
       <div class="muted">GSTIN: ${esc(s.gstin)}</div></div>
     <div class="meta"><div style="font-weight:700">TAX INVOICE</div>
       <div class="muted">No: ${esc(inv.number)}</div><div class="muted">Date: ${esc(date)}</div></div>

@@ -88,6 +88,7 @@ export const adminConnectFigma = httpsCallable(functions, 'adminConnectFigma');
 export const adminDisconnectFigma = httpsCallable(functions, 'adminDisconnectFigma');
 export const adminListInvoices = httpsCallable(functions, 'adminListInvoices');
 export const adminInvoiceHtml = httpsCallable(functions, 'adminInvoiceHtml');
+export const adminSetUserInvoices = httpsCallable(functions, 'adminSetUserInvoices');
 
 // Customer-facing GST invoices.
 export const listMyInvoices = httpsCallable(functions, 'listMyInvoices');

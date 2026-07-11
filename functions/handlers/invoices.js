@@ -12,15 +12,18 @@ export const listMyInvoices = onCall({ region: REGION }, async (request) => {
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
   const db = getFirestore();
   const userSnap = await db.collection('users').doc(uid).get();
-  const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
-  if (!orgId) return { invoices: [] };
+  // Invoice visibility is granted per-user by the operator (adminSetUserInvoices) — not every
+  // org member sees them. `allowed:false` lets the UI hide the panel entirely.
+  if (!userSnap.exists || userSnap.data().canViewInvoices !== true) return { allowed: false, invoices: [] };
+  const orgId = resolveOrgId(userSnap.data(), request.data?.orgId);
+  if (!orgId) return { allowed: true, invoices: [] };
   const snap = await db
     .collection('invoices')
     .where('orgId', '==', orgId)
     .orderBy('issuedAtMs', 'desc')
     .limit(100)
     .get();
-  return { invoices: snap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()) })) };
+  return { allowed: true, invoices: snap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()) })) };
 });
 
 export const getMyInvoiceHtml = onCall({ region: REGION }, async (request) => {
@@ -33,7 +36,8 @@ export const getMyInvoiceHtml = onCall({ region: REGION }, async (request) => {
   if (!snap.exists) throw new HttpsError('not-found', 'Invoice not found.');
   const inv = snap.data();
   const userSnap = await db.collection('users').doc(uid).get();
-  if (!isMember(userSnap.exists ? userSnap.data() : null, inv.orgId)) {
+  const u = userSnap.exists ? userSnap.data() : null;
+  if (!isMember(u, inv.orgId) || u?.canViewInvoices !== true) {
     throw new HttpsError('permission-denied', 'Not your invoice.');
   }
   return { html: renderInvoiceHtml(inv) };
