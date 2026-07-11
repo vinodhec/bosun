@@ -5,6 +5,7 @@ import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
+import { buildGstr1, renderGstr1Html } from '../utils/gstReport.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -76,6 +77,33 @@ export const adminListInvoices = onCall({ region: REGION }, async (request) => {
     .limit(200)
     .get();
   return { invoices: snap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()) })) };
+});
+
+// Operator: GSTR-1 (outward supplies) for the SOFTWARE invoice line over a date range. `from`/`to`
+// are 'YYYY-MM-DD' (inclusive), anchored to IST so the day boundaries match Indian dates. Returns
+// printable HTML matching the operator's existing GSTR-1 layout; the CA merges it with the trading
+// business for the single-GSTIN filing.
+export const adminGstReport = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const from = String(request.data?.from ?? '').trim();
+  const to = String(request.data?.to ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    throw new HttpsError('invalid-argument', 'from and to must be YYYY-MM-DD.');
+  }
+  const fromMs = Date.parse(`${from}T00:00:00+05:30`);
+  const toMs = Date.parse(`${to}T23:59:59.999+05:30`);
+  if (!(fromMs <= toMs)) throw new HttpsError('invalid-argument', 'from must be on or before to.');
+
+  const db = getFirestore();
+  const snap = await db
+    .collection('invoices')
+    .where('issuedAtMs', '>=', fromMs)
+    .where('issuedAtMs', '<=', toMs)
+    .orderBy('issuedAtMs')
+    .get();
+  const invoices = snap.docs.map((d) => d.data());
+  const report = buildGstr1({ invoices, fromMs, toMs });
+  return { html: renderGstr1Html(report), count: invoices.length, totals: report.totals };
 });
 
 // Operator: printable HTML for one invoice (Admin panel "download" / print).

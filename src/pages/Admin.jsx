@@ -13,6 +13,7 @@ import {
   adminSetUserInvoices,
   adminListInvoices,
   adminInvoiceHtml,
+  adminGstReport,
   adminQuoteTask,
   adminStopTask,
   adminSetGithubRepo,
@@ -618,6 +619,52 @@ function DeployAccess({ orgs }) {
   );
 }
 
+// GST Reports (software line only). Generates a GSTR-1 (outward supplies) for the SW/ invoices in a
+// date range — the CA merges it with the trading business for the single-GSTIN return. Purchases
+// (Anthropic credits, an RCM import of services) are handled separately by the CA.
+function GstReports() {
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const now = new Date();
+  const [from, setFrom] = useState(iso(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [to, setTo] = useState(iso(now));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [info, setInfo] = useState('');
+
+  const generate = async () => {
+    setBusy(true); setErr(''); setInfo('');
+    try {
+      const { data } = await adminGstReport({ from, to });
+      const w = window.open('', '_blank');
+      if (w) { w.document.write(data.html); w.document.close(); w.focus(); }
+      const taxable = Number(data.totals?.taxable || 0).toLocaleString('en-IN');
+      setInfo(`${data.count} invoice(s) · taxable ₹${taxable}`);
+    } catch {
+      setErr('Could not generate the report.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">GST Reports (software line)</h2>
+      <p className="text-xs text-ink-soft">GSTR-1 (outward sales) for the SW/ invoices in a date range — hand to the CA to merge with the trading business. Purchases (Anthropic, reverse-charge) are handled separately.</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-sm text-ink">From
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="mt-1 block rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500" />
+        </label>
+        <label className="text-sm text-ink">To
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="mt-1 block rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500" />
+        </label>
+        <button className={btn} disabled={busy} onClick={generate}>{busy ? 'Generating…' : 'Generate GSTR-1'}</button>
+      </div>
+      {info && <p className="text-sm text-green-700">{info}</p>}
+      {err && <p className="text-sm text-red-600">{err}</p>}
+    </section>
+  );
+}
+
 // Operator-only: connect an org's Figma account so a customer who pastes a design link gets it
 // built pixel-perfect. We save the Figma access token backend-only (orgSecrets/{orgId}.figma) and
 // validate it on save; the token is never returned to the browser. No board/target to pick — the
@@ -1203,6 +1250,8 @@ export default function Admin() {
         </section>
 
         <DeployAccess orgs={orgs} />
+
+        <GstReports />
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Connect GitHub repo</h2>
