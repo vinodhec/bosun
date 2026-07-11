@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Set the orgId custom claim on the migrated users in mybosun-55015. Custom claims do NOT
+// Set the orgId custom claim on the migrated users in bosun-76bba. Custom claims do NOT
 // travel with auth:import or Firestore — the rules gate org + transaction reads on this claim.
 // Reads the org membership straight from the migrated users collection (source of truth).
 //   cd functions && node scripts/set-claims.mjs           # dry run
@@ -9,7 +9,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 
 const COMMIT = process.argv.includes('--commit');
-const app = initializeApp({ projectId: 'mybosun-55015' });
+const app = initializeApp({ projectId: 'bosun-76bba' });
 const db = getFirestore(app);
 const auth = getAuth(app);
 

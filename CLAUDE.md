@@ -209,7 +209,7 @@ repository, CSS, etc. Use plain phrasing: "What's broken", "Fix is ready", "What
   in `functions/utils/secrets.js` and listed in each callable's `secrets:` array.
 - Operator-only callables (everything in `admin.js` / `adminGithub.js`) gate on
   `ADMIN_EMAILS` — do not assume Firebase Auth role claims.
-- Firebase project id: `mybosun-55015` (`.firebaserc`).
+- Firebase project id: `bosun-76bba` (`.firebaserc`).
 - Default Functions region: `asia-south1`. Keep new callables on the same region.
 
 ## MCP servers & environment switching
@@ -231,6 +231,6 @@ no `--project` flag — switch the active project at runtime with the MCP tool
 - **Deploy guard:** these aliases are for MCP project *context* only. NEVER `firebase deploy`
   against `testing`/`production` from this repo — `firebase.json` here is Bosun's app, and those
   projects are deployed from the `maadiveedu-unified-platform` repo. Bosun deploys only ever target
-  `default` (`mybosun-55015`).
+  `default` (`bosun-76bba`).
 - **Jam** has no environment dimension — use it to inspect a shared Jam recording (console/network/
   repro) whenever a jam.dev link is referenced.

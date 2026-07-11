@@ -10,7 +10,7 @@
 //   JAM_PAT=jam_pat_...(optional) \
 //   node scripts/reprovision-vaults.mjs            # dry run
 //   ... add  --commit  to actually create vaults + rewrite vaultId.
-// (Uses ADC for Firestore — gcloud owner creds on mybosun-55015.)
+// (Uses ADC for Firestore — gcloud owner creds on bosun-76bba.)
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js';
@@ -18,8 +18,8 @@ import { ensureOrgGithubVault, ensureOrgJamCredential } from '../utils/vault.js'
 const COMMIT = process.argv.includes('--commit');
 if (!process.env.ANTHROPIC_API_KEY) { console.error('Set ANTHROPIC_API_KEY (the NEW account key).'); process.exit(1); }
 
-const db = getFirestore(initializeApp({ projectId: 'mybosun-55015' }, 'dst'));
-console.log(`Dest: mybosun-55015   commit=${COMMIT}\n`);
+const db = getFirestore(initializeApp({ projectId: 'bosun-76bba' }, 'dst'));
+console.log(`Dest: bosun-76bba   commit=${COMMIT}\n`);
 
 const orgs = await db.collection('organisations').get();
 for (const o of orgs.docs) {

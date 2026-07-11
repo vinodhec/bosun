@@ -215,6 +215,7 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       balance: d.data().balance ?? 0,
       repo: d.data().github?.repoFullName ?? null,
       requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
+      billing: d.data().billing || null, // GST buyer profile (see adminSetOrgBilling); null = unset.
       // Non-secret Figma connection status (handle only — never the token).
       figma: d.data().figma?.connected
         ? { connected: true, handle: d.data().figma.handle || '', email: d.data().figma.email || '' }
@@ -235,6 +236,44 @@ export const adminSetOrgApproval = onCall({ region: REGION }, async (request) =>
   if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
   await ref.update({ requireApproval });
   return { orgId, requireApproval };
+});
+
+// Set / update an org's GST BILLING PROFILE — the buyer block on its tax invoices
+// (organisations/{id}.billing, read by invoice.js#buyerFromOrg). Backend-only write (cardinal
+// rule): there is no client path to org.billing, so this is the ONE place a customer's GST
+// details are set. GSTIN is optional (blank = unregistered / B2C buyer). The 2-digit stateCode
+// drives intra- vs inter-state GST (CGST+SGST when it equals the supplier's TN '33', else IGST)
+// and defaults to the GSTIN's leading state digits; buyerFromOrg derives intraState from it.
+export const adminSetOrgBilling = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const d = request.data || {};
+  const clean = (v) => { const s = String(v ?? '').trim(); return s || null; };
+
+  const gstin = clean(d.gstin)?.toUpperCase() ?? null;
+  if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/.test(gstin)) {
+    throw new HttpsError('invalid-argument', 'GSTIN must be a valid 15-character GSTIN.');
+  }
+  const stateCode = clean(d.stateCode) || (gstin ? gstin.slice(0, 2) : null);
+  if (stateCode && !/^[0-9]{2}$/.test(stateCode)) {
+    throw new HttpsError('invalid-argument', 'stateCode must be the 2-digit GST state code.');
+  }
+
+  const billing = {
+    legalName: clean(d.legalName),
+    gstin,
+    state: clean(d.state),
+    stateCode,
+    address: clean(d.address),
+  };
+  if (typeof d.intraState === 'boolean') billing.intraState = d.intraState;
+
+  const db = getFirestore();
+  const ref = db.collection('organisations').doc(orgId);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
+  await ref.update({ billing });
+  return { orgId, billing };
 });
 
 // List the people assigned to an org, each with their per-user "can publish to production"

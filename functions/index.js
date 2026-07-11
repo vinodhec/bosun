@@ -28,6 +28,7 @@ export {
   adminSetUserOrg,
   adminRemoveUserOrg,
   adminSetOrgApproval,
+  adminSetOrgBilling,
   adminListUsers,
   adminSetUserDeploy,
   adminQuoteTask,

@@ -10,13 +10,13 @@
  *   cd functions && ANTHROPIC_API_KEY=sk-ant-... ORG_ID=q0u3BNn2Hy7CowRYEilC \
  *     node scripts/validate-compare.mjs ["the comparison ask with competitor links"]
  *
- * Uses Application Default Credentials for mybosun-55015 (gcloud ADC). AGENT/ENV ids come from .env.
+ * Uses Application Default Credentials for bosun-76bba (gcloud ADC). AGENT/ENV ids come from .env.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
-const PROJECT = process.env.GCLOUD_PROJECT_OVERRIDE || 'mybosun-55015';
+const PROJECT = process.env.GCLOUD_PROJECT_OVERRIDE || 'bosun-76bba';
 
 function fromEnvFile(key) {
   try {

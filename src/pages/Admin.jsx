@@ -8,6 +8,7 @@ import {
   adminSetUserOrg,
   adminRemoveUserOrg,
   adminSetOrgApproval,
+  adminSetOrgBilling,
   adminListUsers,
   adminSetUserDeploy,
   adminSetUserInvoices,
@@ -741,6 +742,73 @@ function FigmaConnect({ orgs }) {
   );
 }
 
+// Operator-only: set an org's GST BILLING PROFILE — the buyer details (legal name + GSTIN + state
+// + address) printed on the tax invoices we issue it. Stored backend-only on the org
+// (organisations/{id}.billing) via adminSetOrgBilling — the only path to these fields. Blank GSTIN
+// = unregistered (B2C) buyer; the state code drives CGST+SGST (same state as the TN supplier) vs IGST.
+function OrgBilling({ orgs }) {
+  const [orgId, setOrgId] = useState('');
+  const [form, setForm] = useState({ legalName: '', gstin: '', state: '', stateCode: '', address: '' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+
+  const pick = (id) => {
+    setOrgId(id); setMsg(''); setErr('');
+    const o = orgs.find((x) => x.id === id);
+    const b = o?.billing || {};
+    setForm({
+      legalName: b.legalName || o?.name || '',
+      gstin: b.gstin || '',
+      state: b.state || '',
+      stateCode: b.stateCode || '',
+      address: b.address || '',
+    });
+  };
+
+  const save = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const { data } = await adminSetOrgBilling({ orgId, ...form });
+      setMsg(data.billing?.gstin ? `Saved — GSTIN ${data.billing.gstin} (${data.billing.stateCode === '33' ? 'CGST+SGST' : 'IGST'}).` : 'Saved (unregistered / B2C buyer).');
+    } catch (e) { setErr(e?.message || 'Could not save.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">GST billing profile (buyer on invoices)</h2>
+      <p className="text-xs text-ink-soft">
+        The customer's details printed on the tax invoices we issue them. Leave GSTIN blank for an
+        unregistered (B2C) buyer. State code sets CGST+SGST (Tamil Nadu, same as supplier) vs IGST.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>{o.name}{o.billing?.gstin ? ` — ✓ ${o.billing.gstin}` : ''}</option>
+        ))}
+      </select>
+
+      {orgId && (
+        <>
+          <input className={field} value={form.legalName} onChange={(e) => setForm({ ...form, legalName: e.target.value })} placeholder="Legal name (as registered)" />
+          <input className={field} value={form.gstin} onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })} placeholder="GSTIN (15 chars) — blank if unregistered" />
+          <div className="flex gap-2">
+            <input className={field} value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} placeholder="State (e.g. Tamil Nadu)" />
+            <input className="w-32 rounded-lg border border-line px-3 py-2 outline-none focus:border-brand-500" value={form.stateCode} onChange={(e) => setForm({ ...form, stateCode: e.target.value })} placeholder="Code (33)" />
+          </div>
+          <input className={field} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Address / city — e.g. Chennai - 600044, Tamil Nadu" />
+          <button className={btn} disabled={busy || !orgId} onClick={save}>{busy ? 'Saving…' : 'Save billing profile'}</button>
+          <p className="text-xs text-ink-soft">Leave the state code blank to auto-fill from the GSTIN's first two digits.</p>
+        </>
+      )}
+
+      {msg && <p className="rounded-lg bg-green-50 px-3 py-2 text-xs text-green-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-bad">{err}</p>}
+    </section>
+  );
+}
+
 // Plain-English lifecycle labels for a "Plan a feature" feature + its steps, plus the badge tones.
 const FEAT_STATUS = {
   planning: 'Planning…',
@@ -1411,6 +1479,8 @@ export default function Admin() {
 
 
         <FigmaConnect orgs={orgs} />
+
+        <OrgBilling orgs={orgs} />
 
         <section className="space-y-2 rounded-2xl border border-brand-500 bg-brand-50/40 p-5">
           <h2 className="font-semibold text-ink">Test a fix</h2>

@@ -1,4 +1,4 @@
-# Manual deploy for Bosun (project mybosun-55015).
+# Manual deploy for Bosun (project bosun-76bba).
 # Trigger from your phone: github.com/vinodhec/bosun → Actions → "Deploy" → Run workflow.
 # Pick a scope from the dropdown; "everything" mirrors `npm run build && firebase deploy`.
 #
@@ -48,12 +48,12 @@ jobs:
       - name: Build SPA
         if: inputs.scope == 'everything' || inputs.scope == 'hosting'
         env:
-          VITE_FIREBASE_API_KEY: AIzaSyBCrM6y83hiSd9XJegR6YBOU12T0djCZH8
-          VITE_FIREBASE_AUTH_DOMAIN: mybosun-55015.firebaseapp.com
-          VITE_FIREBASE_PROJECT_ID: mybosun-55015
-          VITE_FIREBASE_STORAGE_BUCKET: mybosun-55015.firebasestorage.app
-          VITE_FIREBASE_MESSAGING_SENDER_ID: "396322771335"
-          VITE_FIREBASE_APP_ID: 1:396322771335:web:bb238671f57f0e41e4c322
+          VITE_FIREBASE_API_KEY: AIzaSyBVEd4oDj-cXEK3NdSiEnRfdaC9HDcTjoE
+          VITE_FIREBASE_AUTH_DOMAIN: bosun-76bba.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: bosun-76bba
+          VITE_FIREBASE_STORAGE_BUCKET: bosun-76bba.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: "182377376039"
+          VITE_FIREBASE_APP_ID: 1:182377376039:web:9b2e012dbd4ba2eccb6102
           VITE_FUNCTIONS_REGION: asia-south1
         run: |
           npm ci
@@ -72,6 +72,6 @@ jobs:
           npm i -g firebase-tools
           firebase deploy \
             --only "${{ steps.targets.outputs.only }}" \
-            --project mybosun-55015 \
+            --project bosun-76bba \
             --token "$FIREBASE_TOKEN" \
             --non-interactive

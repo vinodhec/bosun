@@ -10,8 +10,8 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { renderInvoiceHtml } from '../utils/invoice.js';
 
-const PROJECT = 'mybosun-55015';
-const WEB_API_KEY = 'AIzaSyBCrM6y83hiSd9XJegR6YBOU12T0djCZH8';
+const PROJECT = 'bosun-76bba';
+const WEB_API_KEY = 'AIzaSyBVEd4oDj-cXEK3NdSiEnRfdaC9HDcTjoE';
 const CALLABLE_URL = 'https://adminaddcredits-ckrqtqwyqq-el.a.run.app';
 const ADMIN_UID = 'Ms7OAjDmChSwPsLtcRCApiR4nHO2'; // vinodhec@gmail.com (on ADMIN_EMAILS)
 const OUT = '/private/tmp/claude-501/-Users-maadiveedu-bosun/9d44b39e-3409-4262-ac1d-5de03b9a07fe/scratchpad/e2e-invoice.html';
