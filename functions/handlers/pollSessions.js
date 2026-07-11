@@ -762,12 +762,14 @@ export const pollSessions = onSchedule(
 // UPWARD to the authoritative figure the Console bills on. Purely a COGS/analytics correction —
 // failures are never charged, so the customer wallet is never touched.
 export const reconcileFailedCosts = onSchedule(
-  { region: 'asia-south1', schedule: 'every 15 minutes', secrets: [ANTHROPIC_API_KEY] },
+  // Once a day is plenty — this is a COGS/analytics correction, not time-sensitive, and a
+  // failed session has long since settled by the next run. 03:00 IST (off-peak).
+  { region: 'asia-south1', schedule: '0 3 * * *', timeZone: 'Asia/Kolkata', secrets: [ANTHROPIC_API_KEY] },
   async () => {
     const db = getFirestore();
     // Single-field equality query — no composite index. Only failures carry `costReconciled`, so
-    // this returns exactly the failed tasks not yet reconciled, and each pass drains up to 50.
-    const snap = await db.collection('tasks').where('costReconciled', '==', false).limit(50).get();
+    // this returns exactly the failed tasks not yet reconciled, and each run drains up to 200.
+    const snap = await db.collection('tasks').where('costReconciled', '==', false).limit(200).get();
     if (snap.empty) return;
     const client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
