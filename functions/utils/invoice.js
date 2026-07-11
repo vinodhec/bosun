@@ -30,7 +30,9 @@ export const SUPPLIER = {
   upi: { vpa: '606205039174@ICIC0006062.ifsc.npci', name: 'SRI BALAMURUGAN TRADERS' },
 };
 
-const INVOICE_PREFIX = 'SBMT'; // Sri BalaMurugan Traders
+// Software-line invoice series, kept SEPARATE from the proprietor's existing trading-business
+// invoices (auditor's requirement) — 'SW' marks it as the software series under the same GSTIN.
+const INVOICE_PREFIX = 'SW';
 
 /** Indian financial year label for a date: Apr 1–Mar 31 → 'YYYY-YY' (e.g. 2026-27). */
 export function financialYear(date = new Date()) {
