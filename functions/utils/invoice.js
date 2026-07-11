@@ -75,7 +75,9 @@ export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, tx
     reverseCharge: false,
     lineItems: [
       {
-        description: 'Website support & updates — prepaid credits',
+        // Framed as prepaid access to an AUTOMATED platform (SaaS, SAC 998315) — not bespoke
+        // IT consultancy — which supports the presumptive-business (44AD) substance.
+        description: 'Subscription credits — automated website platform access',
         sac: INVOICE_SAC_CODE,
         taxableInr: gst.taxable,
       },
@@ -147,7 +149,7 @@ export function renderInvoiceHtml(inv) {
       <div class="lbl" style="margin-top:8px">Reverse charge</div><div>No</div></div>
   </div>
   <table><thead><tr><th>Description</th><th>SAC</th><th class="r">Taxable value</th></tr></thead>
-  <tbody>${(inv.lineItems || []).map((li) => `<tr><td>${esc(li.description)}</td><td>${esc(li.sac)}</td><td class="r">${inr(li.taxableInr)}</td></tr>`).join('')}</tbody></table>
+  <tbody>${(inv.lineItems || []).map((li) => `<tr><td>${esc(li.description)}</td><td>${esc(li.sac || li.hsn)}</td><td class="r">${inr(li.taxableInr)}</td></tr>`).join('')}</tbody></table>
   <table class="totals"><tbody>
     <tr><td>Taxable value</td><td class="r">${inr(inv.taxableInr)}</td></tr>
     ${taxRows}

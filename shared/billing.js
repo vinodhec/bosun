@@ -19,12 +19,24 @@ export const ANTHROPIC_GST_RATE = 0.18;
 
 // ── OUTPUT GST (the tax we charge customers on OUR invoices) ──────────────────
 // Distinct from ANTHROPIC_GST_RATE (an input cost). Applied when a wallet top-up is
-// invoiced: the service is prepaid website support/development → SAC 998314 @ 18%.
+// invoiced: a prepaid WEBSITE SOFTWARE PRODUCT (credits) @ 18% GST.
 // GST is EXCLUSIVE (added on top of the wallet-credit amount): a top-up crediting ₹X
 // to the wallet is invoiced ₹X taxable + 18% GST, so the customer pays ₹X×1.18. B2B
 // customers reclaim the GST via input-tax credit, so the add-on is net-neutral to them.
+//
+// SERVICE, under a SAC (not HSN goods). Electronically-delivered software is a SUPPLY OF
+// SERVICE under GST — CGST Act Schedule II 5(d), and TCS v. State of AP (2004) (software is
+// "goods" only on physical media). So we bill SAC 998315 (SaaS / hosting & IT-infrastructure
+// / platform access), framing the supply as prepaid access to an AUTOMATED platform rather
+// than bespoke IT consultancy. GST 18%.
+//   NOTE — income tax is INDEPENDENT of the SAC label: the business can still file presumptive
+//   Sec 44AD (~6% of digital turnover, since receipts are ~all digital) rather than the
+//   professional 44ADA (50%), because 44AD/44ADA turns on the SUBSTANCE (a productised,
+//   automated, self-serve platform = business, not a proprietor's personal professional hours).
+//   The SAC on the invoice does not force 44ADA. Keep the ITR-4 nature-of-business code on the
+//   business side (14004/14005), NOT "software consultancy" (14002). (Analysis 2026-07-11.)
 export const OUTPUT_GST_RATE = 0.18;
-export const INVOICE_SAC_CODE = '998314'; // IT design & development services
+export const INVOICE_SAC_CODE = '998315'; // SaaS / platform access (service, not HSN goods)
 
 /**
  * Split a taxable amount (INR) into GST components for a tax invoice. Intra-state (supplier
