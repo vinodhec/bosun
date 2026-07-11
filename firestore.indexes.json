@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "invoices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "issuedAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "features",
       "queryScope": "COLLECTION",
       "fields": [

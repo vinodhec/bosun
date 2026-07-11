@@ -11,6 +11,7 @@ import DesignCard from '../components/DesignCard.jsx';
 import ComparisonCard from '../components/ComparisonCard.jsx';
 import ChatCard from '../components/ChatCard.jsx';
 import Leaderboard from '../components/Leaderboard.jsx';
+import InvoicesPanel from '../components/InvoicesPanel.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
@@ -326,6 +327,7 @@ export default function Dashboard() {
                     {orgs.map((o) => <option key={o.id} value={o.id}>{o.name || 'Untitled'}</option>)}
                   </select>
                 )}
+                {org && <InvoicesPanel orgId={orgId} />}
               </div>
             </div>
           </section>

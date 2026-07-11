@@ -94,6 +94,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Tax invoices (issued on wallet top-ups) — org-scoped read; backend-only writes.
+    // Same shape as transactions: a member reads their org's invoices; only the Admin SDK
+    // (adminAddCredits) ever writes them. The `counters` doc that numbers them is fully
+    // internal — clients never touch it (covered by the default-deny below).
+    match /invoices/{invoiceId} {
+      allow read:  if memberOf(resource.data.orgId);
+      allow write: if false;
+    }
+
     // Connected websites (GitHub repos). Doc id = owner uid in v1 (one site/user).
     // Read your own; the GitHub install callback writes it via the Admin SDK.
     match /sites/{userId} {

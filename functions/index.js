@@ -33,7 +33,12 @@ export {
   adminQuoteTask,
   adminMetrics,
   adminBackfillGamification,
+  adminListInvoices,
+  adminInvoiceHtml,
 } from './handlers/admin.js';
+
+// Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML.
+export { listMyInvoices, getMyInvoiceHtml } from './handlers/invoices.js';
 
 // Operator-only: connect an org's Figma account so a pasted design link enriches a fix with
 // exact design context (the agent builds the UI pixel-perfect).

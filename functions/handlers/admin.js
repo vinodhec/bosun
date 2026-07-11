@@ -4,6 +4,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
+import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -30,17 +31,62 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
   }
   const db = getFirestore();
   const orgRef = db.collection('organisations').doc(orgId);
-  const balance = await db.runTransaction(async (tx) => {
+  const counterRef = db.collection('counters').doc('invoices');
+  const txnRef = db.collection('transactions').doc();
+  const invRef = db.collection('invoices').doc();
+  const result = await db.runTransaction(async (tx) => {
+    // Reads first (Firestore requires all reads before any write in a transaction).
     const snap = await tx.get(orgRef);
     if (!snap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const counterSnap = await tx.get(counterRef);
+
     const next = Number(snap.data().balance ?? 0) + amount;
-    tx.update(orgRef, { balance: next });
-    tx.set(db.collection('transactions').doc(), {
-      orgId, type: 'credit', amount, by, createdAt: FieldValue.serverTimestamp(),
+
+    // Gapless per-financial-year invoice number, allocated atomically with the credit.
+    const fy = financialYear();
+    const seq = Number(counterSnap.get(fy) ?? 0) + 1;
+    const number = formatInvoiceNumber(fy, seq);
+    const invoice = buildInvoiceRecord({
+      org: snap.data(), orgId, taxableInr: amount, number, fy, seq, txnId: txnRef.id, by,
     });
-    return next;
+
+    // Writes.
+    tx.update(orgRef, { balance: next });
+    tx.set(txnRef, {
+      orgId, type: 'credit', amount, by, invoiceId: invRef.id, invoiceNumber: number,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    tx.set(counterRef, { [fy]: seq }, { merge: true });
+    tx.set(invRef, { ...invoice, createdAt: FieldValue.serverTimestamp() });
+    return { balance: next, invoiceId: invRef.id, invoiceNumber: number };
   });
-  return { orgId, balance };
+  return { orgId, ...result };
+});
+
+// Operator: list an org's issued tax invoices (newest first), plus printable HTML on demand.
+export const adminListInvoices = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const snap = await db
+    .collection('invoices')
+    .where('orgId', '==', orgId)
+    .orderBy('issuedAtMs', 'desc')
+    .limit(200)
+    .get();
+  return { invoices: snap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()) })) };
+});
+
+// Operator: printable HTML for one invoice (Admin panel "download" / print).
+export const adminInvoiceHtml = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const invoiceId = String(request.data?.invoiceId ?? '').trim();
+  if (!invoiceId) throw new HttpsError('invalid-argument', 'invoiceId required.');
+  const db = getFirestore();
+  const snap = await db.collection('invoices').doc(invoiceId).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Invoice not found.');
+  return { html: renderInvoiceHtml(snap.data()) };
 });
 
 // Operator-only manual deduction. Used for refunds-in-reverse, fee corrections, or settling

@@ -17,6 +17,35 @@ import { usdToInr, DEFAULT_USD_TO_INR } from './currency.js';
 /** GST rate Anthropic charges Indian customers on top of raw API cost. */
 export const ANTHROPIC_GST_RATE = 0.18;
 
+// ── OUTPUT GST (the tax we charge customers on OUR invoices) ──────────────────
+// Distinct from ANTHROPIC_GST_RATE (an input cost). Applied when a wallet top-up is
+// invoiced: the service is prepaid website support/development → SAC 998314 @ 18%.
+// GST is EXCLUSIVE (added on top of the wallet-credit amount): a top-up crediting ₹X
+// to the wallet is invoiced ₹X taxable + 18% GST, so the customer pays ₹X×1.18. B2B
+// customers reclaim the GST via input-tax credit, so the add-on is net-neutral to them.
+export const OUTPUT_GST_RATE = 0.18;
+export const INVOICE_SAC_CODE = '998314'; // IT design & development services
+
+/**
+ * Split a taxable amount (INR) into GST components for a tax invoice. Intra-state (supplier
+ * and buyer in the same state) → CGST + SGST, half the rate each; inter-state → IGST at the
+ * full rate. Amounts are rounded to 2 decimals (paise); CGST+SGST are forced to sum to the
+ * total tax exactly so rounding never drifts. `total` = taxable + tax.
+ */
+export function gstBreakdown(taxableInr, { intraState = true, rate = OUTPUT_GST_RATE } = {}) {
+  const round2 = (n) => Math.round(Number(n) * 100) / 100;
+  const taxable = round2(taxableInr);
+  const tax = round2(taxable * rate);
+  let cgst = 0, sgst = 0, igst = 0;
+  if (intraState) {
+    cgst = round2(taxable * (rate / 2));
+    sgst = round2(tax - cgst); // absorb any rounding remainder into SGST so cgst+sgst === tax
+  } else {
+    igst = tax;
+  }
+  return { taxable, rate, cgst, sgst, igst, tax, total: round2(taxable + tax) };
+}
+
 /** Minimum charge for any completed fix (INR). */
 export const MIN_CHARGE_INR = 75;
 /**
