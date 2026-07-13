@@ -66,9 +66,12 @@ async function localityInfo({ locality, city, category }) {
 // precision, so we deliberately cast wide. The regional-language equivalents are translated per-target
 // by localityInfo (Gemini), so this stays region-agnostic.
 const PROP_GROUPS = {
-  residential: { en: 'house OR flat OR apartment OR villa OR home OR plot OR land' },
-  commercial: { en: '"office space" OR office OR shop OR showroom OR "commercial space" OR commercial OR warehouse' },
-  land: { en: 'plot OR land OR "vacant land" OR "farm land" OR acre OR cent' },
+  // The DEFAULT group (no demand shape — all town-level targets land here) must cover every supply
+  // type an owner might post, incl. farm properties: rural TN posts say "farm land"/"acre", not
+  // "plot". Recall-wide is safe — the Gemini relevance gate downstream enforces precision.
+  residential: { en: 'house OR flat OR apartment OR villa OR home OR plot OR land OR farmhouse OR "farm land" OR acre' },
+  commercial: { en: '"office space" OR office OR shop OR showroom OR "commercial space" OR commercial OR warehouse OR godown' },
+  land: { en: 'plot OR land OR "vacant land" OR "farm land" OR "agricultural land" OR farmhouse OR acre OR cent' },
   pg: { en: '"paying guest" OR PG OR hostel OR "room for rent"' },
 };
 const INTENT_EN = 'sale OR rent OR lease';
@@ -82,7 +85,9 @@ export function categoryForShape(shape) {
   const p = String(shape?.propertyType || '').toLowerCase();
   if (/office|shop|showroom|warehouse|commercial|industrial|mall|godown|\bhall\b|hotel|resort|guest house/.test(p)) return 'commercial';
   if (/paying guest|\bpg\b|hostel/.test(p)) return 'pg';
-  if (/plot|land|acre|cent/.test(p)) return 'land';
+  // Farm House rides the land group too — its supply-side posts read like land posts (acreage,
+  // agricultural terms), not like flats.
+  if (/plot|land|acre|cent|farm|agri/.test(p)) return 'land';
   return 'residential';
 }
 

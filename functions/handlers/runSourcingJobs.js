@@ -33,20 +33,23 @@ function isPlausibleTarget(t) {
 // posts and still fill maxPerRun. Bounds the extra Apify enrichment cost to OVERSAMPLE × maxPerRun.
 const CLASSIFY_OVERSAMPLE = 3;
 
-// Scheduled sourced-listing relay (see utils/sourcing.js). Once a day, for every org with
-// sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them FOREVER
-// against sourcingSeen/{orgId}/keys, HMAC-sign + POST each NEW one to the org's webhook, and debit
-// the org wallet a small per-listing fee for the ones that were accepted (2xx). This is a separate,
-// near-zero-COGS metered lane — it never touches the managed-agent pipeline or finalize.js.
+// Scheduled sourced-listing relay (see utils/sourcing.js). Every 2 hours 07:00–21:00 IST (8
+// runs/day — raised from once-daily for the 30-day full-TN sourcing program, 2026-07-13), for every
+// org with sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them
+// FOREVER against sourcingSeen/{orgId}/keys, HMAC-sign + POST each NEW one to the org's webhook, and
+// debit the org wallet a small per-listing fee for the ones that were accepted (2xx). Each pull
+// serves the next DUE targets (the platform stamps lastServedAt), so intra-day runs rotate through
+// different localities rather than re-hitting the morning's. This is a separate, near-zero-COGS
+// metered lane — it never touches the managed-agent pipeline or finalize.js.
 
-const RELAY_CONCURRENCY = 5;
+const RELAY_CONCURRENCY = 10;
 const RELAY_TIMEOUT_MS = 15000;
 const GETALL_CHUNK = 300; // Firestore getAll batch size for the dedup lookup
 
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    schedule: 'every day 07:00',
+    schedule: '0 7-21/2 * * *', // 07:00, 09:00, …, 21:00 IST — 8 runs/day
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
     timeoutSeconds: 540,
