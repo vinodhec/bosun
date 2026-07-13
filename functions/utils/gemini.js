@@ -50,22 +50,30 @@ export function geminiConfigured() {
 export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, schema, temperature = 0, maxOutputTokens = 512 }) {
   const ai = geminiClient();
   if (!ai || !prompt) return null;
-  try {
-    const resp = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        ...(system ? { systemInstruction: system } : {}),
-        responseMimeType: 'application/json',
-        ...(schema ? { responseSchema: schema } : {}),
-        temperature,
-        maxOutputTokens,
-      },
-    });
-    const text = resp.text;
-    return text ? JSON.parse(text) : null;
-  } catch (e) {
-    console.error('gemini:generateJson:err', e?.message || e);
-    return null;
+  // One retry on transient failures (429 rate limit / 5xx) — burst runs hammer the classifier and a
+  // single blip shouldn't degrade a lead to fail-open. Hard auth errors (403 etc.) don't retry.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const resp = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          ...(system ? { systemInstruction: system } : {}),
+          responseMimeType: 'application/json',
+          ...(schema ? { responseSchema: schema } : {}),
+          temperature,
+          maxOutputTokens,
+        },
+      });
+      const text = resp.text;
+      return text ? JSON.parse(text) : null;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      const transient = /\b(429|500|503|UNAVAILABLE|RESOURCE_EXHAUSTED|fetch failed|ETIMEDOUT)\b/i.test(msg);
+      console.error('gemini:generateJson:err', msg.slice(0, 300), transient && attempt === 0 ? '(retrying)' : '');
+      if (!transient || attempt === 1) return null;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
   }
+  return null;
 }

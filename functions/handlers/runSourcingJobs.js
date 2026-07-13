@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -111,6 +111,8 @@ export async function runForOrg(
   const all = [];
   for (const query of queries) {
     const items = await fetchSerp({ apifyToken, actorId, query, freshness, maxPages });
+    // Query provenance — relayed with the listing so the receiver can audit WHY a lead was fetched.
+    for (const it of items) if (it && !it.sourceQuery) it.sourceQuery = query;
     all.push(...items);
   }
 
@@ -163,7 +165,11 @@ export async function runForOrg(
     }
     if (enriched?.phone) c.listing.phone = enriched.phone;
     if (enriched?.postedAt) c.listing.postedAt = enriched.postedAt;
+    // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
+    if (enriched?.images?.length) c.listing.images = enriched.images;
   });
+  const withImages = candidates.filter((c) => c.listing.images?.length).length;
+  console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
 
   // 3b2) HARD recency gate on the actual FB post date. Drop anything we KNOW is older than the window
   // (this is what actually enforces "posted in the last N months"). Fail-OPEN when the date is unknown
@@ -199,6 +205,14 @@ export async function runForOrg(
       if (!verdict.keep && !verdict.degraded) {
         c.drop = true;
         c.dropReason = verdict.reason || 'off-target';
+        return;
+      }
+      // Degraded fail-open is SIGNAL-GATED: when the classifier is down we still relay plausible
+      // Indian listings (Indian mobile / ₹-lakh-crore price / the target locality named in the text)
+      // but drop everything else — a Gemini outage must not relay+bill US solar-contract posts.
+      if (verdict.degraded && !hasIndiaSignal(`${c.listing.title || ''} ${c.listing.snippet || ''}`, target.locality)) {
+        c.drop = true;
+        c.dropReason = 'degraded-no-india-signal';
         return;
       }
       // Provenance for the receiver: 'verified' = Gemini confirmed the lead; 'unverified' = the

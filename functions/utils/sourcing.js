@@ -51,6 +51,20 @@ export function tbsForMonths(months) {
 // stale much faster than sale leads), plus how many stale leads a target may fall back to when
 // NOTHING fresh survives the gate. The platform's query-matrix response can override any field
 // via `policy: { saleMonths, rentMonths, fallbackMaxLeads }`.
+/**
+ * Cheap deterministic "is this plausibly an INDIAN property post" check — the gate for classifier
+ * fail-open. Any of: an Indian mobile, an Indian price idiom (₹ / lakh / crore), or the target
+ * locality named in the text. Keeps degraded-mode relays from billing US/global noise.
+ */
+export function hasIndiaSignal(text, locality) {
+  const t = String(text || '');
+  if (/(?:\+?91[\s-]?|0)?[6-9]\d{9}(?!\d)/.test(t.replace(/[^\d+]/g, ''))) return true;
+  if (/₹|\b(?:lakh|lakhs|lac|crore|crores)\b/i.test(t)) return true;
+  const loc = String(locality || '').trim();
+  if (loc && t.toLowerCase().includes(loc.toLowerCase())) return true;
+  return false;
+}
+
 export const DEFAULT_SOURCING_POLICY = { saleMonths: 3, rentMonths: 1, fallbackMaxLeads: 3 };
 
 /**
@@ -233,12 +247,54 @@ export function extractPhone(text) {
   return m ? `+91${m[1]}` : null;
 }
 
+// How many post photos we relay per listing — enough for a property gallery preview without
+// bloating the webhook body.
+const MAX_POST_IMAGES = 5;
+
+/**
+ * Collect up to MAX_POST_IMAGES https image URLs from a facebook-posts-scraper dataset item.
+ * The actor's media shape varies by post type, so probe every plausible field defensively:
+ * `media[].photo_image.uri` / `media[].image.uri` (image sometimes a bare string), `attachments`
+ * (same entry shapes), `images[]` / `photos[]`, and flat `imageUrl` / `thumbnail` fields.
+ * Deliberately ignores generic `url` fields — on media entries those are facebook.com permalinks,
+ * not image files. Dedups exact URLs; returns [] when nothing usable is found.
+ */
+export function extractPostImages(it, max = MAX_POST_IMAGES) {
+  const seen = new Set();
+  const out = [];
+  const push = (u) => {
+    if (typeof u !== 'string') return;
+    const s = u.trim();
+    if (!/^https:\/\//i.test(s) || seen.has(s)) return;
+    seen.add(s);
+    if (out.length < max) out.push(s);
+  };
+  const pushEntry = (m) => {
+    if (!m) return;
+    if (typeof m === 'string') return push(m);
+    push(m.photo_image?.uri);
+    push(typeof m.image === 'string' ? m.image : m.image?.uri);
+    push(m.imageUrl);
+    push(m.uri);
+    push(m.thumbnail);
+  };
+  for (const field of ['media', 'attachments', 'images', 'photos']) {
+    const arr = it?.[field];
+    if (Array.isArray(arr)) for (const m of arr) pushEntry(m);
+  }
+  pushEntry(it?.image);
+  push(it?.imageUrl);
+  push(it?.thumbnail);
+  return out;
+}
+
 /**
  * Enrich ONE sourced listing by fetching its full Facebook post — the SERP snippet is truncated
  * ("…Read more"), so we scrape the post for the complete description + the owner phone. Video
  * captions come back on `previewDescription`, regular posts on `text`; we take the richest string.
- * Priced into the sourcing cost baseline. Best-effort: returns { text, phone } or null on any miss,
- * so the caller falls back to the SERP snippet.
+ * Post photos are relayed too (see extractPostImages) — `images` is present only when found.
+ * Priced into the sourcing cost baseline. Best-effort: returns { text, phone, postedAt, images? }
+ * or null on any miss, so the caller falls back to the SERP snippet.
  */
 export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) {
   if (!apifyToken || !url) return null;
@@ -265,8 +321,10 @@ export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) 
     const rawTime = it.time || it.timestamp || it.date || it.publishTime || null;
     const parsed = rawTime ? Date.parse(rawTime) : NaN;
     const postedAt = Number.isFinite(parsed) ? parsed : null;
-    if (!text) return postedAt ? { text: '', phone: null, postedAt } : null;
-    return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt };
+    const images = extractPostImages(it);
+    const withImages = images.length ? { images } : {}; // omit entirely when none — no empty arrays on the relay body
+    if (!text) return (postedAt || images.length) ? { text: '', phone: null, postedAt, ...withImages } : null;
+    return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, ...withImages };
   } catch (e) {
     console.error('enrichPost:err', e?.message || e);
     return null;
