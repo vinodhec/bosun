@@ -465,7 +465,7 @@ export function isLowBalance(balanceInr) {
  * per-listing price = our real per-listing cost baseline + a fixed net margin, with a small random
  * jitter so the debit still reads like a real variable cost. Measured COGS: Apify Google-SERP
  * ~₹0.05–0.10/listing; optional Facebook-post enrichment ~₹0.47/enriched post. The baseline covers
- * SERP + one enrichment, so the ₹1.90 net margin holds even for ENRICHED leads (and runs higher on
+ * SERP + one enrichment, so the ₹1.82 net margin holds even for ENRICHED leads (and runs higher on
  * the many that are never enriched). Tune the baseline / margin / jitter here and nowhere else.
  */
 // Per-property Gemini cost: the sourcing pipeline spends a Gemini call or two on each property (the
@@ -475,11 +475,12 @@ export function isLowBalance(balanceInr) {
 // price, so the customer pays this flat 3 paise with no markup on it.
 export const SOURCED_GEMINI_COST_INR = 0.03;   // 3 paise/property (≈2 paise Gemini COGS + 18% GST, rounded up)
 export const SOURCED_COST_BASELINE_INR = 0.55 + SOURCED_GEMINI_COST_INR; // measured VARIABLE cost/property: Apify (SERP ~0.08 + FB enrichment ~0.47) + Gemini (GST-incl.)
-export const SOURCED_TARGET_MARGIN_INR = 1.40; // margin over the variable cost. NOTE: the $29/mo Apify base is a
-                                               // SEPARATE fixed cost (covers ~4,600 enriched props/mo) — not in here.
+export const SOURCED_TARGET_MARGIN_INR = 1.82; // margin over the variable cost — centres each lead at ₹2.40 (repriced
+                                               // 2026-07-13). NOTE: the $29/mo Apify base is a SEPARATE fixed cost
+                                               // (covers ~4,600 enriched props/mo) — not in here.
 export const SOURCED_PRICE_JITTER_INR = 0.15;  // ± random spread around (baseline + margin)
-export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹1.83
-export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.13
+export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹2.25
+export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.55
 
 /**
  * One listing's price: uniform in [MIN, MAX] with 2-decimal (paise) precision. `rng` is injectable
