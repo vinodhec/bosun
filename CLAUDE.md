@@ -185,6 +185,27 @@ REST API** instead:
 - `firestore.rules` unchanged — `orgSecrets.figma` is client-unreadable; the `org.figma` mirror is
   owner-readable like other non-secret org status fields.
 
+## Property sourcing relay
+
+A separate, near-zero-COGS metered lane — it never touches the fix pipeline or `finalize.js`.
+Daily cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, 07:00 IST) runs for every
+org with `sourcing.enabled`:
+
+- **Matrix pull** — orgs with `sourcing.matrixUrl` pull the platform's demand-ranked query matrix
+  (HMAC-signed GET, `utils/sourcing.js#fetchQueryMatrix`): `targets` plus a per-intent freshness
+  `policy { saleMonths, rentMonths, fallbackMaxLeads }` (defaults 3/1/3 via
+  `DEFAULT_SOURCING_POLICY`). Orgs without a matrix run static `cfg.queries` (no classify/policy).
+- **Fetch → gates** — Apify Google-SERP fetch, individual-post filter, dedup-forever vs
+  `sourcingSeen/{orgId}/keys`, FB-post enrichment (real `postedAt`), hard org-level recency cutoff
+  (`freshnessMonths`, the outer bound), then (matrix path only) a Gemini classify gate
+  (`utils/classifyListing.js`, fails OPEN → lead relayed as `classifyStatus:'unverified'`).
+- **Per-intent freshness** — after classify, rent/lease leads older than `rentMonths` and
+  sale/unknown-intent leads older than `saleMonths` are dropped (unknown `postedAt` is kept). A
+  target left with ZERO fresh leads re-admits up to `fallbackMaxLeads` newest stale ones as
+  `freshness:'stale-fallback'`; everything else relays as `'fresh'`.
+- **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
+  it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
+
 ## Frontend conventions
 
 - Vite aliases: `@` → `src/`, `@shared` → `shared/`. Use them in imports.

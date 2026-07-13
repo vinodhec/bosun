@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -87,7 +87,7 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target } = {},
+  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target, policy } = {},
 ) {
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
@@ -201,12 +201,50 @@ export async function runForOrg(
         c.dropReason = verdict.reason || 'off-target';
         return;
       }
+      // Provenance for the receiver: 'verified' = Gemini confirmed the lead; 'unverified' = the
+      // classifier errored and the fail-open kept it (human consent call is the backstop).
+      c.listing.classifyStatus = verdict.degraded ? 'unverified' : 'verified';
       if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
       if (verdict.extracted) c.listing.extracted = verdict.extracted;
     });
     const kept = candidates.filter((c) => !c.drop);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: candidates.length, kept: kept.length, target: target.locality }));
-    candidates = cap > 0 ? kept.slice(0, cap) : kept;
+
+    // 3c2) Per-intent freshness gate — the org-level cutoff above (3b2) is the OUTER bound; this
+    // tightens it per listing intent now that classify told us Sale vs Rent. Rent/lease leads go
+    // stale fast (rentMonths); sale or UNKNOWN intent gets the wider saleMonths window (fail-open
+    // to the wider window, mirroring the classify philosophy). Unknown postedAt is kept (same
+    // fail-open as 3b2 — never drop on a missing date).
+    const pol = normalizeSourcingPolicy(policy);
+    const saleCutoff = cutoffMsForMonths(pol.saleMonths);
+    const rentCutoff = cutoffMsForMonths(pol.rentMonths);
+    const fresh = [];
+    const staleDropped = [];
+    for (const c of kept) {
+      const intent = String(c.listing.extracted?.listingType || '');
+      const intentCutoff = /rent|lease/i.test(intent) ? rentCutoff : saleCutoff;
+      if (c.listing.postedAt && c.listing.postedAt < intentCutoff) staleDropped.push(c);
+      else fresh.push(c);
+    }
+    for (const c of fresh) c.listing.freshness = 'fresh';
+
+    // Stale fallback: a target with ZERO fresh survivors still deserves its best stale leads —
+    // re-admit up to fallbackMaxLeads, most-recent first, marked so the receiver can badge them.
+    let gated = fresh;
+    let readmitted = 0;
+    if (!fresh.length && staleDropped.length) {
+      staleDropped.sort((a, b) => b.listing.postedAt - a.listing.postedAt); // postedAt always set here
+      gated = staleDropped.slice(0, pol.fallbackMaxLeads);
+      for (const c of gated) c.listing.freshness = 'stale-fallback';
+      readmitted = gated.length;
+    }
+    if (staleDropped.length) {
+      console.log('runSourcingJobs:intent-stale-drop', orgId, JSON.stringify({
+        dropped: staleDropped.length, readmitted, fresh: fresh.length,
+        saleMonths: pol.saleMonths, rentMonths: pol.rentMonths, target: target.locality,
+      }));
+    }
+    candidates = cap > 0 ? gated.slice(0, cap) : gated;
   }
   if (!candidates.length) {
     console.log('runSourcingJobs:none-after-classify', orgId);
@@ -284,6 +322,9 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, dryRun });
   const targets = (Array.isArray(matrix?.targets) ? matrix.targets : []).filter(isPlausibleTarget);
   if (!targets.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no due targets' };
+  // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix
+  // already normalized it over DEFAULT_SOURCING_POLICY, so an older platform just yields defaults).
+  const policy = matrix.policy;
 
   const chosen = targets.slice(0, topN);
   let relayed = 0;
@@ -310,6 +351,7 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
     const r = await runForOrg(db, apifyToken, orgId, cfg, {
       queries,
       target: { locality: t.locality, city: t.city, shape: shapeLabel(t) },
+      policy,
     });
     relayed += r.relayed || 0;
     amountInr += r.amountInr || 0;

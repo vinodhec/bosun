@@ -47,6 +47,29 @@ export function tbsForMonths(months) {
   return `cdr:1,cd_min:${fmt(min)},cd_max:${fmt(now)}`;
 }
 
+// Per-intent freshness policy defaults: how old a lead may be by listing intent (rent leads go
+// stale much faster than sale leads), plus how many stale leads a target may fall back to when
+// NOTHING fresh survives the gate. The platform's query-matrix response can override any field
+// via `policy: { saleMonths, rentMonths, fallbackMaxLeads }`.
+export const DEFAULT_SOURCING_POLICY = { saleMonths: 3, rentMonths: 1, fallbackMaxLeads: 3 };
+
+/**
+ * Merge a matrix `policy` over DEFAULT_SOURCING_POLICY, dropping unparseable values (degrade-safe:
+ * a missing/garbled policy just means the defaults). Months clamp to >= 1; fallbackMaxLeads may be
+ * 0 (an org can disable the stale fallback entirely).
+ */
+export function normalizeSourcingPolicy(raw) {
+  const pick = (v, min, dflt) => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n >= min ? n : dflt;
+  };
+  return {
+    saleMonths: pick(raw?.saleMonths, 1, DEFAULT_SOURCING_POLICY.saleMonths),
+    rentMonths: pick(raw?.rentMonths, 1, DEFAULT_SOURCING_POLICY.rentMonths),
+    fallbackMaxLeads: pick(raw?.fallbackMaxLeads, 0, DEFAULT_SOURCING_POLICY.fallbackMaxLeads),
+  };
+}
+
 /** Milliseconds cutoff for "posted within the last N months" — the hard recency gate. */
 export function cutoffMsForMonths(months) {
   const n = Math.min(60, Math.max(1, Math.floor(Number(months)) || DEFAULT_FRESHNESS_MONTHS));
@@ -167,8 +190,10 @@ export function signPayload(secret, bodyString, timestamp = Date.now()) {
  * into search queries and ordered best-first. HMAC-signs `${timestamp}.query-matrix` with the org's
  * shared secret (the same secret the relay webhook verifies on the platform side). `dryRun` asks the
  * platform NOT to advance each target's refresh schedule — right for manual / top-target testing so a
- * dry run never consumes a locality's cadence. Returns the parsed body ({ targets: [...] }) or null on
- * any failure (degrade-safe: a bad pull just means nothing to source).
+ * dry run never consumes a locality's cadence. Returns the parsed body ({ targets: [...], policy })
+ * with `policy` normalized over DEFAULT_SOURCING_POLICY (the platform sets the per-intent freshness
+ * windows; defaults cover an older platform that doesn't send one), or null on any failure
+ * (degrade-safe: a bad pull just means nothing to source).
  */
 export async function fetchQueryMatrix({ matrixUrl, secret, limit, dryRun = true }) {
   if (!matrixUrl || !secret) return null;
@@ -191,7 +216,9 @@ export async function fetchQueryMatrix({ matrixUrl, secret, limit, dryRun = true
       console.error('fetchQueryMatrix:http', resp.status);
       return null;
     }
-    return await resp.json();
+    const body = await resp.json();
+    if (!body || typeof body !== 'object') return null;
+    return { ...body, policy: normalizeSourcingPolicy(body.policy) };
   } catch (e) {
     console.error('fetchQueryMatrix:err', e?.message || e);
     return null;
