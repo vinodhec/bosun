@@ -212,7 +212,8 @@ export async function startFeatureStep(db, featureId, stepIndex, { baseBranch = 
     });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
   } catch (e) {
-    await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+    console.error('startFeatureStep:dispatch_failed', taskRef.id, featureId, stepIndex, e?.status, e?.message || e);
+    await taskRef.update({ status: 'failed', error: 'dispatch_failed', errorDetail: String(e?.message || e).slice(0, 500) });
     throw e;
   }
 
@@ -262,7 +263,8 @@ export async function continueFeatureStep(db, featureId, stepIndex, { sessionId,
     // Resume the warm session with this step's instruction (replaces the revise prompt).
     await continueFixSession({ sessionId, changes: displayPrompt, instruction: agentPrompt });
   } catch (e) {
-    await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+    console.error('continueFeatureStep:dispatch_failed', taskRef.id, featureId, stepIndex, e?.status, e?.message || e);
+    await taskRef.update({ status: 'failed', error: 'dispatch_failed', errorDetail: String(e?.message || e).slice(0, 500) });
     throw e;
   }
 

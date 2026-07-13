@@ -3,7 +3,7 @@
 // only — the atomic Firestore reads/writes (counter + invoice doc) live in admin.js so they run
 // inside the same transaction as the credit. Invoices are backend-only writes (cardinal rule).
 import qrcode from 'qrcode-generator';
-import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE } from '../shared/billing.js';
+import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE, PLATFORM_FEE_RATE, platformFeeInr } from '../shared/billing.js';
 import { SIGNATURE_DATA_URI } from './signatureAsset.js';
 import { LOGO_DATA_URI } from './logoAsset.js';
 
@@ -68,13 +68,18 @@ export function buyerFromOrg(org) {
 }
 
 /**
- * Build the frozen invoice record for a top-up. `taxableInr` is the wallet-credit amount
- * (whole rupees); GST is added on top. Everything the invoice needs is snapshotted so a later
- * change to the org's billing profile never mutates a historical invoice.
+ * Build the frozen invoice record for a top-up. `creditInr` is the wallet-credit amount (whole
+ * rupees) that actually lands in the wallet; a PLATFORM_FEE_RATE platform fee is charged ON TOP as
+ * a second taxable line, and GST is computed ONCE on the combined (credit + fee) taxable base. So
+ * a ₹5000 top-up bills ₹5000 credit + ₹500 fee + 18% GST on ₹5500 = ₹6490 payable, wallet +₹5000.
+ * Everything the invoice needs is snapshotted so a later change to the org's billing profile (or to
+ * the fee rate) never mutates a historical invoice.
  */
-export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, txnId, by, issuedAtMs }) {
+export function buildInvoiceRecord({ org, orgId, creditInr, number, fy, seq, txnId, by, issuedAtMs }) {
   const buyer = buyerFromOrg(org);
-  const gst = gstBreakdown(taxableInr, { intraState: buyer.intraState });
+  const credit = Math.round(Number(creditInr));
+  const feeInr = platformFeeInr(credit);
+  const gst = gstBreakdown(credit + feeInr, { intraState: buyer.intraState });
   return {
     number, fy, seq,
     orgId,
@@ -94,11 +99,17 @@ export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, tx
         // IT consultancy — which supports the presumptive-business (44AD) substance.
         description: 'Subscription credits — automated website platform access',
         sac: INVOICE_SAC_CODE,
-        taxableInr: gst.taxable,
+        taxableInr: credit,
+      },
+      {
+        description: `Platform fee (${Math.round(PLATFORM_FEE_RATE * 100)}%)`,
+        sac: INVOICE_SAC_CODE,
+        taxableInr: feeInr,
       },
     ],
     gstRate: OUTPUT_GST_RATE,
-    taxableInr: gst.taxable,
+    platformFeeInr: feeInr,                                // the fee line, snapshotted for reporting
+    taxableInr: gst.taxable,                               // credit + fee (the combined GST base)
     cgstInr: gst.cgst,
     sgstInr: gst.sgst,
     igstInr: gst.igst,
@@ -106,7 +117,7 @@ export function buildInvoiceRecord({ org, orgId, taxableInr, number, fy, seq, tx
     totalInr: gst.total,                                  // taxable + tax, to the paise (for GST returns)
     roundOffInr: Math.round((Math.round(gst.total) - gst.total) * 100) / 100,
     payableInr: Math.round(gst.total),                    // rounded to whole rupee — what the customer pays
-    creditInr: Math.round(Number(taxableInr)),            // credits actually added to the wallet
+    creditInr: credit,                                    // credits actually added to the wallet (fee excluded)
   };
 }
 

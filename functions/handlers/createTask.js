@@ -147,8 +147,16 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   try {
     const { sessionId, firebaseFileIds } = await startFixSession({ prompt, images, repoUrl, githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs, figmaDesign, pageUrl, documents });
     await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
-  } catch {
-    await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+  } catch (e) {
+    // Surface the real cause to the operator (Cloud Logging + an operator-only field). The
+    // customer-facing `error` stays generic; sessionView never exposes errorDetail. A common
+    // cause is a stale vault_id 404-ing after an account migration — see utils/vault.js.
+    console.error('createTask:dispatch_failed', taskRef.id, orgId, e?.status, e?.message || e);
+    await taskRef.update({
+      status: 'failed',
+      error: 'dispatch_failed',
+      errorDetail: String(e?.message || e).slice(0, 500),
+    });
     throw new HttpsError('internal', 'We could not start the fix. You were not charged.');
   }
 

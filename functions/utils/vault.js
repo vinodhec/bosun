@@ -19,33 +19,54 @@ function client() {
  */
 export async function ensureOrgGithubVault({ orgId, vaultId, token }) {
   const c = client();
-  let vid = vaultId;
-  if (!vid) {
-    const v = await c.beta.vaults.create({ display_name: `org:${orgId}`, metadata: { orgId } });
-    vid = v.id;
-  }
-  try {
-    await c.beta.vaults.credentials.create(vid, {
-      display_name: 'github',
-      auth: { type: 'static_bearer', mcp_server_url: GH_MCP_URL, token },
-    });
-  } catch (e) {
-    // 409 = a credential already exists for this MCP URL → rotate its token.
-    if (e?.status === 409) {
-      const list = await c.beta.vaults.credentials.list(vid);
-      const items = list?.data ?? list?.body?.data ?? [];
-      const existing = items.find((x) => x.mcp_server_url === GH_MCP_URL) ?? items[0];
-      if (existing) {
-        await c.beta.vaults.credentials.update(existing.id, {
-          vault_id: vid,
-          auth: { type: 'static_bearer', token },
-        });
+
+  // Seed the GitHub static_bearer credential into `vid`, or rotate it if one already exists
+  // (409) for the GitHub MCP URL. Throws on any other failure — including a 404 when the vault
+  // itself doesn't exist, which the caller below uses to trigger a rebuild.
+  async function seedGithubCredential(vid) {
+    try {
+      await c.beta.vaults.credentials.create(vid, {
+        display_name: 'github',
+        auth: { type: 'static_bearer', mcp_server_url: GH_MCP_URL, token },
+      });
+    } catch (e) {
+      // 409 = a credential already exists for this MCP URL → rotate its token.
+      if (e?.status === 409) {
+        const list = await c.beta.vaults.credentials.list(vid);
+        const items = list?.data ?? list?.body?.data ?? [];
+        const existing = items.find((x) => x.mcp_server_url === GH_MCP_URL) ?? items[0];
+        if (existing) {
+          await c.beta.vaults.credentials.update(existing.id, {
+            vault_id: vid,
+            auth: { type: 'static_bearer', token },
+          });
+        }
+      } else {
+        throw e;
       }
-    } else {
-      throw e;
     }
   }
-  return vid;
+
+  async function createFreshVault() {
+    const v = await c.beta.vaults.create({ display_name: `org:${orgId}`, metadata: { orgId } });
+    await seedGithubCredential(v.id);
+    return v.id;
+  }
+
+  if (!vaultId) return await createFreshVault();
+
+  // A vaultId is stored, but it can go stale — e.g. a project/account migration binds the
+  // functions to a DIFFERENT Anthropic key that can't see a vault created under the old one, so
+  // the API 404s ("vault … not found") on every session and dispatch fails. Self-heal by
+  // provisioning a fresh vault under the CURRENT key and returning its id so the caller repoints
+  // the org (adminSetGithubRepo persists the returned id). Any non-404 error is a real failure.
+  try {
+    await seedGithubCredential(vaultId);
+    return vaultId;
+  } catch (e) {
+    if (e?.status === 404) return await createFreshVault();
+    throw e;
+  }
 }
 
 /**

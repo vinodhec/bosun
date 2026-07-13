@@ -47,8 +47,10 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
     const fy = financialYear();
     const seq = Number(counterSnap.get(fy) ?? 0) + 1;
     const number = formatInvoiceNumber(fy, seq);
+    // The wallet is credited `amount`; the invoice adds the platform fee ON TOP (buildInvoiceRecord),
+    // so the customer pays credit + fee + GST while only `amount` lands in the wallet balance below.
     const invoice = buildInvoiceRecord({
-      org: snap.data(), orgId, taxableInr: amount, number, fy, seq, txnId: txnRef.id, by,
+      org: snap.data(), orgId, creditInr: amount, number, fy, seq, txnId: txnRef.id, by,
     });
 
     // Writes.

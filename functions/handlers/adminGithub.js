@@ -168,8 +168,9 @@ export const adminRunFix = onCall(
           githubToken, vaultId: gh.vaultId, agentId: agentIdForModel(model), firebaseSAs,
         });
         await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
-      } catch {
-        await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+      } catch (e) {
+        console.error('adminRunFix:dispatch_failed', taskRef.id, orgId, e?.status, e?.message || e);
+        await taskRef.update({ status: 'failed', error: 'dispatch_failed', errorDetail: String(e?.message || e).slice(0, 500) });
         throw new HttpsError('internal', 'Could not start the fix.');
       }
       return { taskId: taskRef.id };
@@ -215,8 +216,9 @@ export const adminRunFix = onCall(
         firebaseSAs,
       });
       await taskRef.update({ status: 'running', sessionId, firebaseFileIds: firebaseFileIds || [] });
-    } catch {
-      await taskRef.update({ status: 'failed', error: 'dispatch_failed' });
+    } catch (e) {
+      console.error('adminRunFix:dispatch_failed', taskRef.id, orgId, e?.status, e?.message || e);
+      await taskRef.update({ status: 'failed', error: 'dispatch_failed', errorDetail: String(e?.message || e).slice(0, 500) });
       throw new HttpsError('internal', 'Could not start the fix.');
     }
     return { taskId: taskRef.id };

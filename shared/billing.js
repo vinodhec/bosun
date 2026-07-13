@@ -38,6 +38,14 @@ export const ANTHROPIC_GST_RATE = 0.18;
 export const OUTPUT_GST_RATE = 0.18;
 export const INVOICE_SAC_CODE = '998315'; // SaaS / platform access (service, not HSN goods)
 
+// Platform fee charged ON TOP of a wallet top-up: the customer pays the credit + this fee, but
+// only the credit lands in the wallet (the fee is platform revenue). It's a taxable supply on the
+// SAME invoice as the credit, so GST is computed ONCE on the combined (credit + fee) taxable base.
+export const PLATFORM_FEE_RATE = 0.10;
+export function platformFeeInr(creditInr) {
+  return Math.round(Number(creditInr || 0) * PLATFORM_FEE_RATE);
+}
+
 /**
  * Split a taxable amount (INR) into GST components for a tax invoice. Intra-state (supplier
  * and buyer in the same state) → CGST + SGST, half the rate each; inter-state → IGST at the
