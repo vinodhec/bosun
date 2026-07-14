@@ -188,8 +188,8 @@ REST API** instead:
 ## Property sourcing relay
 
 A separate, near-zero-COGS metered lane — it never touches the fix pipeline or `finalize.js`.
-Daily cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, 07:00 IST) runs for every
-org with `sourcing.enabled`:
+Cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, every 2h around the clock — 12
+runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
 
 - **Matrix pull** — orgs with `sourcing.matrixUrl` pull the platform's demand-ranked query matrix
   (HMAC-signed GET, `utils/sourcing.js#fetchQueryMatrix`): `targets` plus a per-intent freshness
