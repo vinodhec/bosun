@@ -148,6 +148,38 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
+  // Dead-link dedup: a listing that we ENRICH and then drop for a PERMANENT reason (too old, no
+  // property signal, or a confident off-target classify) is written to sourcingSeen too — so the
+  // expensive FB enrichment is paid ONCE, never re-paid on the next run for the same dead post. Safe
+  // because a post only gets older and a deterministic/confident reject won't change. We DELIBERATELY
+  // do NOT record transient drops — a degraded-classifier fail-open or a failed relay must retry, so
+  // a Gemini outage never permanently buries a good lead (cf. the 2026-07-13 classify incident).
+  const dead = new Map();
+  const markDead = (c, reason) => {
+    if (c?.key && c.listing?.url && !dead.has(c.key)) {
+      dead.set(c.key, { url: c.listing.url, dropReason: reason, postedAt: c.listing.postedAt || null });
+    }
+  };
+  const flushDead = async () => {
+    if (!dead.size) return;
+    const entries = [...dead.entries()];
+    for (let i = 0; i < entries.length; i += 400) {
+      const batch = db.batch();
+      for (const [k, info] of entries.slice(i, i + 400)) {
+        batch.set(seenCol.doc(k), {
+          url: info.url,
+          dropped: true, // distinguishes an enriched-but-dropped record from a relayed one
+          dropReason: info.dropReason,
+          postedAt: info.postedAt,
+          examinedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+    console.log('runSourcingJobs:dead-marked', orgId, JSON.stringify({ count: dead.size }));
+    dead.clear(); // idempotent across the multiple flush sites below
+  };
+
   // Per-run cap: relay at most `maxPerRun` NEW listings (0 / unset = no cap). Normally applied BEFORE
   // enrichment so a run's Apify enrichment cost + wallet debit are bounded. When a target is set (the
   // classify path), we enrich a LARGER pool (OVERSAMPLE × cap) so the Gemini gate can drop off-target
@@ -180,11 +212,18 @@ export async function runForOrg(
   // webhook so the platform can enforce/display it too.
   if (cutoffMs) {
     const before = candidates.length;
-    candidates = candidates.filter((c) => !(c.listing.postedAt && c.listing.postedAt < cutoffMs));
+    const keptRecent = [];
+    for (const c of candidates) {
+      // Known-old post (fail-open on unknown date) — permanently dead: it can only get older.
+      if (c.listing.postedAt && c.listing.postedAt < cutoffMs) markDead(c, 'stale-recency');
+      else keptRecent.push(c);
+    }
+    candidates = keptRecent;
     const dropped = before - candidates.length;
     if (dropped) console.log('runSourcingJobs:stale-drop', orgId, JSON.stringify({ dropped, keptAfter: candidates.length, cutoff: new Date(cutoffMs).toISOString().slice(0, 10) }));
     if (!candidates.length) {
       console.log('runSourcingJobs:none-after-recency', orgId);
+      await flushDead();
       return { relayed: 0, amountInr: 0 };
     }
   }
@@ -224,6 +263,12 @@ export async function runForOrg(
       if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
       if (verdict.extracted) c.listing.extracted = verdict.extracted;
     });
+    // Permanent classify rejects (no property signal / confident off-target) are dead — skip their
+    // enrichment next run. The transient 'degraded-no-india-signal' fail-open is NOT recorded so it
+    // retries once the classifier recovers.
+    for (const c of candidates) {
+      if (c.drop && c.dropReason !== 'degraded-no-india-signal') markDead(c, c.dropReason || 'off-target');
+    }
     const kept = candidates.filter((c) => !c.drop);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: candidates.length, kept: kept.length, target: target.locality }));
 
@@ -262,9 +307,16 @@ export async function runForOrg(
       }));
     }
     candidates = cap > 0 ? gated.slice(0, cap) : gated;
+    // Intent-stale posts that survive neither the fresh cut nor the stale-fallback re-admit are dead
+    // (recency-based, only get older). Anything still in the final relay set is spared.
+    const survivorKeys = new Set(candidates.map((c) => c.key));
+    for (const c of staleDropped) {
+      if (!survivorKeys.has(c.key)) markDead(c, 'stale-intent');
+    }
   }
   if (!candidates.length) {
     console.log('runSourcingJobs:none-after-classify', orgId);
+    await flushDead();
     return { relayed: 0, amountInr: 0 };
   }
 
@@ -284,6 +336,9 @@ export async function runForOrg(
       relayed += 1;
     }
   });
+  // Persist the enriched-but-dropped links so they're never re-enriched (covers the normal path and
+  // the relayed-0 path below). Runs after relay so a listing is never both relayed and marked dead.
+  await flushDead();
   if (!relayed) {
     console.log('runSourcingJobs:relayed-0', orgId);
     return { relayed: 0, amountInr: 0 };
