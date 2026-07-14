@@ -475,13 +475,13 @@ export function isLowBalance(balanceInr) {
 // price, so the customer pays this flat 3 paise with no markup on it.
 export const SOURCED_GEMINI_COST_INR = 0.03;   // 3 paise/property (≈2 paise Gemini COGS + 18% GST, rounded up)
 export const SOURCED_COST_BASELINE_INR = 0.55 + SOURCED_GEMINI_COST_INR; // measured VARIABLE cost/property: Apify (SERP ~0.08 + FB enrichment ~0.47) + Gemini (GST-incl.)
-export const SOURCED_TARGET_MARGIN_INR = 1.97; // margin over the variable cost — centres each lead at ₹2.55 (repriced
-                                               // 2026-07-15: the vet-before-enrich + batch-enrichment optimisation cut
-                                               // the org's own Apify bill to ~₹0.9–1.1/lead, so the org's ALL-IN cost
-                                               // (Bosun charge + their Apify) lands ≈₹3.5/lead; floor kept ≥ the prior
-                                               // range). NOTE: the $29/mo Apify base is a SEPARATE fixed cost
-                                               // (covers ~4,600 enriched props/mo) — not in here.
-export const SOURCED_PRICE_JITTER_INR = 0.15;  // ± random spread around (baseline + margin)
+export const SOURCED_TARGET_MARGIN_INR = 1.92; // margin over the variable cost — FLAT ₹2.50/lead (repriced 2026-07-15:
+                                               // jitter dropped for a simple flat price; the vet-before-enrich +
+                                               // batch-enrichment optimisation cut the org's own Apify bill to
+                                               // ~₹0.9–1.1/lead, so the org's ALL-IN cost lands ≈₹3.5/lead). NOTE: the
+                                               // $29/mo Apify base is a SEPARATE fixed cost (covers ~4,600 enriched
+                                               // props/mo) — not in here.
+export const SOURCED_PRICE_JITTER_INR = 0;     // FLAT pricing — every lead is exactly baseline + margin (₹2.50)
 export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹2.25
 export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.55
 
