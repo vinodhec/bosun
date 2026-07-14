@@ -332,6 +332,38 @@ export function extractPostImages(it, max = MAX_POST_IMAGES) {
  * Priced into the sourcing cost baseline. Best-effort: returns { text, phone, postedAt, images? }
  * or null on any miss, so the caller falls back to the SERP snippet.
  */
+/**
+ * Parse ONE facebook-posts-scraper dataset item into the enrichment shape
+ * `{ text, phone, postedAt, images? }` (or null when the item carries nothing usable). Video posts
+ * come back as a raw GraphQL video object — caption on `previewDescription`, date on `publish_time`
+ * (epoch seconds) — while regular posts use `text` + `time` (ISO); probe all shapes defensively.
+ */
+export function parseEnrichedItem(it) {
+  if (!it) return null;
+  const text = [it.previewDescription, it.text, it.message, it.postText]
+    .filter((t) => typeof t === 'string' && t.trim())
+    .sort((a, b) => b.length - a.length)[0] || '';
+  // Authoritative post date: regular posts carry `time`/`timestamp` (ISO or epoch), video posts
+  // `publish_time` (epoch SECONDS). This is how we ENFORCE the recency window — Google's SERP date
+  // filter is unreliable for facebook.com. Null when the post carries no parseable timestamp.
+  const rawTime = it.time || it.timestamp || it.date || it.publishTime || it.publish_time || null;
+  let parsed = NaN;
+  if (typeof rawTime === 'number') {
+    parsed = rawTime < 1e12 ? rawTime * 1000 : rawTime; // epoch seconds vs ms
+  } else if (rawTime) {
+    parsed = Date.parse(rawTime);
+    if (!Number.isFinite(parsed) && /^\d+$/.test(String(rawTime))) {
+      const n = Number(rawTime);
+      parsed = n < 1e12 ? n * 1000 : n;
+    }
+  }
+  const postedAt = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  const images = extractPostImages(it);
+  const withImages = images.length ? { images } : {}; // omit entirely when none — no empty arrays on the relay body
+  if (!text) return (postedAt || images.length) ? { text: '', phone: null, postedAt, ...withImages } : null;
+  return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, ...withImages };
+}
+
 export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) {
   if (!apifyToken || !url) return null;
   const endpoint = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
@@ -346,23 +378,56 @@ export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) 
       return null;
     }
     const items = await resp.json();
-    const it = Array.isArray(items) ? items[0] : null;
-    if (!it) return null;
-    const text = [it.previewDescription, it.text, it.message, it.postText]
-      .filter((t) => typeof t === 'string' && t.trim())
-      .sort((a, b) => b.length - a.length)[0] || '';
-    // Authoritative post date: the FB-posts scraper returns `time` (ISO). This is how we ENFORCE the
-    // recency window — Google's SERP date filter is unreliable for facebook.com (index date, and
-    // multi-month qdr values are ignored). Null when the post carries no parseable timestamp.
-    const rawTime = it.time || it.timestamp || it.date || it.publishTime || null;
-    const parsed = rawTime ? Date.parse(rawTime) : NaN;
-    const postedAt = Number.isFinite(parsed) ? parsed : null;
-    const images = extractPostImages(it);
-    const withImages = images.length ? { images } : {}; // omit entirely when none — no empty arrays on the relay body
-    if (!text) return (postedAt || images.length) ? { text: '', phone: null, postedAt, ...withImages } : null;
-    return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, ...withImages };
+    return parseEnrichedItem(Array.isArray(items) ? items[0] : null);
   } catch (e) {
     console.error('enrichPost:err', e?.message || e);
     return null;
+  }
+}
+
+/**
+ * Enrich MANY posts in ONE actor run — the scraper bills a flat "actor-start" event per run on top
+ * of the per-post fee, so batching N urls into one run pays that start fee once instead of N times
+ * (~15% off the per-post cost, plus one HTTP round-trip instead of N). Returns a Map keyed by the
+ * INPUT url → enrichment (same shape as enrichPost); urls the run couldn't scrape are simply absent
+ * (caller falls back to the SERP snippet, same as a single-run miss). Matching relies on the actor
+ * echoing the input url verbatim on `facebookUrl` (verified live 2026-07-14); `url` is probed as a
+ * fallback since it can be rewritten (e.g. /videos/… → /reel/…). Any failure returns an empty Map.
+ */
+export async function enrichPosts({ apifyToken, urls, actorId = FB_POSTS_ACTOR }) {
+  const out = new Map();
+  const list = (Array.isArray(urls) ? urls : []).filter(Boolean);
+  if (!apifyToken || !list.length) return out;
+  const endpoint = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startUrls: list.map((url) => ({ url })), resultsLimit: list.length }),
+    });
+    if (!resp.ok) {
+      console.error('enrichPosts:http', resp.status, list.length);
+      return out;
+    }
+    const items = await resp.json();
+    if (!Array.isArray(items)) return out;
+    // Canonical input-url index — the actor echoes the input on `facebookUrl`.
+    const byCanon = new Map(list.map((u) => [canonicalizeUrl(u), u]));
+    let unmatched = 0;
+    for (const it of items) {
+      const enriched = parseEnrichedItem(it);
+      if (!enriched) continue;
+      const inputUrl = [it?.facebookUrl, it?.inputUrl, it?.url, it?.topLevelUrl]
+        .filter(Boolean)
+        .map((u) => byCanon.get(canonicalizeUrl(u)))
+        .find(Boolean);
+      if (inputUrl && !out.has(inputUrl)) out.set(inputUrl, enriched);
+      else if (!inputUrl) unmatched += 1;
+    }
+    if (unmatched) console.warn('enrichPosts:unmatched-items', JSON.stringify({ unmatched, batch: list.length, matched: out.size }));
+    return out;
+  } catch (e) {
+    console.error('enrichPosts:err', e?.message || e);
+    return out;
   }
 }

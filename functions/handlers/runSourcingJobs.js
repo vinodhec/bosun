@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPost, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -47,6 +47,12 @@ const CLASSIFY_OVERSAMPLE = 2;
 
 const RELAY_CONCURRENCY = 10;
 const RELAY_TIMEOUT_MS = 15000;
+// FB enrichment batching: URLs per actor run × concurrent runs. 10/run keeps each run-sync call
+// fast (a 2-post batch measured ~7s; 10 stays well inside the sync window) while paying the flat
+// actor-start fee once per 10 posts instead of per post. 3 concurrent runs ≈ the old effective
+// throughput without holding 10 sockets open.
+const ENRICH_BATCH_SIZE = 10;
+const ENRICH_BATCH_CONCURRENCY = 3;
 // Grace applied to the cheap SERP-date pre-filter so Google's coarse relative buckets never
 // false-drop a borderline-fresh post before the authoritative FB-date gate sees it (~1 month).
 const SERP_DATE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -282,18 +288,27 @@ export async function runForOrg(
   const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : prospects.length;
   let candidates = poolSize > 0 ? prospects.slice(0, poolSize) : prospects;
 
-  // 3c1) Enrich each surviving listing with the FULL Facebook post (the SERP snippet is truncated) —
+  // 3c1) Enrich the surviving listings with the FULL Facebook post (the SERP snippet is truncated) —
   // the complete description, the owner phone, the post photos, and the AUTHORITATIVE post date.
-  // Best-effort and bounded — a miss just leaves the SERP snippet in place.
-  await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
-    const enriched = await enrichPost({ apifyToken, url: c.listing.url });
-    if (enriched?.text && enriched.text.length > String(c.listing.snippet || '').length) {
-      c.listing.snippet = enriched.text;
+  // BATCHED: the scraper bills a flat actor-start fee per run on top of the per-post fee, so we send
+  // chunks of URLs per run instead of one run per post (~15% cheaper + far fewer HTTP round-trips).
+  // Chunks stay small so each run-sync call finishes well inside its window. Best-effort — a post the
+  // batch couldn't scrape just keeps its SERP snippet (same fail-open as the old single-run miss).
+  const chunks = [];
+  for (let i = 0; i < candidates.length; i += ENRICH_BATCH_SIZE) chunks.push(candidates.slice(i, i + ENRICH_BATCH_SIZE));
+  await mapLimit(chunks, ENRICH_BATCH_CONCURRENCY, async (chunk) => {
+    const enrichedByUrl = await enrichPosts({ apifyToken, urls: chunk.map((c) => c.listing.url) });
+    for (const c of chunk) {
+      const enriched = enrichedByUrl.get(c.listing.url);
+      if (!enriched) continue;
+      if (enriched.text && enriched.text.length > String(c.listing.snippet || '').length) {
+        c.listing.snippet = enriched.text;
+      }
+      if (enriched.phone) c.listing.phone = enriched.phone;
+      if (enriched.postedAt) c.listing.postedAt = enriched.postedAt;
+      // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
+      if (enriched.images?.length) c.listing.images = enriched.images;
     }
-    if (enriched?.phone) c.listing.phone = enriched.phone;
-    if (enriched?.postedAt) c.listing.postedAt = enriched.postedAt;
-    // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
-    if (enriched?.images?.length) c.listing.images = enriched.images;
   });
   const withImages = candidates.filter((c) => c.listing.images?.length).length;
   console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
