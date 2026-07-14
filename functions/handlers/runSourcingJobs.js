@@ -29,12 +29,15 @@ function isPlausibleTarget(t) {
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed. VERTEX_PROJECT /
 // VERTEX_LOCATION come from .env; see utils/gemini.js.
 
-// When a run targets a specific locality, enrich a larger pool so the Gemini gate can drop off-target
-// posts and still fill maxPerRun. Bounds the extra Apify enrichment cost to OVERSAMPLE × maxPerRun.
-const CLASSIFY_OVERSAMPLE = 3;
+// When a run targets a specific locality, enrich a slightly larger pool than the cap so the residual
+// authoritative-date drop (after the cheap SERP-date + Gemini snippet gates) can still fill maxPerRun.
+// Lowered 3→2 now that the relevance + coarse-date gates run BEFORE enrichment (see 3a/3b): far less
+// junk reaches the paid scraper, so a smaller buffer suffices. Bounds extra Apify cost to 2× maxPerRun.
+const CLASSIFY_OVERSAMPLE = 2;
 
-// Scheduled sourced-listing relay (see utils/sourcing.js). Every 2 hours 07:00–21:00 IST (8
-// runs/day — raised from once-daily for the 30-day full-TN sourcing program, 2026-07-13), for every
+// Scheduled sourced-listing relay (see utils/sourcing.js). Every 2 hours AROUND THE CLOCK (12
+// runs/day — 07–21 IST → 24h on 2026-07-14 to push toward the 500-leads/day target; overnight runs
+// skew drier but the seen/dead dedup keeps their marginal cost low), for every
 // org with sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them
 // FOREVER against sourcingSeen/{orgId}/keys, HMAC-sign + POST each NEW one to the org's webhook, and
 // debit the org wallet a small per-listing fee for the ones that were accepted (2xx). Each pull
@@ -44,15 +47,22 @@ const CLASSIFY_OVERSAMPLE = 3;
 
 const RELAY_CONCURRENCY = 10;
 const RELAY_TIMEOUT_MS = 15000;
+// Grace applied to the cheap SERP-date pre-filter so Google's coarse relative buckets never
+// false-drop a borderline-fresh post before the authoritative FB-date gate sees it (~1 month).
+const SERP_DATE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 const GETALL_CHUNK = 300; // Firestore getAll batch size for the dedup lookup
 
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    schedule: '0 7-21/2 * * *', // 07:00, 09:00, …, 21:00 IST — 8 runs/day
+    schedule: '0 */2 * * *', // every 2h, 24h — 12 runs/day (hourly would overlap)
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
-    timeoutSeconds: 540,
+    // 1800s (30 min) is the platform/firebase-tools max for a scheduled trigger. Real invocations run
+    // ~15–25 min for a full topN set, and the vet-before-enrich reorder cut per-run time further (far
+    // fewer paid FB scrapes). If a run ever hits the wall, the every-2h cadence + seen/dead dedup pick
+    // up the remaining due targets next run — no lead is lost, just deferred.
+    timeoutSeconds: 1800,
     memory: '512MiB',
   },
   async () => {
@@ -180,59 +190,45 @@ export async function runForOrg(
     dead.clear(); // idempotent across the multiple flush sites below
   };
 
-  // Per-run cap: relay at most `maxPerRun` NEW listings (0 / unset = no cap). Normally applied BEFORE
-  // enrichment so a run's Apify enrichment cost + wallet debit are bounded. When a target is set (the
-  // classify path), we enrich a LARGER pool (OVERSAMPLE × cap) so the Gemini gate can drop off-target
-  // posts and still fill the cap — then trim to `cap` after filtering. Overflow isn't marked seen, so
-  // the next run picks it up.
+  // Per-run cap: relay at most `maxPerRun` NEW listings (0 / unset = no cap). The vetting gates below
+  // (cheap SERP-date skip + Gemini relevance on the free snippet) run BEFORE the paid enrichment now,
+  // so we only ever scrape posts we actually intend to relay — plus a small OVERSAMPLE buffer to cover
+  // the residual authoritative-date drop. Overflow isn't marked seen, so the next run picks it up.
   const cap = Math.max(0, Math.floor(Number(cfg.maxPerRun) || 0));
   const classifying = !!(target && target.locality);
-  const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : allNew.length;
-  let candidates = poolSize > 0 ? allNew.slice(0, poolSize) : allNew;
 
-  // 3b) Enrich each new listing with the FULL Facebook post (the SERP snippet is truncated). Adds
-  // the complete description + the owner phone; priced into the sourcing baseline. Best-effort and
-  // bounded — a miss just leaves the SERP snippet in place.
-  await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
-    const enriched = await enrichPost({ apifyToken, url: c.listing.url });
-    if (enriched?.text && enriched.text.length > String(c.listing.snippet || '').length) {
-      c.listing.snippet = enriched.text;
-    }
-    if (enriched?.phone) c.listing.phone = enriched.phone;
-    if (enriched?.postedAt) c.listing.postedAt = enriched.postedAt;
-    // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
-    if (enriched?.images?.length) c.listing.images = enriched.images;
-  });
-  const withImages = candidates.filter((c) => c.listing.images?.length).length;
-  console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
-
-  // 3b2) HARD recency gate on the actual FB post date. Drop anything we KNOW is older than the window
-  // (this is what actually enforces "posted in the last N months"). Fail-OPEN when the date is unknown
-  // (enrichment miss) so a scrape hiccup doesn't silently lose fresh leads. postedAt rides to the
-  // webhook so the platform can enforce/display it too.
+  // 3a) CHEAP SERP-date pre-filter (fail-open). Google's SERP already carries a coarse relative
+  // "lastUpdated" (parsed to serpAgeMs = the youngest plausible instant for the phrase). Skip posts it
+  // reports as older than the window BEFORE paying to enrich — this is what removes the bulk of the
+  // "enrich a post just to read a stale date, then discard it" spend. serpAgeMs is Google's last-seen-
+  // update, NOT the true post date, so we only DROP the confidently-old and KEEP everything
+  // unknown/recent for the authoritative FB-date gate (3d) below. NOT marked dead (coarse, non-
+  // authoritative): a cheap SERP re-fetch next run just re-skips it, and we never permanently bury a
+  // lead on a non-authoritative date.
+  let prospects = allNew;
   if (cutoffMs) {
-    const before = candidates.length;
-    const keptRecent = [];
-    for (const c of candidates) {
-      // Known-old post (fail-open on unknown date) — permanently dead: it can only get older.
-      if (c.listing.postedAt && c.listing.postedAt < cutoffMs) markDead(c, 'stale-recency');
-      else keptRecent.push(c);
-    }
-    candidates = keptRecent;
-    const dropped = before - candidates.length;
-    if (dropped) console.log('runSourcingJobs:stale-drop', orgId, JSON.stringify({ dropped, keptAfter: candidates.length, cutoff: new Date(cutoffMs).toISOString().slice(0, 10) }));
-    if (!candidates.length) {
-      console.log('runSourcingJobs:none-after-recency', orgId);
-      await flushDead();
-      return { relayed: 0, amountInr: 0 };
-    }
+    // Grace margin: Google's relative buckets are coarse ("3 months ago" can be a post still inside a
+    // 3-month window), so only skip when the SERP age is CLEARLY past the cutoff — ~one month beyond.
+    // Borderline posts fall through to the authoritative FB-date gate (3d) rather than being dropped
+    // here unseen. Cheap-to-catch clearly-old posts (4+ months for a 3-month window) still get skipped.
+    const serpSkipBefore = cutoffMs - SERP_DATE_GRACE_MS;
+    const before = prospects.length;
+    prospects = prospects.filter((c) => !(c.listing.serpAgeMs && c.listing.serpAgeMs < serpSkipBefore));
+    const dropped = before - prospects.length;
+    if (dropped) console.log('runSourcingJobs:serp-stale-skip', orgId, JSON.stringify({ dropped, kept: prospects.length, cutoff: new Date(serpSkipBefore).toISOString().slice(0, 10) }));
+  }
+  if (!prospects.length) {
+    console.log('runSourcingJobs:none-after-serp-date', orgId);
+    return { relayed: 0, amountInr: 0 };
   }
 
-  // 3c) Relevance gate (only when targeting a specific locality): a cheap deterministic pre-filter,
-  // then a Gemini classify that drops posts that aren't genuine listings in/around the target and
-  // attaches extracted fields. Fails OPEN per-post (keep) so a classifier hiccup never loses leads.
+  // 3b) Relevance gate (only when targeting a specific locality) — MOVED AHEAD of enrichment. A cheap
+  // deterministic pre-filter, then a Gemini classify on the FREE SERP snippet, so the paid FB scrape
+  // only runs on plausible on-target listings (kills the ~29% we used to enrich then reject). Fails
+  // OPEN per-post (keep) so a classifier hiccup never loses leads; Gemini COGS is negligible vs an
+  // Apify post scrape, so classifying the whole prospect pool is cheap.
   if (classifying) {
-    await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
+    await mapLimit(prospects, RELAY_CONCURRENCY, async (c) => {
       if (!hasPropertySignal(c.listing.snippet)) {
         c.drop = true;
         c.dropReason = 'no-signal';
@@ -263,26 +259,80 @@ export async function runForOrg(
       if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
       if (verdict.extracted) c.listing.extracted = verdict.extracted;
     });
-    // Permanent classify rejects (no property signal / confident off-target) are dead — skip their
-    // enrichment next run. The transient 'degraded-no-india-signal' fail-open is NOT recorded so it
-    // retries once the classifier recovers.
-    for (const c of candidates) {
-      if (c.drop && c.dropReason !== 'degraded-no-india-signal') markDead(c, c.dropReason || 'off-target');
+    // Only a CONFIDENT off-target reject is dead — never enrich it again. Two rejects are deliberately
+    // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
+    // and 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
+    // a genuine listing with a sparse Google description must get another chance, not be buried unseen.
+    const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal']);
+    for (const c of prospects) {
+      if (c.drop && !RETRYABLE_DROP.has(c.dropReason)) markDead(c, c.dropReason || 'off-target');
     }
-    const kept = candidates.filter((c) => !c.drop);
-    console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: candidates.length, kept: kept.length, target: target.locality }));
+    const kept = prospects.filter((c) => !c.drop);
+    console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: prospects.length, kept: kept.length, target: target.locality }));
+    prospects = kept;
+  }
+  if (!prospects.length) {
+    console.log('runSourcingJobs:none-after-classify', orgId);
+    await flushDead();
+    return { relayed: 0, amountInr: 0 };
+  }
 
-    // 3c2) Per-intent freshness gate — the org-level cutoff above (3b2) is the OUTER bound; this
-    // tightens it per listing intent now that classify told us Sale vs Rent. Rent/lease leads go
-    // stale fast (rentMonths); sale or UNKNOWN intent gets the wider saleMonths window (fail-open
-    // to the wider window, mirroring the classify philosophy). Unknown postedAt is kept (same
-    // fail-open as 3b2 — never drop on a missing date).
+  // 3c) Trim to the enrichment pool, THEN pay to enrich. Only vetted prospects reach the paid FB
+  // scraper; a small OVERSAMPLE covers the residual authoritative-date drop below.
+  const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : prospects.length;
+  let candidates = poolSize > 0 ? prospects.slice(0, poolSize) : prospects;
+
+  // 3c1) Enrich each surviving listing with the FULL Facebook post (the SERP snippet is truncated) —
+  // the complete description, the owner phone, the post photos, and the AUTHORITATIVE post date.
+  // Best-effort and bounded — a miss just leaves the SERP snippet in place.
+  await mapLimit(candidates, RELAY_CONCURRENCY, async (c) => {
+    const enriched = await enrichPost({ apifyToken, url: c.listing.url });
+    if (enriched?.text && enriched.text.length > String(c.listing.snippet || '').length) {
+      c.listing.snippet = enriched.text;
+    }
+    if (enriched?.phone) c.listing.phone = enriched.phone;
+    if (enriched?.postedAt) c.listing.postedAt = enriched.postedAt;
+    // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
+    if (enriched?.images?.length) c.listing.images = enriched.images;
+  });
+  const withImages = candidates.filter((c) => c.listing.images?.length).length;
+  console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
+
+  // 3d) AUTHORITATIVE recency gate on the actual FB post date (the SERP skip in 3a was only a coarse
+  // pre-filter). Drop anything we now KNOW is older than the window. Fail-OPEN when the date is unknown
+  // (enrichment miss) so a scrape hiccup doesn't silently lose fresh leads. The `dropped` count here is
+  // a FREE quality signal — it's exactly what the cheap SERP date under-caught, so it tells us how
+  // reliable `lastUpdated` is. postedAt rides to the webhook so the platform can enforce/display it too.
+  if (cutoffMs) {
+    const before = candidates.length;
+    const keptRecent = [];
+    for (const c of candidates) {
+      // Known-old post (fail-open on unknown date) — permanently dead: it can only get older.
+      if (c.listing.postedAt && c.listing.postedAt < cutoffMs) markDead(c, 'stale-recency');
+      else keptRecent.push(c);
+    }
+    candidates = keptRecent;
+    const dropped = before - candidates.length;
+    if (dropped) console.log('runSourcingJobs:stale-drop', orgId, JSON.stringify({ dropped, keptAfter: candidates.length, cutoff: new Date(cutoffMs).toISOString().slice(0, 10) }));
+    if (!candidates.length) {
+      console.log('runSourcingJobs:none-after-recency', orgId);
+      await flushDead();
+      return { relayed: 0, amountInr: 0 };
+    }
+  }
+
+  // 3e) Per-intent freshness gate (classify path) — the org-level cutoff above (3d) is the OUTER
+  // bound; this tightens it per listing intent now that classify told us Sale vs Rent. Rent/lease
+  // leads go stale fast (rentMonths); sale or UNKNOWN intent gets the wider saleMonths window (fail-
+  // open to the wider window, mirroring the classify philosophy). Unknown postedAt is kept (same
+  // fail-open as 3d — never drop on a missing date).
+  if (classifying) {
     const pol = normalizeSourcingPolicy(policy);
     const saleCutoff = cutoffMsForMonths(pol.saleMonths);
     const rentCutoff = cutoffMsForMonths(pol.rentMonths);
     const fresh = [];
     const staleDropped = [];
-    for (const c of kept) {
+    for (const c of candidates) {
       const intent = String(c.listing.extracted?.listingType || '');
       const intentCutoff = /rent|lease/i.test(intent) ? rentCutoff : saleCutoff;
       if (c.listing.postedAt && c.listing.postedAt < intentCutoff) staleDropped.push(c);
@@ -315,7 +365,7 @@ export async function runForOrg(
     }
   }
   if (!candidates.length) {
-    console.log('runSourcingJobs:none-after-classify', orgId);
+    console.log('runSourcingJobs:none-after-freshness', orgId);
     await flushDead();
     return { relayed: 0, amountInr: 0 };
   }

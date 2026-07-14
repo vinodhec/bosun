@@ -124,21 +124,57 @@ export async function callSerpActor({ apifyToken, actorId, query, freshness, max
   }
 }
 
-/** Flatten Apify Google-SERP dataset items (organic results) into `[{ url, title, snippet }]`. */
+/**
+ * Parse Google's relative "lastUpdated" string ("2 days ago", "10 months ago", "yesterday") into an
+ * APPROXIMATE ms timestamp — the YOUNGEST plausible instant for the phrase, so a coarse bucket never
+ * DROPS a borderline-fresh post (we under-age on purpose; the authoritative FB-post date stays the
+ * real gate). `lastUpdated` is Google's last-seen-update, not the post's creation date — good enough
+ * to SKIP a confidently-old post before paying to enrich, never to relay on. Unparseable → null
+ * (fail-open: keep + enrich). See the SERP-date pre-filter in runSourcingJobs.
+ */
+const DAY_MS = 24 * 60 * 60 * 1000;
+export function parseRelativeAge(text, nowMs = Date.now()) {
+  const s = String(text || '').trim().toLowerCase();
+  if (!s || s === 'undefined') return null;
+  if (/^(just now|now|today)$/.test(s)) return nowMs;
+  if (s === 'yesterday') return nowMs - DAY_MS;
+  const m = s.match(/^(?:a|an|(\d+))\s*(second|minute|hour|day|week|month|year)s?\s+ago$/);
+  if (!m) return null;
+  const n = m[1] ? parseInt(m[1], 10) : 1;
+  if (!Number.isFinite(n) || n < 0) return null;
+  const unit = { second: 1000, minute: 60000, hour: 3600000, day: DAY_MS, week: 7 * DAY_MS, month: 30.44 * DAY_MS, year: 365 * DAY_MS }[m[2]];
+  return nowMs - Math.round(n * unit);
+}
+
+/**
+ * Flatten Apify Google-SERP dataset items (organic results) into
+ * `[{ url, title, snippet, serpAgeText, serpAgeMs }]`. `serpAgeText` is Google's raw relative
+ * "lastUpdated" ("10 months ago"); `serpAgeMs` is its parsed youngest-instant timestamp (null when
+ * absent/unparseable). Both power the cheap pre-enrichment recency skip.
+ */
 export function normalizeSerpItems(items) {
   const out = [];
   const arr = Array.isArray(items) ? items : [];
+  const push = (u, title, snippet, ageText) => {
+    if (!u) return;
+    out.push({
+      url: String(u),
+      title: String(title || ''),
+      snippet: String(snippet || ''),
+      serpAgeText: ageText ? String(ageText) : null,
+      serpAgeMs: parseRelativeAge(ageText),
+    });
+  };
   for (const it of arr) {
     const organic = Array.isArray(it?.organicResults) ? it.organicResults
       : Array.isArray(it?.results) ? it.results
       : null;
     if (organic) {
       for (const r of organic) {
-        const u = r?.url || r?.link;
-        if (u) out.push({ url: String(u), title: String(r?.title || ''), snippet: String(r?.description || r?.snippet || '') });
+        push(r?.url || r?.link, r?.title, r?.description || r?.snippet, r?.lastUpdated || r?.date);
       }
     } else if (it?.url || it?.link) {
-      out.push({ url: String(it.url || it.link), title: String(it.title || ''), snippet: String(it.description || it.snippet || '') });
+      push(it.url || it.link, it.title, it.description || it.snippet, it.lastUpdated || it.date);
     }
   }
   return out;
