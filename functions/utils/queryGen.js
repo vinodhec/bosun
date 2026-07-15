@@ -17,12 +17,68 @@ const NAME_SCHEMA = {
     englishName: { type: 'string' },
     regionalLanguage: { type: 'string' },
     regionalName: { type: 'string' },
+    regionalCity: { type: 'string' },
     propTerms: { type: 'string' },
     intentTerms: { type: 'string' },
   },
   required: ['englishName'],
-  propertyOrdering: ['englishName', 'regionalLanguage', 'regionalName', 'propTerms', 'intentTerms'],
+  propertyOrdering: ['englishName', 'regionalLanguage', 'regionalName', 'regionalCity', 'propTerms', 'intentTerms'],
 };
+
+/**
+ * Compare place names ignoring case, punctuation and spacing. Unicode-aware ON PURPOSE: a
+ * Latin-only [^a-z0-9] strip reduces every regional-script name to "", and an empty string makes
+ * both containment tests below meaningless (it drops the city from regional queries, and reads
+ * "இராமநாதபுரம், இராமநாதபுரம்" as two different places).
+ */
+const normPlace = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * Is Gemini's expansion plausibly the SAME place we asked about?
+ *
+ * WHY THIS EXISTS: englishName REPLACES the locality in the query, and one bad expansion silently
+ * redirects a whole target's sourcing at another city — we then pay Apify to scrape it and bill the
+ * customer for the junk. It happened: target `trichy__thillai-nagar` (Thillai Nagar, Trichy) emitted
+ * `site:facebook.com Ponnammapet, Salem …` and relayed Salem shop ads. It is INTERMITTENT (the same
+ * call returns the right answer 3/3 today at temperature 0), so a better prompt cannot be the fix —
+ * a rare hallucination must be structurally unable to redirect the search.
+ *
+ * Accepts a genuine expansion, rejects a substitution:
+ *   "Thillai Nagar" → "Thillai Nagar, Trichy"  ✓ containment
+ *   "Ramnad"        → "Ramanathapuram"         ✓ shared first-token prefix ("ram")
+ *   "Thillai Nagar" → "Ponnammapet, Salem"     ✗ nothing in common → fall back to the raw locality
+ * Rejection is cheap (we search the locality as stored, which is what a no-LLM degrade already does);
+ * a false accept costs a whole run. So this is deliberately strict.
+ */
+export function expansionLooksSane(input, output) {
+  const a = normPlace(input);
+  const b = normPlace(output);
+  if (!a || !b) return false;
+  if (b.includes(a) || a.includes(b)) return true;
+  const ta = a.split(' ')[0];
+  const tb = b.split(' ')[0];
+  let i = 0;
+  while (i < ta.length && i < tb.length && ta[i] === tb[i]) i++;
+  return i >= 3; // "ramnad"/"ramanathapuram" share "ram"; "thillai"/"ponnammapet" share nothing
+}
+
+/**
+ * Pin the query to the city we KNOW from the target doc, rather than whatever the model returned.
+ * Skipped when the name already carries it (or the locality IS the city, e.g. Ramanathapuram town),
+ * so we never emit "Ramanathapuram, Ramanathapuram".
+ */
+function placeWithCity(name, city) {
+  const n = String(name || '').trim();
+  const c = String(city || '').trim();
+  if (!c || !n) return n || c;
+  const nn = normPlace(n);
+  const nc = normPlace(c);
+  // Both sides must actually normalise to something before a containment test means anything:
+  // normPlace() keeps only [a-z0-9], so a regional-script name reduces to "" — and `x.includes("")`
+  // is ALWAYS true, which would silently drop the city from every regional query.
+  if (nn && nc && (nn.includes(nc) || nc.includes(nn))) return n;
+  return `${n}, ${c}`;
+}
 
 /**
  * Ask Gemini for a locality's full English name AND its regional-language search terms: the place name
@@ -38,12 +94,21 @@ async function localityInfo({ locality, city, category }) {
       'locality\'s own regional language. Output JSON only.',
     prompt:
       `Locality: "${locality}"${city ? `, city/district: "${city}"` : ''} (India).\n\n` +
-      `1. englishName = the full canonical English name (expand abbreviations, e.g. "Ramnad" → ` +
-      `"Ramanathapuram").\n` +
+      (city
+        ? `The city/district above is GROUND TRUTH: this locality is the one in "${city}", not a ` +
+          `same-named place anywhere else. Indian locality names repeat across cities (there is a ` +
+          `Thillai Nagar in Trichy AND one in Salem) — resolve ONLY the one in "${city}". If you cannot ` +
+          `place this locality inside "${city}", return the locality name EXACTLY as given rather than ` +
+          `substituting a different place.\n\n`
+        : '') +
+      `1. englishName = the full canonical English name of the LOCALITY ITSELF (expand abbreviations, ` +
+      `e.g. "Ramnad" → "Ramanathapuram"). Do NOT append the city, district or state — we add those ` +
+      `ourselves. If the name is already full, return it unchanged.\n` +
       `2. regionalLanguage = the dominant LOCAL language of this locality's state/region (e.g. Tamil ` +
       `in Tamil Nadu, Malayalam in Kerala, Telugu in Andhra Pradesh/Telangana, Kannada in Karnataka, ` +
       `Marathi in Maharashtra, Bengali in West Bengal, Hindi in the Hindi belt).\n` +
-      `3. regionalName = the same place written in that language's script.\n` +
+      `3. regionalName = the same LOCALITY written in that language's script (no city/district).\n` +
+      (city ? `3b. regionalCity = "${city}" written in that language's script, so the regional query can be pinned to the city in-script too.\n` : '') +
       `4. propTerms = translate this property OR-group into that language, KEEPING the "A OR B OR C" ` +
       `format (translate each term, leave "OR" in English): ${enProp}\n` +
       `5. intentTerms = translate "${INTENT_EN}" into that language, same "A OR B OR C" format.\n\n` +
@@ -55,6 +120,7 @@ async function localityInfo({ locality, city, category }) {
     englishName: String(j.englishName || '').trim(),
     regionalLanguage: String(j.regionalLanguage || '').trim(),
     regionalName: String(j.regionalName || '').trim(),
+    regionalCity: String(j.regionalCity || '').trim(),
     propTerms: String(j.propTerms || '').trim(),
     intentTerms: String(j.intentTerms || '').trim(),
   };
@@ -104,17 +170,39 @@ const regionalQuery = (name, propTerms, intentTerms) => `site:facebook.com ${nam
 export async function buildSourcingQueries({ locality, city, shape }) {
   const category = categoryForShape(shape);
   const info = await localityInfo({ locality, city, category });
-  const en = info?.englishName || locality;
-  const queries = [enQuery(en, category)];
+
+  // Trust the expansion only if it is still the place we asked about; otherwise search the locality
+  // exactly as the target stores it. Losing an abbreviation expansion costs some recall for one run;
+  // accepting a substituted place sends the whole run (and the Apify spend) at the wrong city.
+  const proposed = info?.englishName || '';
+  const expansionOk = proposed && expansionLooksSane(locality, proposed);
+  if (proposed && !expansionOk) {
+    console.error('queryGen:bad-expansion', JSON.stringify({ locality, city, proposed, using: locality }));
+  }
+  const localityName = expansionOk ? proposed : locality;
+
+  // The city comes from the TARGET, never from the model — a same-named locality in another city is
+  // exactly the failure this guards (target trichy__thillai-nagar once searched Ponnammapet, Salem).
+  const enPlace = placeWithCity(localityName, city);
+  const queries = [enQuery(enPlace, category)];
+
   // Only add the regional query when we have BOTH the script name AND the translated terms — a partial
   // translation would search the region's name against English property words (or vice versa), which
   // matches nothing useful.
-  if (info?.regionalName && info?.propTerms && info?.intentTerms) {
-    queries.push(regionalQuery(info.regionalName, info.propTerms, info.intentTerms));
+  const regionalOk = info?.regionalName && expansionLooksSane(locality, info.regionalName)
+    // A regional name is in another script, so it shares no characters with the English input and can
+    // never pass the sanity check — accept it on the English name's verdict instead, since both come
+    // from the same call about the same place.
+    || info?.regionalName && expansionOk;
+  if (regionalOk && info.propTerms && info.intentTerms) {
+    // Pin the regional query to the city in-script when we have it; fall back to the English city
+    // (Indian regional posts routinely write the city in English) rather than dropping it entirely.
+    const regPlace = placeWithCity(info.regionalName, info.regionalCity || city);
+    queries.push(regionalQuery(regPlace, info.propTerms, info.intentTerms));
   }
   return {
     queries,
-    englishName: en,
+    englishName: localityName,
     regionalLanguage: info?.regionalLanguage || '',
     regionalName: info?.regionalName || '',
     category,
