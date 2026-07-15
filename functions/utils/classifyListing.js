@@ -1,4 +1,4 @@
-import { generateJson, geminiConfigured, GEMINI_FLASH_LITE } from './gemini.js';
+import { generateJson, geminiConfigured, GEMINI_FLASH } from './gemini.js';
 
 // Gemini relevance + extraction gate for a sourced Facebook post. Built on the shared utils/gemini.js
 // client. Given a post's text and the TARGET locality, it decides whether the post is a genuine
@@ -63,7 +63,18 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `immediately around the TARGET locality?), confidence 0-1. Extract locality, bhk, propertyType, ` +
     `listingType (Sale/Rent/Lease), priceText and phone when present.`;
 
-  const j = await generateJson({ model: GEMINI_FLASH_LITE, prompt, system: SYSTEM, schema: SCHEMA });
+  // FLASH, not FLASH_LITE. This gate only ever sees the ~145-char Google SERP snippet (see the
+  // caller in runSourcingJobs.js), which is truncated mid-sentence and strips the context that makes
+  // a post obviously not a property. Measured on the real snippets of two relayed saree ads
+  // (prod SP-001519/SP-001520, a Salem silk shop whose ADDRESS matched the target locality):
+  //   flash-lite → relayed 4/5 and 5/5, reading "Flat 15% & 30% OFF" as propertyType "Flat" at
+  //                confidence 1.0 ("the listing is for a flat in Ponnammapet, Salem")
+  //   flash      → rejected 5/5 and 5/5 ("the post is about clothing discounts, not a property")
+  // Both models agree once given the FULL post — the extra capability is only needed because the
+  // input is this thin. A wrongly-kept lead costs a ₹2.50 relay + Apify enrichment + admin time to
+  // reject, which dwarfs the ~10 paise/property the better model adds.
+  // thinkingBudget 0: reasoning tokens are billed at the output rate and truncate the JSON — see gemini.js.
+  const j = await generateJson({ model: GEMINI_FLASH, prompt, system: SYSTEM, schema: SCHEMA, thinkingBudget: 0 });
   if (!j) return { keep: true, degraded: true, confidence: 0, reason: 'gemini-error' };
 
   const confidence = Number(j.confidence) || 0;

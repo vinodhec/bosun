@@ -469,21 +469,36 @@ export function isLowBalance(balanceInr) {
  * the many that are never enriched). Tune the baseline / margin / jitter here and nowhere else.
  */
 // Per-property Gemini cost: the sourcing pipeline spends a Gemini call or two on each property (the
-// bilingual query builder + the relevance/extraction gate — utils/queryGen.js, utils/classifyListing.js),
-// on cheap flash-lite. ~2 paise/property of real COGS + 18% India GST (≈2.36 paise) rounded up to a
-// clean 3 paise. Folded into the variable cost and PASSED ON AT COST: the baseline flows 1:1 into the
-// price, so the customer pays this flat 3 paise with no markup on it.
-export const SOURCED_GEMINI_COST_INR = 0.03;   // 3 paise/property (≈2 paise Gemini COGS + 18% GST, rounded up)
+// bilingual query builder — utils/queryGen.js, still flash-lite — plus the relevance/extraction gate,
+// utils/classifyListing.js). ~2 paise/property of real COGS + 18% India GST (≈2.36 paise) rounded up
+// to a clean 3 paise. Folded into the variable cost and PASSED ON AT COST: the baseline flows 1:1 into
+// the price, so the customer pays this flat 3 paise with no markup on it.
+//
+// REPRICED 2026-07-16 (owner-approved): classifyListing moved from flash-lite to gemini-2.5-flash,
+// because flash-lite was reading "Flat 15% OFF" in a truncated SERP snippet as propertyType "Flat" at
+// confidence 1.0 and relaying saree ads as property leads (measured 4/5 and 5/5 on the real snippets
+// of prod SP-001519/SP-001520; flash rejects 5/5, and a genuine 2BHK still passes). The gate only ever
+// sees the ~145-char Google snippet, so it needs the better model; queryGen stays on flash-lite.
+// Flash classify (~3.7 paise, GST-incl.) + flash-lite queryGen (~1 paise) ≈ 5 paise, measured against
+// the real prompt sizes. Still PASSED ON AT COST — this 2-paise rise flows 1:1 into the price.
+export const SOURCED_GEMINI_COST_INR = 0.05;   // 5 paise/property (flash classify + flash-lite queryGen, GST-incl.)
 export const SOURCED_COST_BASELINE_INR = 0.55 + SOURCED_GEMINI_COST_INR; // measured VARIABLE cost/property: Apify (SERP ~0.08 + FB enrichment ~0.47) + Gemini (GST-incl.)
-export const SOURCED_TARGET_MARGIN_INR = 1.92; // margin over the variable cost — centres each lead at ₹2.50 (repriced
+export const SOURCED_TARGET_MARGIN_INR = 2.04; // margin over the variable cost — centres each lead at ₹2.64 (repriced
                                                // 2026-07-15: the vet-before-enrich + batch-enrichment optimisation cut
                                                // the org's own Apify bill to ~₹0.9–1.1/lead, so the org's ALL-IN cost
                                                // (Bosun charge + their Apify) lands ≈₹3.5/lead). NOTE: the $29/mo Apify
                                                // base is a SEPARATE fixed cost (covers ~4,600 enriched props/mo) — not
                                                // in here.
-export const SOURCED_PRICE_JITTER_INR = 0.10;  // ± random spread around (baseline + margin) → ₹2.40–₹2.60
-export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹2.25
-export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.55
+                                               // 2026-07-16 (owner-approved): +12 paise here, on top of the +2 paise the
+                                               // flash-classify cost passes through above = +14 paise on the lead price
+                                               // (₹2.50 → ₹2.64 centre). Split deliberately: the 2 paise is real COGS and
+                                               // rides the at-cost baseline, the 12 paise is margin. Folding all 14 into
+                                               // SOURCED_GEMINI_COST_INR would have overstated a MEASURED cost and broken
+                                               // the "baseline = measured variable cost" contract this file rests on.
+                                               // Still FLAT — one price for every lead, no tiers. See CLAUDE.md money rules.
+export const SOURCED_PRICE_JITTER_INR = 0.10;  // ± random spread around (baseline + margin) → ₹2.54–₹2.74
+export const SOURCED_UNIT_MIN_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR - SOURCED_PRICE_JITTER_INR; // ₹2.54
+export const SOURCED_UNIT_MAX_INR = SOURCED_COST_BASELINE_INR + SOURCED_TARGET_MARGIN_INR + SOURCED_PRICE_JITTER_INR; // ₹2.74
 
 /**
  * One listing's price: uniform in [MIN, MAX] with 2-decimal (paise) precision. `rng` is injectable
@@ -506,4 +521,37 @@ export function priceForSourcedBatch(uniqueCount, { rng = Math.random } = {}) {
   const unitPrices = Array.from({ length: n }, () => randomSourcedUnitPrice(rng));
   const amountInr = Math.ceil(unitPrices.reduce((a, p) => a + p, 0));
   return { amountInr, unitPrices };
+}
+
+/**
+ * ── Self-post message composition ───────────────────────────────────────────────────────────────
+ *
+ * A SEPARATE metered service from the sourced-lead relay above: MaadiVeedu calls us to compose the
+ * WhatsApp message an admin sends a property owner (Gemini writes it in the owner's own language,
+ * quoting their own post and the exact fields still missing). The relay price is untouched by this —
+ * see `priceForSourcedBatch`. Charged per COMPOSE, so a 2nd/3rd nudge (different wording) bills again.
+ *
+ * WHY PAISE, NOT RUPEES: the wallet is whole-rupee everywhere (`priceForSourcedBatch` ceils a batch,
+ * `adminDeductCredits` rounds). Ceiling ₹0.25 per compose would bill ₹1 — a 4× overcharge. So the
+ * price is held in paise and accrued on the org; whole rupees are debited as the accrual crosses ₹1
+ * and the remainder carries forward. Same "sum, then round once" discipline the batch price uses,
+ * applied across time instead of across a batch. Nothing is lost and nothing is over-billed.
+ */
+export const SELFPOST_COMPOSE_PRICE_PAISE = 25; // ₹0.25 per composed message
+
+/**
+ * Fold one compose into an org's running paise accrual.
+ *
+ * Returns `{ debitInr, accrualPaise }` — the whole rupees to debit NOW (0 for 3 of every 4 composes)
+ * and the remainder to store back. Caller MUST persist `accrualPaise` in the same transaction as the
+ * debit, or the carry is lost and the customer is under- or over-billed.
+ *
+ *   accrual 0   + 25 → debit ₹0, carry 25
+ *   accrual 75  + 25 → debit ₹1, carry 0
+ *   accrual 90  + 25 → debit ₹1, carry 15
+ */
+export function accrueComposeCharge(currentAccrualPaise = 0, pricePaise = SELFPOST_COMPOSE_PRICE_PAISE) {
+  const total = Math.max(0, Math.round(Number(currentAccrualPaise) || 0)) + Math.max(0, Math.round(Number(pricePaise) || 0));
+  const debitInr = Math.floor(total / 100);
+  return { debitInr, accrualPaise: total % 100 };
 }

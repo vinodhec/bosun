@@ -47,7 +47,18 @@ export function geminiConfigured() {
  * null on any failure (unconfigured, network, non-JSON) so callers own the degrade path. Deterministic
  * by default (temperature 0).
  */
-export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, schema, temperature = 0, maxOutputTokens = 512 }) {
+/**
+ * `thinkingBudget` — pass 0 to switch OFF the 2.5 models' internal reasoning.
+ *
+ * This matters more than it looks. On `gemini-2.5-flash` thinking is ON by default and its reasoning
+ * tokens are (a) drawn from maxOutputTokens BEFORE the answer is written, and (b) billed at the
+ * output rate. Measured on the self-post composer: flash spent so long thinking that the JSON was cut
+ * mid-string and failed to parse on half the calls ("Unterminated string"), at 6-9s a call — versus
+ * 1-2.7s on flash-lite, which does not think by default. For short structured work (classify,
+ * extract, write 3 lines) the reasoning buys nothing and costs money, latency and reliability.
+ * Left undefined the model keeps its default, so existing callers are untouched.
+ */
+export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, schema, temperature = 0, maxOutputTokens = 512, thinkingBudget }) {
   const ai = geminiClient();
   if (!ai || !prompt) return null;
   // One retry on transient failures (429 rate limit / 5xx) — burst runs hammer the classifier and a
@@ -59,6 +70,7 @@ export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, 
         contents: prompt,
         config: {
           ...(system ? { systemInstruction: system } : {}),
+          ...(thinkingBudget !== undefined ? { thinkingConfig: { thinkingBudget } } : {}),
           responseMimeType: 'application/json',
           ...(schema ? { responseSchema: schema } : {}),
           temperature,
