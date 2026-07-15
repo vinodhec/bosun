@@ -555,3 +555,17 @@ export function accrueComposeCharge(currentAccrualPaise = 0, pricePaise = SELFPO
   const debitInr = Math.floor(total / 100);
   return { debitInr, accrualPaise: total % 100 };
 }
+
+/**
+ * ── Auto-post usage (sourcing self-serve) ───────────────────────────────────────────────────────
+ * The customer's platform auto-publishes a sourced listing end-to-end (Bosun sourced it, classified
+ * it, and its agent identity posts it) with zero admin minutes — and reports one usage EVENT per
+ * published listing to the usageMeter endpoint. The event carries no price by design: this constant
+ * is the single place the rate lives. Priced per successful post only — evaluations, skips and
+ * owner-tap guest publishes are never events.
+ *
+ * Same paise-accrual discipline as compose (see WHY PAISE above): held on the org as
+ * `autopostAccrualPaise`, whole rupees debited as the accrual crosses ₹1 via `accrueComposeCharge`
+ * (the accrual math is price-agnostic — pass this price in).
+ */
+export const AUTOPOST_USAGE_PRICE_PAISE = 50; // ₹0.50 per auto-posted listing

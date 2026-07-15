@@ -79,8 +79,13 @@ export { runSourcingJobs } from './handlers/runSourcingJobs.js';
 
 // HTTP (customer→Bosun, HMAC-signed with the org's own relay secret): compose the WhatsApp message
 // the customer sends a property owner, in the owner's language. Billed ₹0.25 per compose, settled
-// in-request. The only inbound endpoint — every other sourcing path is Bosun→customer.
+// in-request.
 export { sourcingCompose } from './handlers/sourcingCompose.js';
+
+// HTTP (customer→Bosun, same HMAC): usage-event meter. The customer's platform reports each
+// listing its sweep auto-published off a Bosun-sourced lead; priced here (₹0.50/auto_post,
+// shared/billing.js) — the event carries no price on the wire. Idempotent per lead, replay-safe.
+export { usageMeter } from './handlers/usageMeter.js';
 
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
