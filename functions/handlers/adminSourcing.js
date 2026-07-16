@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
 import { runForOrg, sourceTopTargets } from './runSourcingJobs.js';
+import { startRun } from '../utils/sourcingRun.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed (see utils/gemini.js).
 
@@ -104,8 +105,17 @@ export const adminRunSourcingNow = onCall(
     if (!cfg.actorId || !cfg.webhookUrl || !(cfg.queries || []).length) {
       throw new HttpsError('failed-precondition', 'This org has no sourcing config — run adminConfigureSourcing first.');
     }
-    const result = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg);
-    return { ok: true, ...result };
+    const run = startRun(db, orgId, 'admin-run-now');
+    try {
+      const result = await runForOrg(db, process.env.APIFY_TOKEN, orgId, cfg, {
+        leg: run.leg({ queries: cfg.queries || [] }),
+      });
+      await run.finish();
+      return { ok: true, runId: run.id, ...result };
+    } catch (e) {
+      await run.finish({ status: 'error', error: e?.message || String(e) });
+      throw e;
+    }
   },
 );
 
@@ -134,11 +144,186 @@ export const adminSourceTopTarget = onCall(
     // Same smart path the daily cron runs (utils shared in runSourcingJobs.js), but dryRun:true so a
     // manual probe never burns a target's cadence. Gemini bilingual queries + relevance gate applied
     // per target; wallet debits aggregate across targets.
-    const result = await sourceTopTargets(db, process.env.APIFY_TOKEN, orgId, cfg, { topN, dryRun: true });
+    const result = await sourceTopTargets(db, process.env.APIFY_TOKEN, orgId, cfg, { topN, dryRun: true, trigger: 'admin-top-target' });
     if (result?.note === 'no secret') throw new HttpsError('failed-precondition', 'No sourcing secret for this org.');
     return result;
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Read side: the sourcing audit trail (see utils/sourcingRun.js).
+//
+// Two independent sources, because they answer different questions and have different histories:
+//   • `sourcingRuns` — the full per-run, per-target funnel. Complete, but only from the run that
+//     first recorded it: before that, the funnel existed only as console.log and is unrecoverable.
+//   • `sourcingSeen` — the dedup-forever ledger. It predates the run recorder, so it carries real
+//     history, but only for leads that reached a TERMINAL state (relayed, or enriched-then-dead).
+//     It has no target/query attribution and never saw the transient drops.
+// The panel shows both and labels which is which — a rollup that silently mixed them would imply a
+// funnel we cannot actually reconstruct.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Strip a run doc down to what the panel renders, resolving timestamps to plain millis. */
+function runSummary(doc) {
+  const d = doc.data();
+  return {
+    id: doc.id,
+    orgId: d.orgId,
+    trigger: d.trigger || 'cron',
+    status: d.status || 'done',
+    error: d.error || null,
+    startedAtMs: d.startedAt?.toMillis?.() ?? null,
+    finishedAtMs: d.finishedAt?.toMillis?.() ?? null,
+    ms: d.ms ?? null,
+    matrix: d.matrix || null,
+    funnel: d.funnel || null,
+    targets: d.targets || [],
+    targetCount: d.targetCount ?? (d.targets || []).length,
+    relayed: d.relayed || 0,
+    amountInr: d.amountInr || 0,
+    leadRows: d.leadRows || 0,
+    leadsTruncated: Boolean(d.leadsTruncated),
+    notes: d.notes || [],
+  };
+}
+
+/**
+ * Recent sourcing runs, newest first, with their whole funnel — the panel's main list. Optionally
+ * scoped to one org. Also returns a rollup across the returned window so the operator gets the
+ * "of everything we fetched, what actually landed?" number without summing rows by hand.
+ */
+export const adminSourcingRuns = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  const limit = Math.max(1, Math.min(200, Math.floor(Number(request.data?.limit) || 40)));
+
+  const db = getFirestore();
+  let q = db.collection('sourcingRuns');
+  if (orgId) q = q.where('orgId', '==', orgId);
+  const snap = await q.orderBy('startedAt', 'desc').limit(limit).get();
+  const runs = snap.docs.map(runSummary);
+
+  // Rollup over exactly the window returned — never a global total, so the header can never
+  // disagree with the rows under it.
+  const funnel = {};
+  for (const r of runs) {
+    for (const [k, v] of Object.entries(r.funnel || {})) funnel[k] = (funnel[k] || 0) + (Number(v) || 0);
+  }
+  // One batched read — the name lookup must not cost a serial round-trip per org.
+  const orgIds = [...new Set(runs.map((r) => r.orgId).filter(Boolean))];
+  const orgNames = new Map();
+  if (orgIds.length) {
+    const snaps = await db.getAll(...orgIds.map((id) => db.collection('organisations').doc(id)));
+    for (const s of snaps) orgNames.set(s.id, s.exists ? (s.data().name || s.id) : s.id);
+  }
+
+  return {
+    runs: runs.map((r) => ({ ...r, orgName: orgNames.get(r.orgId) || r.orgId })),
+    rollup: {
+      runs: runs.length,
+      funnel,
+      relayed: runs.reduce((n, r) => n + r.relayed, 0),
+      amountInr: runs.reduce((n, r) => n + r.amountInr, 0),
+      targets: runs.reduce((n, r) => n + r.targetCount, 0),
+      // Fetched→relayed conversion. The single number that says whether a bad day was a supply
+      // problem or a gate problem.
+      yieldPct: funnel.fetched > 0 ? (funnel.relayed || 0) / funnel.fetched * 100 : 0,
+    },
+    generatedAt: Date.now(),
+  };
+});
+
+/**
+ * One run, plus every lead row it recorded — the URL-level drill-down: what we fetched, which query
+ * found it, and exactly which gate dropped it.
+ */
+export const adminSourcingRunDetail = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const runId = String(request.data?.runId ?? '').trim();
+  if (!runId) throw new HttpsError('invalid-argument', 'runId required.');
+
+  const db = getFirestore();
+  const ref = db.collection('sourcingRuns').doc(runId);
+  const [runDoc, leadsSnap] = await Promise.all([ref.get(), ref.collection('leads').get()]);
+  if (!runDoc.exists) throw new HttpsError('not-found', 'Run not found.');
+
+  const leads = leadsSnap.docs.map((d) => {
+    const l = d.data();
+    return {
+      id: d.id,
+      url: l.url,
+      title: l.title || '',
+      // The stored snippet runs to 1200 chars; the table only ever shows one truncated line and a
+      // hover tooltip. Sending all of it for up to 2000 rows would be a multi-MB response for text
+      // nobody reads — trim to what the UI can actually display.
+      snippet: String(l.snippet || '').slice(0, 200),
+      locality: l.locality || null,
+      city: l.city || null,
+      query: l.query || null,
+      stage: l.stage,
+      dropStage: l.dropStage || null,
+      dropReason: l.dropReason || null,
+      postedAt: l.postedAt || null,
+      freshness: l.freshness || null,
+      classifyStatus: l.classifyStatus || null,
+      listingType: l.listingType || null,
+      propertyType: l.propertyType || null,
+      priceText: l.priceText || null,
+      hasPhone: Boolean(l.hasPhone),
+      imageCount: l.imageCount || 0,
+    };
+  });
+  // Relayed first (the outcome that earned money), then dropped, then deferred; newest post first
+  // inside each band.
+  const rank = { relayed: 0, dropped: 1, deferred: 2 };
+  leads.sort((a, b) => (rank[a.stage] - rank[b.stage]) || ((b.postedAt || 0) - (a.postedAt || 0)));
+
+  const byDropStage = {};
+  for (const l of leads) {
+    if (l.stage === 'relayed') continue;
+    const k = l.dropStage || 'unknown';
+    byDropStage[k] = (byDropStage[k] || 0) + 1;
+  }
+  return { run: runSummary(runDoc), leads, byDropStage };
+});
+
+/**
+ * The historical lead ledger, straight from `sourcingSeen` — the only lead-level history that
+ * predates the run recorder. `mode:'relayed'` reads the delivered+billed leads; `mode:'dropped'`
+ * reads the enriched-then-dead ones (the posts we PAID to scrape and then binned, which is the
+ * expensive mistake worth watching).
+ *
+ * Note the orderBy is load-bearing: a relayed doc has `relayedAt` and a dead one has `examinedAt`,
+ * and Firestore omits docs missing the ordered field — so each query naturally returns only its own
+ * kind, with no filter needed.
+ */
+export const adminSourcingLeadLedger = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const mode = request.data?.mode === 'dropped' ? 'dropped' : 'relayed';
+  const limit = Math.max(1, Math.min(500, Math.floor(Number(request.data?.limit) || 100)));
+
+  const db = getFirestore();
+  const col = db.collection('sourcingSeen').doc(orgId).collection('keys');
+  const field = mode === 'dropped' ? 'examinedAt' : 'relayedAt';
+  const snap = await col.orderBy(field, 'desc').limit(limit).get();
+
+  const leads = snap.docs.map((d) => {
+    const l = d.data();
+    return {
+      key: d.id,
+      url: l.url || '',
+      title: l.title || '',
+      postedAt: l.postedAt || null,
+      atMs: l[field]?.toMillis?.() ?? null,
+      dropReason: l.dropReason || null,
+    };
+  });
+  const byReason = {};
+  for (const l of leads) if (l.dropReason) byReason[l.dropReason] = (byReason[l.dropReason] || 0) + 1;
+  return { mode, leads, byReason, generatedAt: Date.now() };
+});
 
 // Turn an org's relay off without dropping its secret/config (so re-enabling is one flag flip and
 // the customer's webhook keeps validating).

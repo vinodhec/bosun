@@ -118,6 +118,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Sourcing run audit trail (per-run funnel + the lead rows behind it — see utils/sourcingRun.js).
+    // BACKEND-ONLY, exactly like sourcingSeen: written by the relay cron with the Admin SDK and read
+    // ONLY through the operator-gated adminSourcingRuns / adminSourcingRunDetail callables. It holds
+    // cross-org sourcing intelligence (queries, yields, drop reasons), so no customer reads it —
+    // there is deliberately no owner-read carve-out here.
+    match /sourcingRuns/{runId}/{doc=**} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

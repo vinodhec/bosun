@@ -4,6 +4,7 @@ import { callSerpActor, listingKey, signPayload, enrichPosts, isIndividualPost, 
 import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
+import { startRun, NULL_LEG } from '../utils/sourcingRun.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
 // How many demand-ranked targets the DAILY cron sources per org when a matrixUrl is configured
@@ -86,9 +87,20 @@ export const runSourcingJobs = onSchedule(
           await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
             topN: Math.max(1, Math.floor(Number(cfg.topN) || CRON_TOPN)),
             dryRun: false,
+            trigger: 'cron',
           });
         } else {
-          await runForOrg(db, apifyToken, orgDoc.id, cfg);
+          // Static-query org: no matrix, so no per-target legs — the run is one leg over cfg.queries.
+          const run = startRun(db, orgDoc.id, 'cron');
+          try {
+            await runForOrg(db, apifyToken, orgDoc.id, cfg, {
+              leg: run.leg({ queries: cfg.queries || [] }),
+            });
+            await run.finish();
+          } catch (e) {
+            await run.finish({ status: 'error', error: e?.message || String(e) });
+            throw e;
+          }
         }
       } catch (e) {
         // Best-effort per org — one org's Apify/webhook failure must not block the others.
@@ -106,12 +118,13 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target, policy } = {},
+  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG } = {},
 ) {
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) {
     console.error('runSourcingJobs:no-secret', orgId);
+    leg.done({ note: 'no secret' });
     return { relayed: 0, amountInr: 0 };
   }
   const { actorId, webhookUrl } = cfg;
@@ -123,7 +136,10 @@ export async function runForOrg(
   const months = Math.min(60, Math.max(1, Math.floor(Number(cfg.freshnessMonths)) || DEFAULT_FRESHNESS_MONTHS));
   const freshness = freshnessOverride ?? tbsForMonths(months);
   const cutoffMs = cutoffMsForMonths(months);
-  if (!actorId || !webhookUrl || !queries.length) return { relayed: 0, amountInr: 0 };
+  if (!actorId || !webhookUrl || !queries.length) {
+    leg.done({ note: 'not configured (actorId / webhookUrl / queries)' });
+    return { relayed: 0, amountInr: 0 };
+  }
 
   // 1) Fetch every query, flatten the results. `maxPages` controls SERP depth per query (supply).
   const maxPages = cfg.maxPagesPerQuery;
@@ -139,13 +155,17 @@ export async function runForOrg(
   // dedup WITHIN this run by canonical listing key.
   const posts = all.filter((it) => it?.url && isIndividualPost(it.url));
   console.log('runSourcingJobs:filter', orgId, JSON.stringify({ fetched: all.length, posts: posts.length }));
+  leg.count('fetched', all.length);
+  leg.count('posts', posts.length);
   const local = new Map();
   for (const it of posts) {
     const key = listingKey(it.url);
     if (!local.has(key)) local.set(key, it);
   }
+  leg.count('dupInRun', posts.length - local.size);
   if (!local.size) {
     console.log('runSourcingJobs:no-results', orgId);
+    leg.done({ note: 'no individual posts in SERP results' });
     return { relayed: 0, amountInr: 0 };
   }
 
@@ -159,8 +179,11 @@ export async function runForOrg(
     for (const s of snaps) if (s.exists) already.add(s.id);
   }
   const allNew = keys.filter((k) => !already.has(k)).map((k) => ({ key: k, listing: local.get(k) }));
+  leg.count('seenBefore', already.size);
+  leg.count('newProspects', allNew.length);
   if (!allNew.length) {
     console.log('runSourcingJobs:all-seen', orgId);
+    leg.done({ note: 'every result already seen (dedup-forever)' });
     return { relayed: 0, amountInr: 0 };
   }
 
@@ -219,12 +242,20 @@ export async function runForOrg(
     // here unseen. Cheap-to-catch clearly-old posts (4+ months for a 3-month window) still get skipped.
     const serpSkipBefore = cutoffMs - SERP_DATE_GRACE_MS;
     const before = prospects.length;
-    prospects = prospects.filter((c) => !(c.listing.serpAgeMs && c.listing.serpAgeMs < serpSkipBefore));
+    const kept = [];
+    for (const c of prospects) {
+      if (c.listing.serpAgeMs && c.listing.serpAgeMs < serpSkipBefore) {
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'serp-date', dropReason: 'serp-stale' });
+      } else kept.push(c);
+    }
+    prospects = kept;
     const dropped = before - prospects.length;
+    leg.count('serpStaleSkipped', dropped);
     if (dropped) console.log('runSourcingJobs:serp-stale-skip', orgId, JSON.stringify({ dropped, kept: prospects.length, cutoff: new Date(serpSkipBefore).toISOString().slice(0, 10) }));
   }
   if (!prospects.length) {
     console.log('runSourcingJobs:none-after-serp-date', orgId);
+    leg.done({ note: 'all prospects skipped by the SERP-date pre-filter' });
     return { relayed: 0, amountInr: 0 };
   }
 
@@ -273,6 +304,16 @@ export async function runForOrg(
     for (const c of prospects) {
       if (c.drop && !RETRYABLE_DROP.has(c.dropReason)) markDead(c, c.dropReason || 'off-target');
     }
+    for (const c of prospects) {
+      if (!c.drop) continue;
+      // Split the three classify rejects apart: they mean very different things. 'no-signal' is our
+      // own cheap filter, 'off-target' is Gemini rejecting a real listing, and the degraded drop
+      // means the classifier was DOWN — a spike there is an incident, not a dry locality.
+      if (c.dropReason === 'no-signal') leg.bump('noSignalDropped');
+      else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
+      else leg.bump('offTargetDropped');
+      leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify', dropReason: c.dropReason || 'off-target' });
+    }
     const kept = prospects.filter((c) => !c.drop);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: prospects.length, kept: kept.length, target: target.locality }));
     prospects = kept;
@@ -280,6 +321,7 @@ export async function runForOrg(
   if (!prospects.length) {
     console.log('runSourcingJobs:none-after-classify', orgId);
     await flushDead();
+    leg.done({ note: 'all prospects rejected by the relevance gate' });
     return { relayed: 0, amountInr: 0 };
   }
 
@@ -287,6 +329,13 @@ export async function runForOrg(
   // scraper; a small OVERSAMPLE covers the residual authoritative-date drop below.
   const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : prospects.length;
   let candidates = poolSize > 0 ? prospects.slice(0, poolSize) : prospects;
+  // Vetted prospects we chose not to enrich this run. Recorded as 'deferred', NOT 'dropped' — they
+  // aren't marked seen, so the next run re-fetches and relays them. Reading these as losses would
+  // badly understate the pipeline.
+  for (const c of prospects.slice(candidates.length)) {
+    leg.bump('poolDeferred');
+    leg.lead({ key: c.key, listing: c.listing, stage: 'deferred', dropStage: 'pool-cap', dropReason: 'over enrich pool for this run' });
+  }
 
   // 3c1) Enrich the surviving listings with the FULL Facebook post (the SERP snippet is truncated) —
   // the complete description, the owner phone, the post photos, and the AUTHORITATIVE post date.
@@ -300,7 +349,12 @@ export async function runForOrg(
     const enrichedByUrl = await enrichPosts({ apifyToken, urls: chunk.map((c) => c.listing.url) });
     for (const c of chunk) {
       const enriched = enrichedByUrl.get(c.listing.url);
-      if (!enriched) continue;
+      // An enrich miss is the paid scrape we bought and got nothing for — the direct Apify-waste
+      // signal, and the reason a lead can reach the webhook with only its SERP snippet.
+      if (!enriched) {
+        leg.bump('enrichMissed');
+        continue;
+      }
       if (enriched.text && enriched.text.length > String(c.listing.snippet || '').length) {
         c.listing.snippet = enriched.text;
       }
@@ -312,6 +366,9 @@ export async function runForOrg(
   });
   const withImages = candidates.filter((c) => c.listing.images?.length).length;
   console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
+  leg.count('enriched', candidates.length);
+  leg.count('withImages', withImages);
+  leg.count('withPhone', candidates.filter((c) => c.listing.phone).length);
 
   // 3d) AUTHORITATIVE recency gate on the actual FB post date (the SERP skip in 3a was only a coarse
   // pre-filter). Drop anything we now KNOW is older than the window. Fail-OPEN when the date is unknown
@@ -323,8 +380,11 @@ export async function runForOrg(
     const keptRecent = [];
     for (const c of candidates) {
       // Known-old post (fail-open on unknown date) — permanently dead: it can only get older.
-      if (c.listing.postedAt && c.listing.postedAt < cutoffMs) markDead(c, 'stale-recency');
-      else keptRecent.push(c);
+      if (c.listing.postedAt && c.listing.postedAt < cutoffMs) {
+        markDead(c, 'stale-recency');
+        leg.bump('recencyDropped');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'recency', dropReason: 'stale-recency' });
+      } else keptRecent.push(c);
     }
     candidates = keptRecent;
     const dropped = before - candidates.length;
@@ -332,6 +392,7 @@ export async function runForOrg(
     if (!candidates.length) {
       console.log('runSourcingJobs:none-after-recency', orgId);
       await flushDead();
+      leg.done({ note: 'every enriched post was older than the org freshness window' });
       return { relayed: 0, amountInr: 0 };
     }
   }
@@ -372,22 +433,38 @@ export async function runForOrg(
       }));
     }
     candidates = cap > 0 ? gated.slice(0, cap) : gated;
+    leg.count('staleReadmitted', readmitted);
     // Intent-stale posts that survive neither the fresh cut nor the stale-fallback re-admit are dead
     // (recency-based, only get older). Anything still in the final relay set is spared.
     const survivorKeys = new Set(candidates.map((c) => c.key));
     for (const c of staleDropped) {
-      if (!survivorKeys.has(c.key)) markDead(c, 'stale-intent');
+      if (!survivorKeys.has(c.key)) {
+        markDead(c, 'stale-intent');
+        leg.bump('intentStaleDropped');
+        leg.lead({
+          key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'intent-freshness',
+          dropReason: `stale-intent (${c.listing.extracted?.listingType || 'unknown intent'})`,
+        });
+      }
+    }
+    // Fresh-and-vetted leads left on the floor purely by maxPerRun — not seen, so the next run
+    // relays them. 'deferred', never a drop.
+    for (const c of gated.slice(candidates.length)) {
+      leg.bump('capDeferred');
+      leg.lead({ key: c.key, listing: c.listing, stage: 'deferred', dropStage: 'max-per-run', dropReason: 'over maxPerRun for this run' });
     }
   }
   if (!candidates.length) {
     console.log('runSourcingJobs:none-after-freshness', orgId);
     await flushDead();
+    leg.done({ note: 'no leads survived the per-intent freshness gate' });
     return { relayed: 0, amountInr: 0 };
   }
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;
   const relayedDates = [];
+  leg.count('relayAttempted', candidates.length);
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing }) => {
     const ok = await relayOne({ webhookUrl, secret, orgId, listing });
     if (ok) {
@@ -399,13 +476,21 @@ export async function runForOrg(
       });
       if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
+      leg.lead({ key, listing, stage: 'relayed' });
+    } else {
+      // A webhook reject is the one drop that costs us everything (SERP + classify + the paid FB
+      // scrape) and earns nothing — it must be visible, not buried in a log line.
+      leg.bump('relayFailed');
+      leg.lead({ key, listing, stage: 'dropped', dropStage: 'relay', dropReason: 'webhook did not return 2xx' });
     }
   });
+  leg.count('relayed', relayed);
   // Persist the enriched-but-dropped links so they're never re-enriched (covers the normal path and
   // the relayed-0 path below). Runs after relay so a listing is never both relayed and marked dead.
   await flushDead();
   if (!relayed) {
     console.log('runSourcingJobs:relayed-0', orgId);
+    leg.done({ note: 'every relay attempt was rejected by the webhook' });
     return { relayed: 0, amountInr: 0 };
   }
   // Audit: the date span of what we relayed — proves the recency gate holds in the real relay path.
@@ -439,6 +524,7 @@ export async function runForOrg(
     });
   }
   console.log('runSourcingJobs:done', orgId, JSON.stringify({ relayed, amountInr }));
+  leg.done({ relayed, amountInr });
   return { relayed, amountInr };
 }
 
@@ -449,55 +535,82 @@ export async function runForOrg(
 // language chosen by Gemini per target) per target, and runs
 // the normal fetch → dedup → enrich → relevance-gate → signed relay for each. Wallet debits aggregate
 // across targets. Degrade-safe: a null matrix or a target with no queries is skipped, not fatal.
-export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true } = {}) {
+export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true, trigger = 'admin-top-target' } = {}) {
   if (!cfg.matrixUrl) return { ok: true, relayed: 0, amountInr: 0, note: 'no matrixUrl' };
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) return { ok: false, relayed: 0, amountInr: 0, note: 'no secret' };
 
-  const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
-  const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, dryRun });
-  const targets = (Array.isArray(matrix?.targets) ? matrix.targets : []).filter(isPlausibleTarget);
-  if (!targets.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no due targets' };
-  // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix
-  // already normalized it over DEFAULT_SOURCING_POLICY, so an older platform just yields defaults).
-  const policy = matrix.policy;
+  // Recording starts only once we know the run will really pull the matrix — a no-matrixUrl / no-
+  // secret org is a config state, not a run, and would just litter the panel with empty rows.
+  const run = startRun(db, orgId, trigger);
+  try {
+    const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
+    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, dryRun });
+    const returned = Array.isArray(matrix?.targets) ? matrix.targets : [];
+    const targets = returned.filter(isPlausibleTarget);
+    // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix
+    // already normalized it over DEFAULT_SOURCING_POLICY, so an older platform just yields defaults).
+    const policy = matrix.policy;
+    const chosen = targets.slice(0, topN);
+    run.matrix({
+      limit,
+      dryRun,
+      topN,
+      targetsReturned: returned.length,
+      // A junk target (an intent phrase like "For Sale" as a locality) means upstream data leakage —
+      // worth showing rather than silently filtering, since it's a bug signal on the platform side.
+      targetsSkippedAsJunk: returned.length - targets.length,
+      junkExamples: returned.filter((t) => !isPlausibleTarget(t)).slice(0, 5)
+        .map((t) => `${t?.locality ?? '?'} / ${t?.city ?? '?'}`),
+      targetsChosen: chosen.length,
+      policy: policy || null,
+    });
 
-  const chosen = targets.slice(0, topN);
-  let relayed = 0;
-  let amountInr = 0;
-  const perTarget = [];
-  for (const t of chosen) {
-    const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
-    const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
-    // Log the generated queries + the regional language Gemini chose, for offline analysis of query
-    // quality/recall per region (this is the only place the built queries surface — the cron discards
-    // sourceTopTargets' return value).
-    console.log('runSourcingJobs:queries', orgId, JSON.stringify({
-      locality: t.locality, city: t.city, category: smart.category,
-      englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName,
-      queries,
-    }));
-    if (!queries.length) {
-      perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
-      continue;
+    if (!targets.length) {
+      run.note('matrix returned no plausible due targets');
+      await run.finish();
+      return { ok: true, relayed: 0, amountInr: 0, note: 'no due targets' };
     }
-    // Deliberately ignore the target's per-target freshness (the platform stamps a tight qdr:d /
-    // 24h window). The requirement is "posted in the last 3 months", so let runForOrg use the org's
-    // freshness window (cfg.freshness = qdr:m3) uniformly across every target.
-    const r = await runForOrg(db, apifyToken, orgId, cfg, {
-      queries,
-      target: { locality: t.locality, city: t.city, shape: shapeLabel(t) },
-      policy,
-    });
-    relayed += r.relayed || 0;
-    amountInr += r.amountInr || 0;
-    perTarget.push({
-      locality: t.locality, city: t.city,
-      englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName, queries, ...r,
-    });
+
+    let relayed = 0;
+    let amountInr = 0;
+    const perTarget = [];
+    for (const t of chosen) {
+      const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
+      const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
+      // Log the generated queries + the regional language Gemini chose, for offline analysis of query
+      // quality/recall per region.
+      console.log('runSourcingJobs:queries', orgId, JSON.stringify({
+        locality: t.locality, city: t.city, category: smart.category,
+        englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName,
+        queries,
+      }));
+      const target = { locality: t.locality, city: t.city, shape: shapeLabel(t) };
+      const leg = run.leg({ target, queries, meta: smart });
+      if (!queries.length) {
+        leg.done({ note: 'query generation produced nothing' });
+        perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
+        continue;
+      }
+      // Deliberately ignore the target's per-target freshness (the platform stamps a tight qdr:d /
+      // 24h window). The requirement is "posted in the last 3 months", so let runForOrg use the org's
+      // freshness window (cfg.freshness = qdr:m3) uniformly across every target.
+      const r = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, policy, leg });
+      relayed += r.relayed || 0;
+      amountInr += r.amountInr || 0;
+      perTarget.push({
+        locality: t.locality, city: t.city,
+        englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName, queries, ...r,
+      });
+    }
+    await run.finish();
+    return { ok: true, runId: run.id, targeted: perTarget, relayed, amountInr };
+  } catch (e) {
+    // Record the failure, then rethrow — the cron's per-org catch still isolates it from other orgs.
+    await run.finish({ status: 'error', error: e?.message || String(e) });
+    throw e;
   }
-  return { ok: true, targeted: perTarget, relayed, amountInr };
 }
 
 // Build a short "2BHK · Villa / House · Sale" hint from a matrix target's dominant shape, if present.

@@ -205,6 +205,22 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   `freshness:'stale-fallback'`; everything else relays as `'fresh'`.
 - **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
   it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
+- **Audit trail** — `utils/sourcingRun.js` records each run to `sourcingRuns/{runId}`: the per-target
+  funnel (matrix targets, the Gemini queries built for each, and every gate from SERP fetch to
+  webhook) plus a `leads` subcollection with a row per listing examined — its URL, originating query,
+  and which gate dropped it. Backend-only writes, read ONLY via the operator callables
+  (`adminSourcingRuns` / `adminSourcingRunDetail` / `adminSourcingLeadLedger`). The recorder is a
+  RECORDER, never a gate: every write is best-effort and swallowed, so a failed audit write can never
+  fail a run that would have delivered and billed. `expiresAt` carries a 90-day TTL (see `TTL_DAYS`
+  for the one-time `gcloud firestore fields ttls update` needed to activate the policy). Counters are
+  pinned by `functions/scripts/validate-sourcing-funnel.mjs` — an in-memory Firestore + stubbed
+  network drives the real `runForOrg` through every gate (`node scripts/validate-sourcing-funnel.mjs`,
+  no Firebase/Apify/network).
+- **The three metered lanes.** Sourcing is only one of them: `selfpost_compose` (₹0.25/WhatsApp
+  message, `sourcingCompose`) and `autopost_usage` (₹0.50/auto-published listing, `usageMeter`) are
+  billed the same wallet. `adminMetrics` returns all three as `lanes` + `propertyTotal`; the sub-rupee
+  ones accrue in paise on the org, so some earned revenue is always still held as `pendingAccrualInr`
+  rather than debited.
 
 ## Frontend conventions
 

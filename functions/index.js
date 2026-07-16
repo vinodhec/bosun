@@ -49,7 +49,17 @@ export { adminConnectFigma, adminDisconnectFigma } from './handlers/adminFigma.j
 
 // Operator-only: configure an org's sourced-listing relay (Apify query matrix + webhook + HMAC),
 // plus an on-demand trigger to run one org's relay immediately for end-to-end testing.
-export { adminConfigureSourcing, adminDisableSourcing, adminRunSourcingNow, adminSourceTopTarget } from './handlers/adminSourcing.js';
+// plus the read side: the per-run funnel audit trail (which targets, which queries, what was
+// relayed vs dropped and at which gate) and the historical lead ledger.
+export {
+  adminConfigureSourcing,
+  adminDisableSourcing,
+  adminRunSourcingNow,
+  adminSourceTopTarget,
+  adminSourcingRuns,
+  adminSourcingRunDetail,
+  adminSourcingLeadLedger,
+} from './handlers/adminSourcing.js';
 
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,
 // and run a fix against any org's repo for testing.

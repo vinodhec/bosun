@@ -93,6 +93,15 @@ export const adminInvoiceHtml = httpsCallable(functions, 'adminInvoiceHtml');
 export const adminSetUserInvoices = httpsCallable(functions, 'adminSetUserInvoices');
 export const adminGstReport = httpsCallable(functions, 'adminGstReport');
 
+// Operator-only: the property-sourcing relay's audit trail — the per-run funnel (targets, queries,
+// relayed vs dropped and at which gate), the URL-level drill-down for one run, and the historical
+// lead ledger from the dedup-forever store.
+export const adminSourcingRuns = httpsCallable(functions, 'adminSourcingRuns');
+export const adminSourcingRunDetail = httpsCallable(functions, 'adminSourcingRunDetail');
+export const adminSourcingLeadLedger = httpsCallable(functions, 'adminSourcingLeadLedger');
+export const adminSourceTopTarget = httpsCallable(functions, 'adminSourceTopTarget');
+export const adminRunSourcingNow = httpsCallable(functions, 'adminRunSourcingNow');
+
 // Customer-facing GST invoices.
 export const listMyInvoices = httpsCallable(functions, 'listMyInvoices');
 export const getMyInvoiceHtml = httpsCallable(functions, 'getMyInvoiceHtml');

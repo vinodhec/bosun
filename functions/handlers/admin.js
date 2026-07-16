@@ -6,6 +6,7 @@ import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamificatio
 import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
 import { buildGstr1, renderGstr1Html } from '../utils/gstReport.js';
+import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -378,14 +379,18 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();
   const rate = await getUsdToInrRate();
 
-  const [orgsSnap, tasksSnap, creditSnap, sourcingSnap] = await Promise.all([
+  const [orgsSnap, tasksSnap, creditSnap, laneSnap] = await Promise.all([
     db.collection('organisations').get(),
     db.collection('tasks').get(),
     db.collection('transactions').where('type', '==', 'credit').get(),
-    // Sourced-listing relay is a separate metered lane: one debit txn per run batch, `amount` = the
-    // ₹ we charged, `count` = leads relayed. Revenue lives here (a debit), NOT on tasks.
-    db.collection('transactions').where('kind', '==', 'sourcing').get(),
+    // The three metered lanes, all debit txns with `amount` = ₹ charged and `count` = units settled.
+    // Revenue for these lives HERE, not on tasks — they never touch the managed-agent pipeline.
+    //   sourcing        — one row per run batch,  count = leads relayed
+    //   selfpost_compose— WhatsApp message composed for an owner (₹0.25, accrued)
+    //   autopost_usage  — customer's sweep auto-published a Bosun lead (₹0.50, accrued)
+    db.collection('transactions').where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage']).get(),
   ]);
+  const sourcingSnap = { docs: laneSnap.docs.filter((d) => d.data().kind === 'sourcing') };
 
   // Apify (SERP + FB enrichment) is the only sourcing COGS and we don't meter it per run — sourcing
   // is a deliberately near-zero-COGS lane. Estimate it for a profit view; clearly labelled "est".
@@ -548,7 +553,91 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     byOrg: [...srcByOrg.values()].sort((a, b) => b.revenueInr - a.revenueInr),
   };
 
-  return { rate, totals, today, averages, trailing, byOrg, sourcing, generatedAt: now };
+  // ── The metered lanes, side by side. Sourcing was the only one this endpoint reported, which made
+  // the relay look like the whole property business — the WhatsApp compose (₹0.25/message) and the
+  // auto-post meter (₹0.50/publish) were earning invisibly. All three are sliced identically so they
+  // can be added up honestly.
+  const LANES = {
+    sourcing: { label: 'Leads relayed', unit: 'lead', pricePaise: null },
+    selfpost_compose: { label: 'WhatsApp messages', unit: 'message', pricePaise: SELFPOST_COMPOSE_PRICE_PAISE },
+    autopost_usage: { label: 'Auto-posted listings', unit: 'post', pricePaise: AUTOPOST_USAGE_PRICE_PAISE },
+  };
+  const laneBlank = () => ({
+    revenueInr: 0, units: 0, txns: 0,
+    today: { revenueInr: 0, units: 0 },
+    d1: { revenueInr: 0, units: 0 }, d7: { revenueInr: 0, units: 0 }, d30: { revenueInr: 0, units: 0 },
+    byOrg: new Map(),
+  });
+  const laneAgg = Object.fromEntries(Object.keys(LANES).map((k) => [k, laneBlank()]));
+  for (const d of laneSnap.docs) {
+    const t = d.data();
+    const agg = laneAgg[t.kind];
+    if (!agg) continue;
+    const amt = Number(t.amount) || 0;
+    const units = Number(t.count) || 0;
+    agg.revenueInr += amt; agg.units += units; agg.txns += 1;
+    if (t.orgId) {
+      const cur = agg.byOrg.get(t.orgId) || { orgId: t.orgId, name: orgStats.get(t.orgId)?.name || '(unknown)', revenueInr: 0, units: 0 };
+      cur.revenueInr += amt; cur.units += units;
+      agg.byOrg.set(t.orgId, cur);
+    }
+    const whenMs = t.createdAt?.toMillis?.() ?? null;
+    if (whenMs == null) continue;
+    const age = now - whenMs;
+    if (age <= DAY_MS) { agg.d1.revenueInr += amt; agg.d1.units += units; }
+    if (age <= 7 * DAY_MS) { agg.d7.revenueInr += amt; agg.d7.units += units; }
+    if (age <= 30 * DAY_MS) { agg.d30.revenueInr += amt; agg.d30.units += units; }
+    if (whenMs >= todayStartMs) { agg.today.revenueInr += amt; agg.today.units += units; }
+  }
+
+  // Sub-rupee charges accrue on the org and only debit as they cross ₹1, so at any instant some
+  // earned revenue is still held as paise. Surface it — otherwise the lane totals look short and
+  // nobody can tell whether it's drift or just the carry.
+  let composeAccrualPaise = 0;
+  let autopostAccrualPaise = 0;
+  for (const o of orgsSnap.docs) {
+    composeAccrualPaise += Number(o.data().composeAccrualPaise) || 0;
+    autopostAccrualPaise += Number(o.data().autopostAccrualPaise) || 0;
+  }
+
+  const lanes = Object.entries(LANES).map(([kind, meta]) => {
+    const a = laneAgg[kind];
+    return {
+      kind,
+      label: meta.label,
+      unit: meta.unit,
+      priceInr: meta.pricePaise != null ? meta.pricePaise / 100 : null,
+      revenueInr: a.revenueInr,
+      units: a.units,
+      txns: a.txns,
+      avgInrPerUnit: a.units > 0 ? a.revenueInr / a.units : 0,
+      today: a.today,
+      trailing: { d1: a.d1, d7: a.d7, d30: a.d30 },
+      pendingAccrualInr: kind === 'selfpost_compose' ? composeAccrualPaise / 100
+        : kind === 'autopost_usage' ? autopostAccrualPaise / 100 : 0,
+      byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
+    };
+  });
+
+  // Whole property business = the three lanes together. Apify (estimated per relayed lead) is the
+  // only COGS across them — compose/auto-post COGS is a Gemini Flash call and a webhook, both
+  // rounding error against ₹0.25/₹0.50.
+  const laneRevenue = lanes.reduce((n, l) => n + l.revenueInr, 0);
+  const propertyTotal = {
+    revenueInr: laneRevenue,
+    estCostInr: estCost(srcTotals.leads),
+    profitInr: laneRevenue - estCost(srcTotals.leads),
+    marginPct: laneRevenue > 0 ? Math.round(((laneRevenue - estCost(srcTotals.leads)) / laneRevenue) * 100) : 0,
+    today: { revenueInr: lanes.reduce((n, l) => n + l.today.revenueInr, 0) },
+    trailing: {
+      d1: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d1.revenueInr, 0) },
+      d7: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d7.revenueInr, 0) },
+      d30: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d30.revenueInr, 0) },
+    },
+    pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise) / 100,
+  };
+
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {

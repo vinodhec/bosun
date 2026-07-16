@@ -34,6 +34,7 @@ import {
 } from '../firebase/functions.js';
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
+import SourcingRuns from '../components/SourcingRuns.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { formatINR } from '@shared/currency.js';
@@ -274,6 +275,97 @@ function SourcingOverview({ data: s }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// The metered property lanes side by side — leads relayed (₹2.40–2.60 each), WhatsApp messages
+// composed (₹0.25) and listings auto-posted (₹0.50). Sourcing used to be reported alone, which made
+// the relay look like the whole property business while the other two earned invisibly.
+//
+// Sub-rupee lanes accrue on the org and only debit as they cross ₹1, so a little earned revenue is
+// always still held as paise — shown as "pending" rather than quietly missing from the totals.
+function MeteredLanes({ lanes, total }) {
+  if (!lanes?.length) return null;
+  return (
+    <section className="rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-ink">Property lanes — all metered revenue</h2>
+        <span className="text-[10px] text-ink-soft">Apify is the only real COGS · profit est.</span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MetricCard label="Revenue (all lanes)" value={formatINR(total.revenueInr)} sub="sourcing + compose + auto-post" tone="good" />
+        <MetricCard label="Est. Apify cost" value={inrPrecise(total.estCostInr)} sub="per relayed lead" />
+        <MetricCard label="Profit" value={formatINR(total.profitInr)} sub={`${total.marginPct}% margin · est.`}
+          tone={total.profitInr >= 0 ? 'good' : 'bad'} />
+        <MetricCard label="Today" value={formatINR(total.today.revenueInr)} sub="since 00:00 IST" tone="good" />
+      </div>
+
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full min-w-[620px] text-left text-xs">
+          <thead>
+            <tr className="border-b border-line text-ink-soft">
+              <th className="py-1.5 pr-3 font-medium">Lane</th>
+              <th className="py-1.5 pr-3 text-right font-medium">Rate</th>
+              <th className="py-1.5 pr-3 text-right font-medium">Units</th>
+              <th className="py-1.5 pr-3 text-right font-medium">Today</th>
+              <th className="py-1.5 pr-3 text-right font-medium">7 days</th>
+              <th className="py-1.5 pr-3 text-right font-medium">30 days</th>
+              <th className="py-1.5 text-right font-medium">All time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lanes.map((l) => (
+              <tr key={l.kind} className="border-b border-line/60">
+                <td className="py-1.5 pr-3">
+                  <div className="font-medium text-ink">{l.label}</div>
+                  <div className="text-[10px] text-ink-soft">
+                    {l.units} {l.unit}{l.units === 1 ? '' : 's'} · {l.txns} ledger row{l.txns === 1 ? '' : 's'}
+                    {l.pendingAccrualInr > 0 && <span className="ml-1 text-amber-700">· {inrPrecise(l.pendingAccrualInr)} pending</span>}
+                  </div>
+                </td>
+                <td className="py-1.5 pr-3 text-right text-ink-soft">
+                  {l.priceInr != null ? `₹${l.priceInr.toFixed(2)}` : inrPrecise(l.avgInrPerUnit)}
+                  <div className="text-[10px]">{l.priceInr != null ? 'fixed' : 'avg'}</div>
+                </td>
+                <td className="py-1.5 pr-3 text-right text-ink">{l.units}</td>
+                <td className="py-1.5 pr-3 text-right text-ink">{formatINR(l.today.revenueInr)}</td>
+                <td className="py-1.5 pr-3 text-right text-ink">{formatINR(l.trailing.d7.revenueInr)}</td>
+                <td className="py-1.5 pr-3 text-right text-ink">{formatINR(l.trailing.d30.revenueInr)}</td>
+                <td className="py-1.5 text-right font-semibold text-ink">{formatINR(l.revenueInr)}</td>
+              </tr>
+            ))}
+            <tr className="border-t-2 border-line">
+              <td className="py-1.5 pr-3 font-semibold text-ink">Total</td>
+              <td className="py-1.5 pr-3" />
+              <td className="py-1.5 pr-3" />
+              <td className="py-1.5 pr-3 text-right font-semibold text-ink">{formatINR(total.today.revenueInr)}</td>
+              <td className="py-1.5 pr-3 text-right font-semibold text-ink">{formatINR(total.trailing.d7.revenueInr)}</td>
+              <td className="py-1.5 pr-3 text-right font-semibold text-ink">{formatINR(total.trailing.d30.revenueInr)}</td>
+              <td className="py-1.5 text-right font-bold text-green-700">{formatINR(total.revenueInr)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {lanes.some((l) => l.byOrg.length > 0) && (
+        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+          {lanes.filter((l) => l.byOrg.length > 0).map((l) => (
+            <div key={l.kind} className="rounded-xl border border-line bg-canvas/40 p-3">
+              <div className="text-xs font-medium text-ink-soft">{l.label} — by org</div>
+              <ul className="mt-1.5 space-y-1">
+                {l.byOrg.map((o) => (
+                  <li key={o.orgId} className="flex items-center justify-between text-xs">
+                    <span className="truncate pr-2 text-ink">{o.name}</span>
+                    <span className="shrink-0 font-semibold text-ink">{formatINR(o.revenueInr)}<span className="ml-1 font-normal text-ink-soft">/ {o.units}</span></span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
       )}
     </section>
@@ -1345,6 +1437,10 @@ export default function Admin() {
         <Overview data={metrics} busy={metricsBusy} onRefresh={loadMetrics} />
 
         <SourcingOverview data={metrics?.sourcing} />
+
+        {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} />}
+
+        <SourcingRuns orgs={orgs} />
 
         <section className="rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Organisations</h2>
