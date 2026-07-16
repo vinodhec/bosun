@@ -36,10 +36,11 @@ function isPlausibleTarget(t) {
 // junk reaches the paid scraper, so a smaller buffer suffices. Bounds extra Apify cost to 2× maxPerRun.
 const CLASSIFY_OVERSAMPLE = 2;
 
-// Scheduled sourced-listing relay (see utils/sourcing.js). Every 2 hours AROUND THE CLOCK (12
-// runs/day — 07–21 IST → 24h on 2026-07-14 to push toward the 500-leads/day target; overnight runs
-// skew drier but the seen/dead dedup keeps their marginal cost low), for every
-// org with sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them
+// Scheduled sourced-listing relay (see utils/sourcing.js). Every 30 MINUTES AROUND THE CLOCK (48
+// runs/day — tightened from every-2h on 2026-07-17 alongside topN 5→3: smaller, faster runs that
+// check for DUE targets far more often, pushing toward the 500-leads/day target. A run with no due
+// targets no-ops in ~2s, so the extra frequency is near-free when the matrix has nothing fresh), for
+// every org with sourcing.enabled: fetch listings via Apify across the org's query matrix, dedup them
 // FOREVER against sourcingSeen/{orgId}/keys, HMAC-sign + POST each NEW one to the org's webhook, and
 // debit the org wallet a small per-listing fee for the ones that were accepted (2xx). Each pull
 // serves the next DUE targets (the platform stamps lastServedAt), so intra-day runs rotate through
@@ -60,8 +61,9 @@ const RELAY_TIMEOUT_MS = 15000;
 // the run doc at status:'running' FOREVER, because finish() (which writes the funnel + flips status)
 // only runs after the target loop. Stop STARTING new targets once we've spent this budget and finish()
 // cleanly as 'partial'; the untouched targets are re-served next run (seen/dead dedup keeps their
-// marginal cost ~0). 25 min leaves headroom for flushDead + the lead-row batch writes inside finish().
-const RUN_BUDGET_MS = 25 * 60 * 1000;
+// marginal cost ~0). 20 min sits under the 25-min hard timeout AND well under the 30-min cron cadence,
+// so a run always finishes before the next one fires (no overlap) with room for finish()'s writes.
+const RUN_BUDGET_MS = 20 * 60 * 1000;
 // FB enrichment batching: URLs per actor run × concurrent runs. 10/run keeps each run-sync call
 // fast (a 2-post batch measured ~7s; 10 stays well inside the sync window) while paying the flat
 // actor-start fee once per 10 posts instead of per post. 3 concurrent runs ≈ the old effective
@@ -76,14 +78,14 @@ const GETALL_CHUNK = 300; // Firestore getAll batch size for the dedup lookup
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    schedule: '0 */2 * * *', // every 2h, 24h — 12 runs/day (hourly would overlap)
+    schedule: '*/30 * * * *', // every 30 min, 24h — 48 runs/day (topN 3 → each run ~8 min)
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
-    // 1800s (30 min) is the platform/firebase-tools max for a scheduled trigger. Real invocations run
-    // ~15–25 min for a full topN set, and the vet-before-enrich reorder cut per-run time further (far
-    // fewer paid FB scrapes). If a run ever hits the wall, the every-2h cadence + seen/dead dedup pick
-    // up the remaining due targets next run — no lead is lost, just deferred.
-    timeoutSeconds: 1800,
+    // 1500s (25 min) < the 30-min cadence, so a slow run can never overlap the next tick. A topN-3 run
+    // measures ~8 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
+    // wall, the every-30-min cadence + seen/dead dedup pick up the remaining due targets next run — no
+    // lead is lost, just deferred.
+    timeoutSeconds: 1500,
     memory: '512MiB',
   },
   async () => {
