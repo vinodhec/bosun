@@ -47,7 +47,21 @@ const CLASSIFY_OVERSAMPLE = 2;
 // metered lane — it never touches the managed-agent pipeline or finalize.js.
 
 const RELAY_CONCURRENCY = 10;
+// Separate, LOWER fan-out for the Gemini classify gate. The webhook relay (RELAY_CONCURRENCY) is our
+// own endpoint and tolerates 10 in flight, but the classify pool hammers Vertex — 10 concurrent
+// flash-lite calls per target, bursting across every target, is what trips the per-minute quota and
+// returns 429 RESOURCE_EXHAUSTED (which fails a lead OPEN to 'unverified'). 4 keeps throughput healthy
+// while staying under the quota; raise it only alongside a Vertex quota increase.
+const CLASSIFY_CONCURRENCY = 4;
 const RELAY_TIMEOUT_MS = 15000;
+// Wall-clock budget for one cron invocation. A scheduled function is HARD-capped at 1800s (30 min);
+// each demand-matrix target is a slow serial chain (SERP fetch → Gemini classify → paid FB enrich →
+// webhook relay), so a full topN batch can blow past that wall and be KILLED mid-run — which strands
+// the run doc at status:'running' FOREVER, because finish() (which writes the funnel + flips status)
+// only runs after the target loop. Stop STARTING new targets once we've spent this budget and finish()
+// cleanly as 'partial'; the untouched targets are re-served next run (seen/dead dedup keeps their
+// marginal cost ~0). 25 min leaves headroom for flushDead + the lead-row batch writes inside finish().
+const RUN_BUDGET_MS = 25 * 60 * 1000;
 // FB enrichment batching: URLs per actor run × concurrent runs. 10/run keeps each run-sync call
 // fast (a 2-post batch measured ~7s; 10 stays well inside the sync window) while paying the flat
 // actor-start fee once per 10 posts instead of per post. 3 concurrent runs ≈ the old effective
@@ -265,7 +279,7 @@ export async function runForOrg(
   // OPEN per-post (keep) so a classifier hiccup never loses leads; Gemini COGS is negligible vs an
   // Apify post scrape, so classifying the whole prospect pool is cheap.
   if (classifying) {
-    await mapLimit(prospects, RELAY_CONCURRENCY, async (c) => {
+    await mapLimit(prospects, CLASSIFY_CONCURRENCY, async (c) => {
       if (!hasPropertySignal(c.listing.snippet)) {
         c.drop = true;
         c.dropReason = 'no-signal';
@@ -576,7 +590,18 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
     let relayed = 0;
     let amountInr = 0;
     const perTarget = [];
+    const startedMs = Date.now();
+    let budgetHit = false;
     for (const t of chosen) {
+      // Never START a target we can't afford to finish before the 30-min scheduler wall kills us —
+      // a killed run never reaches finish() and strands its doc at status:'running'. The remaining
+      // targets aren't lost: they're the next-due ones and get re-served on the following cron.
+      if (Date.now() - startedMs > RUN_BUDGET_MS) {
+        budgetHit = true;
+        run.note(`wall-clock budget reached after ${perTarget.length}/${chosen.length} targets — the rest are deferred to the next run`);
+        console.warn('runSourcingJobs:budget-stop', orgId, JSON.stringify({ done: perTarget.length, total: chosen.length }));
+        break;
+      }
       const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
       const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
       // Log the generated queries + the regional language Gemini chose, for offline analysis of query
@@ -604,8 +629,8 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
         englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName, queries, ...r,
       });
     }
-    await run.finish();
-    return { ok: true, runId: run.id, targeted: perTarget, relayed, amountInr };
+    await run.finish({ status: budgetHit ? 'partial' : 'done' });
+    return { ok: true, runId: run.id, targeted: perTarget, relayed, amountInr, partial: budgetHit };
   } catch (e) {
     // Record the failure, then rethrow — the cron's per-org catch still isolates it from other orgs.
     await run.finish({ status: 'error', error: e?.message || String(e) });

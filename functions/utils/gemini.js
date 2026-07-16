@@ -61,9 +61,11 @@ export function geminiConfigured() {
 export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, schema, temperature = 0, maxOutputTokens = 512, thinkingBudget }) {
   const ai = geminiClient();
   if (!ai || !prompt) return null;
-  // One retry on transient failures (429 rate limit / 5xx) — burst runs hammer the classifier and a
-  // single blip shouldn't degrade a lead to fail-open. Hard auth errors (403 etc.) don't retry.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Up to two retries on transient failures (429 rate limit / 5xx) — burst runs hammer the classifier
+  // and a single blip shouldn't degrade a lead to fail-open. Backoff grows per attempt so a genuine
+  // per-minute quota hit gets a real chance to clear. Hard auth errors (403 etc.) don't retry.
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const resp = await ai.models.generateContent({
         model,
@@ -82,9 +84,10 @@ export async function generateJson({ model = GEMINI_FLASH_LITE, prompt, system, 
     } catch (e) {
       const msg = String(e?.message || e);
       const transient = /\b(429|500|503|UNAVAILABLE|RESOURCE_EXHAUSTED|fetch failed|ETIMEDOUT)\b/i.test(msg);
-      console.error('gemini:generateJson:err', msg.slice(0, 300), transient && attempt === 0 ? '(retrying)' : '');
-      if (!transient || attempt === 1) return null;
-      await new Promise((r) => setTimeout(r, 1500));
+      const willRetry = transient && attempt < MAX_ATTEMPTS - 1;
+      console.error('gemini:generateJson:err', msg.slice(0, 300), willRetry ? '(retrying)' : '');
+      if (!willRetry) return null;
+      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
     }
   }
   return null;

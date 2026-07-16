@@ -237,7 +237,8 @@ function RunRow({ run, showOrg }) {
   };
 
   const f = run.funnel || {};
-  const statusCls = run.status === 'error' ? 'bg-rose-50 text-rose-600'
+  const statusCls = run.status === 'error' || run.status === 'timeout' ? 'bg-rose-50 text-rose-600'
+    : run.status === 'partial' ? 'bg-amber-50 text-amber-700'
     : run.status === 'running' ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600';
 
   return (
