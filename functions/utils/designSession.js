@@ -87,7 +87,7 @@ export function buildDesignPrompt(ask, { figmaDesign = null, screenshotCount = 0
     ? `The owner attached ${screenshotCount} screenshot${screenshotCount > 1 ? 's' : ''} for reference — look at ${screenshotCount > 1 ? 'them' : 'it'}.\n\n`
     : '';
   const jamNote = jamUrl
-    ? `The owner shared a screen recording: ${jamUrl} — you may read it with the jam tools (getConsoleLogs / getNetworkRequests / getUserEvents, passing the URL as jamId) if it helps you understand the ask.\n\n`
+    ? `The owner shared a screen recording link: ${jamUrl} — you cannot open recordings; it is NOT a page of their site, so ignore the link and work from their words and screenshots.\n\n`
     : '';
 
   return (

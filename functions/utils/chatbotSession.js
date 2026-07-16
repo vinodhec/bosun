@@ -21,15 +21,13 @@ import { extractJamUrl, BUILD_EFFICIENCY } from './agentResult.js';
 export const MAX_CLARIFY_TURNS = 6; // owner replies that resume the chat before we nudge toward a build
 
 // What the owner can ask for that saves the agent expensive blind exploration AND sharpens the build.
-// The agent already has jam + figma ingestion (a jam link in the text is readable via the jam tools;
-// a figma link is fetched server-side and injected as an image), so it should ASK for whichever fits.
+// Figma links are fetched server-side and injected as an image. Jam is no longer askable — the Jam
+// MCP toolset was removed from the fixer agents (2026-07-16, COGS), so a recording is unreadable.
 const ASK_FOR_CONTEXT =
   `Whenever it would help you find the right page or understand the ask, ASK the owner to share the ` +
   `cheapest useful thing FIRST — before exploring blind:\n` +
   `  - a SCREENSHOT of the page or the part that's wrong (fastest way to see what they mean),\n` +
   `  - the PAGE LINK / which page it's on (so you go straight there),\n` +
-  `  - a JAM recording if it's something that misbehaves (a button that doesn't work, an error) — you ` +
-  `can read it with the jam tools,\n` +
   `  - a FIGMA link if they have a design to match.\n` +
   `Ask only for what genuinely helps this specific request — never demand all of them.`;
 
@@ -43,7 +41,7 @@ const CHAT_PROTOCOL =
   `"Would you like to see a quick preview first, or should I just go ahead and make the change?" — and ` +
   `respect their answer. For a plain bug/behaviour fix, don't offer a preview; just confirm and build.\n\n` +
   `Decide this turn's OUTCOME and put it in the RESULT_JSON on the very last line (the owner never sees it):\n` +
-  `  - "ask": you still need something (an answer, a screenshot, the page link, a jam or figma link). ` +
+  `  - "ask": you still need something (an answer, a screenshot, the page link, a figma link). ` +
   `Put the questions in your visible reply.\n` +
   `  - "ready": you now understand the request fully and are ready to build once they say go. Your ` +
   `visible reply is ONE short, friendly, plain-English summary of what you'll change — NO technical ` +
@@ -69,7 +67,7 @@ export function buildChatPrompt(ask, { figmaDesign = null, screenshotCount = 0 }
     ? `The owner attached ${screenshotCount} screenshot${screenshotCount > 1 ? 's' : ''} — look at ${screenshotCount > 1 ? 'them' : 'it'}.\n\n`
     : '';
   const jamNote = jamUrl
-    ? `The owner shared a screen recording: ${jamUrl} — read it with the jam tools (getConsoleLogs / getNetworkRequests / getUserEvents, passing the URL as jamId) if it helps.\n\n`
+    ? `The owner shared a screen recording link: ${jamUrl} — you cannot open recordings; it is NOT a page of their site, so ignore the link and work from their words and screenshots.\n\n`
     : '';
   return (
     `A non-technical website owner wrote to you about their site:\n"${ask}"\n\n` +

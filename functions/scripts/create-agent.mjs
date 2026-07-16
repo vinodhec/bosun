@@ -5,6 +5,15 @@
 //   cd functions && ANTHROPIC_API_KEY=sk-ant-... node scripts/create-agent.mjs
 //
 // Copy the printed id into functions/.env as ANTHROPIC_MANAGED_AGENT_ID.
+//
+// COGS note (2026-07-16): the agent's toolset schemas are re-read from cache on EVERY model
+// turn, so every exposed tool taxes every fix. The original agent carried GitHub's full MCP
+// server (44 tools, ~29k tokens) + Jam (~3k) — ~26% of a typical fix's COGS — while sessions
+// use git CLI for everything except opening the PR (see BUILD_EFFICIENCY). So:
+//   - github points at the PR-scoped endpoint (/x/pull_requests, 10 tools ~8k tokens) and only
+//     create_pull_request / update_pull_request are enabled (default_config disables the rest —
+//     merging stays server-side in customerDeployTesting, never the agent's job).
+//   - Jam MCP is gone entirely; jam.dev links now ride the prompts as context only.
 import Anthropic from '@anthropic-ai/sdk';
 
 const client = new Anthropic({
@@ -12,7 +21,7 @@ const client = new Anthropic({
   defaultHeaders: { 'anthropic-beta': 'managed-agents-2026-04-01' },
 });
 
-const model = process.env.MODEL || 'claude-opus-4-7';
+const model = process.env.MODEL || 'claude-opus-4-8';
 const agent = await client.beta.agents.create({
   name: `Website Fixer (${model})`,
   model,
@@ -22,11 +31,7 @@ const agent = await client.beta.agents.create({
     'open a pull request. Keep any user-facing text plain and friendly, with no ' +
     'technical jargon.',
   mcp_servers: [
-    { type: 'url', name: 'github', url: 'https://api.githubcopilot.com/mcp/' },
-    // Jam lets the agent read a customer-shared jam.dev recording (console errors, failed
-    // requests, repro steps). Authed by a Jam PAT stored as a static_bearer vault credential
-    // (see utils/vault.js); the session's vault_ids carry it in.
-    { type: 'url', name: 'jam', url: 'https://mcp.jam.dev/mcp' },
+    { type: 'url', name: 'github', url: 'https://api.githubcopilot.com/mcp/x/pull_requests' },
   ],
   tools: [
     { type: 'agent_toolset_20260401' },
@@ -35,12 +40,11 @@ const agent = await client.beta.agents.create({
     {
       type: 'mcp_toolset',
       mcp_server_name: 'github',
-      default_config: { enabled: true, permission_policy: { type: 'always_allow' } },
-    },
-    {
-      type: 'mcp_toolset',
-      mcp_server_name: 'jam',
-      default_config: { enabled: true, permission_policy: { type: 'always_allow' } },
+      default_config: { enabled: false },
+      configs: [
+        { name: 'create_pull_request', enabled: true, permission_policy: { type: 'always_allow' } },
+        { name: 'update_pull_request', enabled: true, permission_policy: { type: 'always_allow' } },
+      ],
     },
   ],
 });

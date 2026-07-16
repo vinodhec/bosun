@@ -66,7 +66,7 @@ export function buildComparePrompt(ask, { figmaDesign = null, screenshotCount = 
     ? `The owner attached ${screenshotCount} screenshot${screenshotCount > 1 ? 's' : ''} (their site and/or competitors) — look at ${screenshotCount > 1 ? 'them' : 'it'}.\n\n`
     : '';
   const jamNote = jamUrl
-    ? `The owner shared a screen recording: ${jamUrl} — you may read it with the jam tools (getConsoleLogs / getNetworkRequests / getUserEvents, passing the URL as jamId) if it helps.\n\n`
+    ? `The owner shared a screen recording link: ${jamUrl} — you cannot open recordings; it is NOT a page of their site, so ignore the link and work from their words and screenshots.\n\n`
     : '';
 
   return (

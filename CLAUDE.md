@@ -72,8 +72,8 @@ All charge math goes through `shared/billing.js`. Key invariants:
 
 - **Bracketed cost-plus pricing (the live path).** A completed round is charged
   `priceFromCostUsd(actualCOGS)` in `utils/finalize.js` — the `PRICING_BRACKETS` markup on the
-  run's real token cost (3.5× the first ₹50, 4× the next ₹50, 3× above, capped at
-  `MAX_CHARGE_INR` ₹690, no minimum). Nothing is quoted upfront. `COMPLEXITY_TIERS` is still
+  run's real token cost (FLAT 3× since 2026-07-16 — the owner capped markup at 3× for
+  everything; capped at `MAX_CHARGE_INR` ₹690, no minimum). Nothing is quoted upfront. `COMPLEXITY_TIERS` is still
   consulted, but only for `maxBudgetUsd` (the poller's hard $ cap — Managed Agents have no
   native cap) and `maxSeconds` (an independent runtime cap, kept because `session.usage` can
   read $0 for minutes while tokens burn) plus model routing — **NOT** for the price. The fixed

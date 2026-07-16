@@ -1,7 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 const BETA = 'managed-agents-2026-04-01';
+// Vault credentials are keyed by EXACT MCP server URL — a credential stored for the base URL
+// does NOT satisfy an agent pointing at a scoped path (the session errors "no credential is
+// stored for this server URL"). The fixer agents were re-pointed at the PR-scoped endpoint
+// (2026-07-16, COGS — see scripts/create-agent.mjs), so we seed BOTH: the scoped URL for the
+// live agents, and the base URL so the pre-slim agents keep working if we roll back.
 const GH_MCP_URL = 'https://api.githubcopilot.com/mcp/';
+const GH_MCP_PR_URL = 'https://api.githubcopilot.com/mcp/x/pull_requests';
+const GH_MCP_URLS = [GH_MCP_PR_URL, GH_MCP_URL];
 const JAM_MCP_URL = 'https://mcp.jam.dev/mcp';
 
 function client() {
@@ -20,29 +27,31 @@ function client() {
 export async function ensureOrgGithubVault({ orgId, vaultId, token }) {
   const c = client();
 
-  // Seed the GitHub static_bearer credential into `vid`, or rotate it if one already exists
-  // (409) for the GitHub MCP URL. Throws on any other failure — including a 404 when the vault
-  // itself doesn't exist, which the caller below uses to trigger a rebuild.
+  // Seed a GitHub static_bearer credential into `vid` for EVERY GitHub MCP URL our agents may
+  // use, rotating any that already exist (409). Throws on any other failure — including a 404
+  // when the vault itself doesn't exist, which the caller below uses to trigger a rebuild.
   async function seedGithubCredential(vid) {
-    try {
-      await c.beta.vaults.credentials.create(vid, {
-        display_name: 'github',
-        auth: { type: 'static_bearer', mcp_server_url: GH_MCP_URL, token },
-      });
-    } catch (e) {
-      // 409 = a credential already exists for this MCP URL → rotate its token.
-      if (e?.status === 409) {
-        const list = await c.beta.vaults.credentials.list(vid);
-        const items = list?.data ?? list?.body?.data ?? [];
-        const existing = items.find((x) => x.mcp_server_url === GH_MCP_URL) ?? items[0];
-        if (existing) {
-          await c.beta.vaults.credentials.update(existing.id, {
-            vault_id: vid,
-            auth: { type: 'static_bearer', token },
-          });
+    for (const url of GH_MCP_URLS) {
+      try {
+        await c.beta.vaults.credentials.create(vid, {
+          display_name: 'github',
+          auth: { type: 'static_bearer', mcp_server_url: url, token },
+        });
+      } catch (e) {
+        // 409 = a credential already exists for this MCP URL → rotate its token.
+        if (e?.status === 409) {
+          const list = await c.beta.vaults.credentials.list(vid);
+          const items = list?.data ?? list?.body?.data ?? [];
+          const existing = items.find((x) => x.mcp_server_url === url);
+          if (existing) {
+            await c.beta.vaults.credentials.update(existing.id, {
+              vault_id: vid,
+              auth: { type: 'static_bearer', token },
+            });
+          }
+        } else {
+          throw e;
         }
-      } else {
-        throw e;
       }
     }
   }

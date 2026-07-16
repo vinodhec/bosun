@@ -28,10 +28,14 @@ export const MODEL_PRICES = {
 export const BUILD_EFFICIENCY =
   `The repo is checked out locally at /workspace/repo — use the git CLI to commit and push; use the ` +
   `GitHub tools ONLY to open the pull request. Never re-fetch a file through the GitHub API (it's ` +
-  `already local and git handles SHAs) and don't re-read a file you already read. When you edit, ` +
-  `make the FEWEST, largest edits rather than many small ones. Verify a change with \`git diff\`, ` +
-  `not by re-reading the whole file. Do NOT run npm install, builds, or linters (the sandbox has no ` +
-  `node_modules — they only waste time and fail), and don't probe the environment.`;
+  `already local and git handles SHAs) and don't re-read a file you already read. Every tool call ` +
+  `replays the whole session so far, so each one is expensive: BATCH aggressively — chain related ` +
+  `shell commands into ONE bash call with && or ; (grep several patterns, read several line ranges, ` +
+  `inspect several files together) instead of firing them one at a time. Plan before acting: locate ` +
+  `ALL the files to change first, then edit each file ONCE with the fewest, largest edits. Verify ` +
+  `with a SINGLE \`git diff\` after ALL edits are done — not one diff per file, and never by ` +
+  `re-reading files. Do NOT run npm install, builds, or linters (the sandbox has no node_modules — ` +
+  `they only waste time and fail), and don't probe the environment.`;
 
 /** Map a managed-agent model id to a price family ('opus'|'sonnet'|'haiku'), or null if unknown. */
 export function modelFamily(modelId) {
@@ -150,9 +154,10 @@ export async function usageFromEvents(client, sessionId, { family = 'opus', runt
   return { input, output, cacheRead, cacheCreation, requests: seen, tokenUsd, runtimeUsd, totalUsd: tokenUsd + runtimeUsd };
 }
 
-// A jam.dev share link the owner pasted into their problem text. Jam captures the bug with the
-// console errors, failed network requests, and exact repro steps already attached — far richer
-// than prose — so when one is present we point the agent at it via the jam MCP tools.
+// A jam.dev share link the owner pasted into their problem text. It's a screen recording of the
+// bug. The Jam MCP toolset was REMOVED from the fixer agents (2026-07-16) — its tool schemas
+// taxed every session's context while most fixes never used them — so the agent can no longer
+// open the recording; the note just keeps it from mistaking the link for a page of the site.
 const JAM_URL_RE = /https?:\/\/(?:www\.)?jam\.dev\/[^\s)>\]"']+/i;
 
 /** Return the first jam.dev recording URL found in free text, or null. */
@@ -161,18 +166,14 @@ export function extractJamUrl(text) {
   return m ? m[0] : null;
 }
 
-// Tells the agent to mine a jam.dev recording before touching code — the console/network/repro
-// data usually pinpoints the cause faster than the owner's words can. The recording URL is the
-// `jamId` argument every jam tool takes.
 function jamNote(text) {
   const url = extractJamUrl(text);
   if (!url) return '';
   return (
     `The owner shared a screen recording of the problem: ${url}\n` +
-    `Use the jam tools FIRST to inspect it before editing — read its console errors ` +
-    `(getConsoleLogs), failed network requests (getNetworkRequests), and the exact steps the ` +
-    `owner took (getUserEvents) to pinpoint the cause. Pass the recording URL as the jamId ` +
-    `argument. This is a recording, NOT a page of the site — do not treat it as a route to fix.\n\n`
+    `You cannot open recordings — it is a recording of the bug, NOT a page of the site, so do ` +
+    `not treat it as a route to fix or try to fetch it. Work from the owner's description and ` +
+    `any screenshots instead.\n\n`
   );
 }
 

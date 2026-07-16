@@ -127,31 +127,23 @@ export function priceForFeatureStep(costUsd, { rate = DEFAULT_USD_TO_INR, billed
 export const FEATURE_MAX_STEPS_PER_SESSION = 5;
 
 /**
- * Bracketed cost-plus pricing — the production pricing rule.
+ * Cost-plus pricing — the production pricing rule.
  *
- * The customer pays a multiple of actual COGS, with the multiplier decreasing as cost rises
- * (so tiny fixes don't feel rip-off-y and big fixes don't balloon). The curve is deliberately
- * flatter at the low end than a pure cost-plus so a small change never feels steep, and it
- * earns back gradually as COGS climbs:
- *   - first ₹50 of COGS     → 3.5×
- *   - next ₹50 (50–100)     → 4×
- *   - everything above ₹100 → 3×
+ * FLAT 3× on actual COGS (owner decision 2026-07-16: the markup must never exceed 3× on
+ * anything — the earlier 3.5×/4× low-end brackets are retired). The bracket MACHINERY is kept
+ * so a curve can come back by adding rows, but with one row it degenerates to a flat multiple.
  *
  * Worked examples:
- *   ₹10  → ₹35      (10×3.5)
- *   ₹40  → ₹140     (40×3.5)
- *   ₹75  → ₹175 + 25×4 = ₹275
- *   ₹100 → ₹175 + 50×4 = ₹375
- *   ₹200 → ₹375 + 100×3 = ₹675
- *   ₹500 → ₹375 + 400×3 = ₹1575 → clamped to MAX_CHARGE_INR
+ *   ₹10  → ₹30
+ *   ₹100 → ₹300
+ *   ₹200 → ₹600
+ *   ₹300 → ₹900 → clamped to MAX_CHARGE_INR
  *
  * Output is rounded UP to whole rupees (favours business) and clamped to MAX_CHARGE_INR so
  * the customer never sees a runaway bill. No floor — small costs stay small. The hard COGS
  * cap is also enforced separately by the poller (maxBudgetUsd / maxSeconds).
  */
 export const PRICING_BRACKETS = [
-  { upToInr: 50,        multiplier: 3.5 },
-  { upToInr: 100,       multiplier: 4 },
   { upToInr: Infinity,  multiplier: 3 },
 ];
 
