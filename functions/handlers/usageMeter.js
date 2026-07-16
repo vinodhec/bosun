@@ -25,11 +25,10 @@
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import crypto from 'node:crypto';
 import { AUTOPOST_USAGE_PRICE_PAISE, accrueComposeCharge } from '../shared/billing.js';
+import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
-const MAX_SIGNATURE_AGE_MS = 5 * 60 * 1000; // reject replays — same window as sourcingCompose
 const METER_LOG = 'usage_meter_log';
 
 /** Per-service pricing. Unknown services are rejected, not defaulted — a typo must not bill. */
@@ -37,19 +36,9 @@ const SERVICE_PRICE_PAISE = {
   auto_post: AUTOPOST_USAGE_PRICE_PAISE,
 };
 
-/** Constant-time HMAC check over `${timestamp}.${rawBody}` — mirror of sourcingCompose. */
-function verifyCustomerSignature(rawBody, signature, timestamp, secret) {
-  if (!signature || !timestamp || !secret) return false;
-  const ts = Number(timestamp);
-  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) return false;
-  const expected = 'sha256=' + crypto.createHmac('sha256', String(secret)).update(`${ts}.${rawBody}`).digest('hex');
-  const a = Buffer.from(String(signature));
-  const b = Buffer.from(expected);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
 export const usageMeter = onRequest({ region: REGION, cors: false }, async (req, res) => {
   if (req.method !== 'POST') {
+    logReject('usageMeter', { status: 405, reason: 'non-POST-method', extra: { method: req.method } });
     res.status(405).json({ error: 'POST only' });
     return;
   }
@@ -60,6 +49,7 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   try {
     body = JSON.parse(raw || '{}');
   } catch {
+    logReject('usageMeter', { status: 400, reason: 'body-not-valid-json', extra: { bytes: raw.length } });
     res.status(400).json({ error: 'invalid JSON' });
     return;
   }
@@ -69,11 +59,23 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   const idempotencyKey = String(body.idempotencyKey || '');
   const qty = Math.min(10, Math.max(1, Math.floor(Number(body.qty) || 1)));
   if (!orgId || !service || !idempotencyKey) {
+    logReject('usageMeter', {
+      orgId,
+      status: 400,
+      reason: 'missing-required-field',
+      extra: { hasOrgId: !!orgId, hasService: !!service, hasIdempotencyKey: !!idempotencyKey },
+    });
     res.status(400).json({ error: 'orgId, service and idempotencyKey are required' });
     return;
   }
   const unitPaise = SERVICE_PRICE_PAISE[service];
   if (!unitPaise) {
+    logReject('usageMeter', {
+      orgId,
+      status: 400,
+      reason: 'unknown-service',
+      extra: { service, known: Object.keys(SERVICE_PRICE_PAISE) },
+    });
     res.status(400).json({ error: `unknown service: ${service}` });
     return;
   }
@@ -84,10 +86,15 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) {
+    logReject('usageMeter', { orgId, status: 403, reason: 'org-has-no-sourcing-secret', extra: { orgSecretsDocExists: secretSnap.exists } });
     res.status(403).json({ error: 'sourcing not configured for this org' });
     return;
   }
-  if (!verifyCustomerSignature(raw, req.get('x-bosun-signature'), req.get('x-bosun-timestamp'), secret)) {
+  const auth = verifyCustomerSignature(raw, req.get('x-bosun-signature'), req.get('x-bosun-timestamp'), secret);
+  if (!auth.ok) {
+    // The reason stays in OUR logs only — the response is a flat 401 so a caller can't probe which
+    // half of the credential was wrong.
+    logReject('usageMeter', { orgId, status: 401, reason: auth.reason, extra: { skewMs: auth.skewMs ?? null, bytes: raw.length } });
     res.status(401).json({ error: 'bad signature' });
     return;
   }
@@ -97,6 +104,9 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   const logRef = db.collection(METER_LOG).doc(`${orgId}:${service}:${idempotencyKey}`);
   const existing = await logRef.get();
   if (existing.exists) {
+    // Not an error — this is the idempotency guarantee doing its job, and during a historical
+    // ledger replay it's the signal that the already-billed events are being skipped correctly.
+    console.log('usageMeter:duplicate', orgId, JSON.stringify({ service, idempotencyKey }));
     res.status(200).json({ ok: true, duplicate: true, charged: 0 });
     return;
   }

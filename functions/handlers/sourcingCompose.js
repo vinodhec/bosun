@@ -25,30 +25,16 @@
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import crypto from 'node:crypto';
 import { composeSelfPostMessage } from '../utils/composeSelfPost.js';
 import { SELFPOST_COMPOSE_PRICE_PAISE, accrueComposeCharge } from '../shared/billing.js';
+import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
-const MAX_SIGNATURE_AGE_MS = 5 * 60 * 1000; // reject replays — mirrors the customer's own verify
 const COMPOSE_LOG = 'selfpost_compose_log';
-
-/**
- * Constant-time check of the customer's HMAC over `${timestamp}.${rawBody}`. Mirror of
- * `utils/sourcing.js: signPayload` — same scheme, opposite direction.
- */
-function verifyCustomerSignature(rawBody, signature, timestamp, secret) {
-  if (!signature || !timestamp || !secret) return false;
-  const ts = Number(timestamp);
-  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > MAX_SIGNATURE_AGE_MS) return false;
-  const expected = 'sha256=' + crypto.createHmac('sha256', String(secret)).update(`${ts}.${rawBody}`).digest('hex');
-  const a = Buffer.from(String(signature));
-  const b = Buffer.from(expected);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
 
 export const sourcingCompose = onRequest({ region: REGION, cors: false }, async (req, res) => {
   if (req.method !== 'POST') {
+    logReject('sourcingCompose', { status: 405, reason: 'non-POST-method', extra: { method: req.method } });
     res.status(405).json({ error: 'POST only' });
     return;
   }
@@ -60,6 +46,7 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
   try {
     body = JSON.parse(raw || '{}');
   } catch {
+    logReject('sourcingCompose', { status: 400, reason: 'body-not-valid-json', extra: { bytes: raw.length } });
     res.status(400).json({ error: 'invalid JSON' });
     return;
   }
@@ -69,6 +56,12 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
   const sendCount = Math.max(1, Math.floor(Number(body.sendCount) || 1));
   const url = String(body.url || '');
   if (!orgId || !leadId || !url) {
+    logReject('sourcingCompose', {
+      orgId,
+      status: 400,
+      reason: 'missing-required-field',
+      extra: { hasOrgId: !!orgId, hasLeadId: !!leadId, hasUrl: !!url },
+    });
     res.status(400).json({ error: 'orgId, leadId and url are required' });
     return;
   }
@@ -79,10 +72,14 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) {
+    logReject('sourcingCompose', { orgId, status: 403, reason: 'org-has-no-sourcing-secret', extra: { orgSecretsDocExists: secretSnap.exists } });
     res.status(403).json({ error: 'sourcing not configured for this org' });
     return;
   }
-  if (!verifyCustomerSignature(raw, req.get('x-bosun-signature'), req.get('x-bosun-timestamp'), secret)) {
+  const auth = verifyCustomerSignature(raw, req.get('x-bosun-signature'), req.get('x-bosun-timestamp'), secret);
+  if (!auth.ok) {
+    // Reason to our logs only; the response stays a flat 401 so it can't be used to probe.
+    logReject('sourcingCompose', { orgId, status: 401, reason: auth.reason, extra: { skewMs: auth.skewMs ?? null, bytes: raw.length } });
     res.status(401).json({ error: 'bad signature' });
     return;
   }
