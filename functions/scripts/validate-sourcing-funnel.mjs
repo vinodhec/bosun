@@ -167,6 +167,7 @@ async function main() {
 
   await maxPerRunScenario();
   await classifyLanesScenario();
+  await localityUnknownScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -316,4 +317,84 @@ async function classifyLanesScenario() {
   console.log('\nclassify-lanes scenario: buyer + off-target salvage flags, tagging, retryability and lane priority ✓');
 }
 
-main().catch((e) => { console.error('\n❌', e.message); process.exit(1); });
+/**
+ * The locality-unknown detour (3b → 3c2): a genuine listing whose SERP text NAMES no place (Google
+ * truncated the title / served an adjacent post's snippet) must NOT die at the snippet gate — it
+ * goes through the paid enrichment and is re-classified on the FULL post text. Pins the three
+ * outcomes: full text confirms on-target (relays), full text confidently rejects (dead), and an
+ * enrichment miss (retryable, never buried) — the 2026-07-17 Karamadai DTCP-plot miss, as a test.
+ */
+async function localityUnknownScenario() {
+  const TARGET = { locality: 'Karamadai', city: 'Coimbatore' };
+  const serp3 = () => [
+    { url: P(301), title: 'DTCP Plot for Sale near ...', snippet: 'plot for sale main road' },
+    { url: P(302), title: 'House for Sale near ...', snippet: 'house for sale 2bhk' },
+    { url: P(303), title: 'Land for Sale near ...', snippet: 'land for sale 5 cent' },
+  ];
+  // Pass 1 sees only SERP text (no FULLTEXT marker) → locality unknown; pass 2 sees the enriched
+  // post text and gives the authoritative verdict.
+  const stub = async ({ text }) => {
+    if (text.includes('FULLTEXT karamadai')) {
+      return { keep: true, side: 'offering', isListing: true, localityMatches: true, localityNamed: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Karamadai', phone: '9876543210' } };
+    }
+    if (text.includes('FULLTEXT tambaram')) {
+      return { keep: false, side: 'offering', isListing: true, localityMatches: false, localityNamed: true, confidence: 0.9, reason: 'off-target', extracted: { listingType: 'Sale', locality: 'Tambaram' } };
+    }
+    return { keep: false, side: 'offering', isListing: true, localityMatches: false, localityNamed: false, confidence: 0.9, reason: 'no locality named in the text' };
+  };
+  const ENRICHED3 = {
+    [P(301)]: { text: 'FULLTEXT karamadai DTCP plot 6.5 cent contact 9876543210', time: new Date(FRESH).toISOString() },
+    [P(302)]: { text: 'FULLTEXT tambaram house 2bhk', time: new Date(FRESH).toISOString() },
+    // P(303) deliberately absent → enrichMissed → locality never judged → retryable drop
+  };
+
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const relayBodies = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('apify')) {
+      const body = JSON.parse(opts.body);
+      const items = body.startUrls.map(({ url: u }) => (ENRICHED3[u] ? { facebookUrl: u, ...ENRICHED3[u] } : null)).filter(Boolean);
+      return { ok: true, status: 200, json: async () => items };
+    }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: ['q1'], freshnessMonths: 3, maxPerRun: 0 };
+  const run = startRun(db, ORG, 'test');
+  const leg = run.leg({ target: TARGET, queries: cfg.queries });
+  await runForOrg(db, 'tok', ORG, cfg, { fetchSerp: async () => serp3(), classify: stub, target: TARGET, leg });
+  await run.finish();
+
+  const f = db.store.get(`sourcingRuns/${run.id}`).funnel;
+  assert.equal(f.localityPending, 3, 'all three survive the snippet gate as locality-unknown, not dead');
+  assert.equal(f.offTargetDropped, 0, 'nothing dies on the truncated snippet alone');
+  assert.equal(f.enriched, 3, 'every pending lead is worth the paid scrape');
+  assert.equal(f.enrichMissed, 1, 'P(303) paid and returned nothing');
+  assert.equal(f.fullTextConfirmed, 1, 'the full post confirmed the Karamadai plot');
+  assert.equal(f.fullTextDropped, 1, 'the full post confidently placed P(302) elsewhere');
+  assert.equal(f.localityUnresolved, 1, 'the enrich miss never got judged');
+  assert.equal(f.relayed, 1, 'only the confirmed lead relays');
+
+  assert.equal(relayBodies.length, 1);
+  assert.equal(relayBodies[0].listing.url, P(301), 'the confirmed lead is the one delivered');
+  assert.equal(relayBodies[0].listing.classifyStatus, 'verified', 'a full-text confirm is a verified lead');
+  assert.equal(relayBodies[0].listing.extracted.locality, 'Karamadai');
+
+  // Dedup fates: confirmed → seen+relayed; full-text reject → dead; enrich miss → NOT buried.
+  const seen = db.under(`sourcingSeen/${ORG}/keys/`);
+  assert.ok(seen.some((d) => d.url === P(301) && d.relayedAt && !d.dropped), 'confirmed lead marked seen');
+  assert.ok(seen.some((d) => d.url === P(302) && d.dropped), 'full-text reject is dead — the authoritative text was seen');
+  assert.ok(!seen.some((d) => d.url === P(303)), 'an unresolved lead stays retryable — never buried on a scrape miss');
+
+  const leads = db.under(`sourcingRuns/${run.id}/leads/`);
+  const fullDrops = leads.filter((l) => l.dropStage === 'classify-full');
+  assert.deepEqual(fullDrops.map((l) => l.dropReason).sort(), ['locality-unresolved', 'off-target'], 'full-text drops name their reasons');
+  console.log('\nlocality-unknown scenario: truncated-snippet listings enrich, re-classify on full text, and only die on evidence ✓');
+}
+
+main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });

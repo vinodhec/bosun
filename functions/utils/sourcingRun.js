@@ -51,11 +51,16 @@ function blankFunnel() {
     offTargetDropped: 0,   // 3b — Gemini classify said off-target (confident reject → dead)
     buyerDropped: 0,       // 3b — genuine buyer post, org hasn't opted into buyerLeads (→ retries)
     degradedDropped: 0,    // 3b — classifier down AND no India signal (transient → retries)
+    localityPending: 0,    // 3b — genuine listing but the SERP text NAMED no place (truncated title /
+                           //      adjacent-post snippet); deferred to the full-text pass (3c2)
     poolDeferred: 0,       // 3c — trimmed to the enrich pool; NOT dropped, next run picks it up
     enriched: 0,           // 3c1 — paid FB scrapes actually attempted
     enrichMissed: 0,       // 3c1 — scraper returned nothing for the URL (kept, SERP snippet stands)
     withImages: 0,         // enriched posts that yielded photos
     withPhone: 0,          // enriched posts that yielded an owner phone
+    fullTextConfirmed: 0,  // 3c2 — the full post text settled a locality-unknown lead: it proceeds
+    fullTextDropped: 0,    // 3c2 — the full post text confidently rejected it (→ dead)
+    localityUnresolved: 0, // 3c2 — enrichment returned no text to judge (transient → retries)
     recencyDropped: 0,     // 3d — authoritative FB date older than the org window (→ dead)
     intentStaleDropped: 0, // 3e — per-intent freshness (rent vs sale) (→ dead unless re-admitted)
     staleReadmitted: 0,    // 3e — stale-fallback re-admits for a target with zero fresh leads

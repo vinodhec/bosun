@@ -99,6 +99,7 @@ export const adminGstReport = httpsCallable(functions, 'adminGstReport');
 export const adminSourcingRuns = httpsCallable(functions, 'adminSourcingRuns');
 export const adminSourcingRunDetail = httpsCallable(functions, 'adminSourcingRunDetail');
 export const adminSourcingLeadLedger = httpsCallable(functions, 'adminSourcingLeadLedger');
+export const adminSourcingRelayLead = httpsCallable(functions, 'adminSourcingRelayLead');
 export const adminSourceTopTarget = httpsCallable(functions, 'adminSourceTopTarget');
 export const adminRunSourcingNow = httpsCallable(functions, 'adminRunSourcingNow');
 

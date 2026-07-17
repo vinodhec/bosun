@@ -199,6 +199,10 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   `sourcingSeen/{orgId}/keys`, FB-post enrichment (real `postedAt`), hard org-level recency cutoff
   (`freshnessMonths`, the outer bound), then (matrix path only) a Gemini classify gate
   (`utils/classifyListing.js`, fails OPEN → lead relayed as `classifyStatus:'unverified'`).
+  Locality-UNKNOWN is not locality-wrong: a genuine listing whose SERP text names NO place (Google
+  truncates titles mid-phrase; group-page snippets get lifted from adjacent posts) is detoured
+  (`localityNamed:false` → `localityPending`), enriched, and re-classified on the FULL post text
+  (pass 3c2) — it only dies on evidence, never on a truncated snippet.
 - **Per-intent freshness** — after classify, rent/lease leads older than `rentMonths` and
   sale/unknown-intent leads older than `saleMonths` are dropped (unknown `postedAt` is kept). A
   target left with ZERO fresh leads re-admits up to `fallbackMaxLeads` newest stale ones as
@@ -213,6 +217,10 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   rank supply → buyer → off-target so salvage never displaces on-target inventory.
 - **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
   it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
+- **Operator override** — `adminSourcingRelayLead` relays ONE recorded (dropped) lead by hand from
+  the run-detail panel ("Relay & bill"): enrich → same HMAC webhook → mark seen → debit the same
+  one-lead unit price. The gates are advice, the human is the backstop — the money rules never bend
+  for the override (a webhook reject bills nothing).
 - **Audit trail** — `utils/sourcingRun.js` records each run to `sourcingRuns/{runId}`: the per-target
   funnel (matrix targets, the Gemini queries built for each, and every gate from SERP fetch to
   webhook) plus a `leads` subcollection with a row per listing examined — its URL, originating query,

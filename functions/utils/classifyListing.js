@@ -29,6 +29,9 @@ const SCHEMA = {
     isListing: { type: 'boolean' },
     side: { type: 'string', enum: ['offering', 'seeking'] },
     localityMatches: { type: 'boolean' },
+    // Deliberately NOT in `required`: an older cached prompt or a partial JSON that omits it degrades
+    // to "named" (the pre-lane behaviour), never to a spurious second classify pass.
+    localityNamed: { type: 'boolean' },
     confidence: { type: 'number' },
     locality: { type: 'string' },
     bhk: { type: 'string' },
@@ -40,7 +43,7 @@ const SCHEMA = {
   },
   required: ['isListing', 'side', 'localityMatches', 'confidence'],
   propertyOrdering: [
-    'isListing', 'side', 'localityMatches', 'confidence', 'locality', 'bhk',
+    'isListing', 'side', 'localityMatches', 'localityNamed', 'confidence', 'locality', 'bhk',
     'propertyType', 'listingType', 'priceText', 'phone', 'reason',
   ],
 };
@@ -80,7 +83,10 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `is LOOKING FOR a property to buy/rent). Seller ads routinely open with rhetorical hooks like ` +
     `"Looking for a spacious home?" before pitching a property for sale — those are 'offering'. ` +
     `localityMatches (is the property, or the place the seeker wants, in or immediately around the ` +
-    `TARGET locality?), confidence 0-1. Extract locality, bhk, propertyType, listingType ` +
+    `TARGET locality?), localityNamed (does the TEXT itself actually name a place for the property? ` +
+    `FALSE when the title is cut off before any place name — e.g. it ends "near ..." — or when no ` +
+    `locality appears anywhere in the text; a place name that is merely MISSING is not a mismatch), ` +
+    `confidence 0-1. Extract locality, bhk, propertyType, listingType ` +
     `(Sale/Rent/Lease — for a 'seeking' post, what the poster WANTS), priceText and phone when present.`;
 
   // FLASH, not FLASH_LITE. This gate only ever sees the SERP title + ~145-char snippet (see the
@@ -105,6 +111,9 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     isListing,
     side: j.side === 'seeking' ? 'seeking' : 'offering',
     localityMatches,
+    // Only an EXPLICIT false means "the text names no place" — absent/garbled degrades to true, so a
+    // reject stays a reject (the caller's locality-unknown detour only fires on the explicit signal).
+    localityNamed: j.localityNamed !== false,
     confidence,
     extracted: {
       locality: String(j.locality || ''),

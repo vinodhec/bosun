@@ -253,6 +253,15 @@ export async function runForOrg(
   //                     of being buried dead. Real inventory is inventory wherever it sits.
   const harvestBuyers = classifying && !!cfg.buyerLeads;
   const salvageOffTarget = classifying && !!cfg.offTargetLeads;
+  // Only a CONFIDENT off-target reject is dead — never enrich it again. Four rejects are deliberately
+  // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
+  // 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
+  // a genuine listing with a sparse Google description must get another chance, not be buried unseen —
+  // 'buyer-post', a flag-off policy drop: burying it would blind the org to every buyer post
+  // still live the day it turns sourcing.buyerLeads on (cheap to retry — it never reached enrichment) —
+  // and 'locality-unresolved', a locality-unknown lead whose enrichment returned no text: the full-
+  // text pass never got to judge it, so a scrape hiccup must not bury it.
+  const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal', 'buyer-post', 'locality-unresolved']);
 
   // 3a) CHEAP SERP-date pre-filter (fail-open). Google's SERP already carries a coarse relative
   // "lastUpdated" (parsed to serpAgeMs = the youngest plausible instant for the phrase). Skip posts it
@@ -311,6 +320,16 @@ export async function runForOrg(
       });
       const side = verdict.side || 'offering'; // degraded verdicts carry no side — fail toward supply
       if (!verdict.keep && !verdict.degraded) {
+        // Locality-UNKNOWN is not locality-WRONG. Google truncates titles right where Indian posts
+        // put the place ("...for Sale near ...") and group-page snippets are often lifted from an
+        // ADJACENT post — so a genuine listing can reach this gate with no locality visible at all
+        // (the 2026-07-17 Karamadai DTCP-plot miss). Detour it into the paid enrichment and let the
+        // FULL post text decide (pass 3c2 below) instead of burying it dead on evidence that was
+        // never in front of the model.
+        if (verdict.isListing && verdict.localityNamed === false && verdict.confidence >= MIN_CONFIDENCE) {
+          c.localityPending = true;
+          return;
+        }
         // Off-target salvage: a confident genuine LISTING whose only failure is the locality is real
         // inventory, not junk — relay it tagged instead of burying it. Requires the extracted
         // locality (a lead the platform can't place is worthless) and the same confidence bar as
@@ -349,13 +368,6 @@ export async function runForOrg(
       if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
       if (verdict.extracted) c.listing.extracted = verdict.extracted;
     });
-    // Only a CONFIDENT off-target reject is dead — never enrich it again. Three rejects are deliberately
-    // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
-    // 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
-    // a genuine listing with a sparse Google description must get another chance, not be buried unseen —
-    // and 'buyer-post', a flag-off policy drop: burying it would blind the org to every buyer post
-    // still live the day it turns sourcing.buyerLeads on (cheap to retry — it never reached enrichment).
-    const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal', 'buyer-post']);
     for (const c of prospects) {
       if (c.drop && !RETRYABLE_DROP.has(c.dropReason)) markDead(c, c.dropReason || 'off-target');
     }
@@ -372,13 +384,16 @@ export async function runForOrg(
       leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify', dropReason: c.dropReason || 'off-target' });
     }
     const kept = prospects.filter((c) => !c.drop);
-    // Lane priority under the enrich-pool / maxPerRun caps: on-target listings first, then buyer
-    // leads, then off-target salvage — the salvage lanes are bonus yield and must never displace
+    // Lane priority under the enrich-pool / maxPerRun caps: verified on-target listings first, then
+    // locality-unknown pendings (probably on-target, not yet proven), then buyer leads, then
+    // off-target salvage — the uncertain/salvage lanes are bonus yield and must never displace
     // the inventory the target was actually sourced for. Stable sort keeps SERP order within a lane.
-    const laneRank = (c) => (c.listing.leadType === 'off-target' ? 2 : c.listing.leadType === 'buyer' ? 1 : 0);
+    const laneRank = (c) => (c.listing.leadType === 'off-target' ? 3 : c.listing.leadType === 'buyer' ? 2 : c.localityPending ? 1 : 0);
     kept.sort((a, b) => laneRank(a) - laneRank(b));
+    leg.count('localityPending', kept.filter((c) => c.localityPending).length);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({
       pool: prospects.length, kept: kept.length, target: target.locality,
+      pending: kept.filter((c) => c.localityPending).length,
       buyers: kept.filter((c) => c.listing.leadType === 'buyer').length,
       offTarget: kept.filter((c) => c.listing.leadType === 'off-target').length,
     }));
@@ -421,6 +436,7 @@ export async function runForOrg(
         leg.bump('enrichMissed');
         continue;
       }
+      if (enriched.text) c.enrichedText = true; // the full-text pass (3c2) needs to know real text arrived
       if (enriched.text && enriched.text.length > String(c.listing.snippet || '').length) {
         c.listing.snippet = enriched.text;
       }
@@ -435,6 +451,82 @@ export async function runForOrg(
   leg.count('enriched', candidates.length);
   leg.count('withImages', withImages);
   leg.count('withPhone', candidates.filter((c) => c.listing.phone).length);
+
+  // 3c2) Full-text pass for the locality-unknown detour (3b). Those leads were never JUDGED — the
+  // SERP text simply named no place — so now that the paid enrichment brought the real post text,
+  // classify them for real. Mirrors 3b's branch logic exactly (salvage bar, buyer lane, degraded
+  // fail-open), but a confident reject here IS authoritative: the model saw the full post, so the
+  // drop is dead. An enrichment miss leaves us no better text than pass 1 had — retryable, not dead.
+  if (classifying) {
+    const pending = candidates.filter((c) => c.localityPending);
+    if (pending.length) {
+      await mapLimit(pending, CLASSIFY_CONCURRENCY, async (c) => {
+        if (!c.enrichedText) {
+          c.drop = true;
+          c.dropReason = 'locality-unresolved';
+          return;
+        }
+        const verdict = await classify({
+          text: [c.listing.title, c.listing.snippet].filter(Boolean).join('\n'),
+          locality: target.locality,
+          city: target.city,
+          shape: target.shape,
+        });
+        const side = verdict.side || 'offering';
+        if (verdict.degraded) {
+          // Same signal-gated fail-open as 3b — a classifier outage mid-run must not flip fate.
+          if (!hasIndiaSignal(`${c.listing.title || ''} ${c.listing.snippet || ''}`, target.locality)) {
+            c.drop = true;
+            c.dropReason = 'degraded-no-india-signal';
+            return;
+          }
+          c.listing.classifyStatus = 'unverified';
+          return;
+        }
+        if (!verdict.keep) {
+          const salvageable = salvageOffTarget && side === 'offering' && verdict.isListing
+            && !verdict.localityMatches && verdict.confidence >= MIN_CONFIDENCE
+            && verdict.extracted?.locality;
+          if (!salvageable) {
+            c.drop = true;
+            // The full post may STILL name no place ("DM for details") — a lead nobody can locate
+            // is unrelayable either way, and the post won't grow a locality later: dead.
+            c.dropReason = verdict.reason || 'off-target';
+            return;
+          }
+          c.listing.leadType = 'off-target';
+        }
+        if (!c.drop && side === 'seeking') {
+          if (!harvestBuyers) {
+            c.drop = true;
+            c.dropReason = 'buyer-post';
+            return;
+          }
+          c.listing.leadType = 'buyer';
+        }
+        c.listing.classifyStatus = 'verified';
+        if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
+        if (verdict.extracted) c.listing.extracted = verdict.extracted;
+      });
+      for (const c of pending) {
+        if (!c.drop) {
+          leg.bump('fullTextConfirmed');
+          continue;
+        }
+        if (!RETRYABLE_DROP.has(c.dropReason)) markDead(c, c.dropReason || 'off-target');
+        if (c.dropReason === 'locality-unresolved') leg.bump('localityUnresolved');
+        else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
+        else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
+        else leg.bump('fullTextDropped');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify-full', dropReason: c.dropReason });
+      }
+      const settled = candidates.filter((c) => !c.drop);
+      console.log('runSourcingJobs:classify-full', orgId, JSON.stringify({
+        pending: pending.length, confirmed: pending.filter((c) => !c.drop).length, target: target.locality,
+      }));
+      candidates = settled;
+    }
+  }
 
   // 3d) AUTHORITATIVE recency gate on the actual FB post date (the SERP skip in 3a was only a coarse
   // pre-filter). Drop anything we now KNOW is older than the window. Fail-OPEN when the date is unknown
@@ -701,7 +793,8 @@ function shapeLabel(t) {
 
 // HMAC-sign and POST one listing to the org's webhook. Returns true on a 2xx, false on anything
 // else (so the caller does NOT mark it seen and does NOT charge — Bosun retries it next run).
-async function relayOne({ webhookUrl, secret, orgId, listing }) {
+// Exported for the operator's manual per-lead relay (adminSourcing.js#adminSourcingRelayLead).
+export async function relayOne({ webhookUrl, secret, orgId, listing }) {
   const body = JSON.stringify({ orgId, listing, source: { via: 'bosun', url: listing.url } });
   const { signature, timestamp } = signPayload(secret, body);
   const ctrl = new AbortController();

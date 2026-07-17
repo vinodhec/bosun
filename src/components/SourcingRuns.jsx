@@ -11,7 +11,7 @@
  * the real vocabulary (query, classify, enrich, webhook), not plain phrasing.
  */
 import { useEffect, useState } from 'react';
-import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminRunSourcingNow } from '../firebase/functions.js';
+import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminRunSourcingNow, adminSourcingRelayLead } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 
 const btn = 'rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60';
@@ -41,9 +41,13 @@ const FUNNEL_STEPS = [
   { key: 'offTargetDropped', label: 'Dropped: off-target', kind: 'drop', hint: 'Gemini confidently rejected it — wrong locality or not a listing. Permanent (never re-scraped). With sourcing.offTargetLeads on, confident wrong-locality LISTINGS relay tagged instead of landing here.' },
   { key: 'buyerDropped', label: 'Dropped: buyer post', kind: 'drop', hint: 'A genuine "wanted / looking for" post, but the org hasn’t opted into buyer leads (sourcing.buyerLeads). Retryable — flipping the flag catches posts still live.' },
   { key: 'degradedDropped', label: 'Dropped: classifier down', kind: 'drop', hint: 'Classifier errored AND no India signal. A spike here is an incident, not a dry locality. Retryable.' },
+  { key: 'localityPending', label: 'Locality unknown → full text', kind: 'stage', hint: 'A genuine listing whose SERP text named NO place (truncated title / adjacent-post snippet). Not judged yet — enriched and re-classified on the full post text.' },
   { key: 'poolDeferred', label: 'Deferred: enrich pool', kind: 'defer', hint: 'Vetted but over this run’s enrich pool. Not marked seen — the next run picks it up.' },
   { key: 'enriched', label: 'Enriched (paid scrape)', kind: 'stage', hint: 'Facebook post scrapes actually paid for. This is the Apify bill.' },
   { key: 'enrichMissed', label: 'Enrich returned nothing', kind: 'drop', hint: 'Paid the scrape and got nothing back. The lead survives on its SERP snippet — this is pure Apify waste.' },
+  { key: 'fullTextConfirmed', label: 'Confirmed by full post', kind: 'stage', hint: 'The full FB text settled a locality-unknown lead — it proceeds like any verified lead.' },
+  { key: 'fullTextDropped', label: 'Dropped: full post off-target', kind: 'drop', hint: 'The full post text confidently placed it elsewhere (or showed it isn’t a listing). Permanent.' },
+  { key: 'localityUnresolved', label: 'Dropped: still unknown', kind: 'drop', hint: 'Enrichment returned no text, so the locality never got judged. Retryable — never buried.' },
   { key: 'recencyDropped', label: 'Dropped: too old', kind: 'drop', hint: 'Real FB post date older than the org window. Permanent.' },
   { key: 'intentStaleDropped', label: 'Dropped: stale for intent', kind: 'drop', hint: 'Rent leads age out faster than sale leads. Permanent.' },
   { key: 'staleReadmitted', label: 'Re-admitted (stale fallback)', kind: 'stage', hint: 'Target had zero fresh leads, so its best stale ones were relayed anyway, badged stale.' },
@@ -148,11 +152,31 @@ const STAGE_BADGE = {
   deferred: 'bg-amber-50 text-amber-700',
 };
 
-/** The URL-level table for one run. */
-function LeadTable({ leads }) {
+/**
+ * The URL-level table for one run. Dropped rows carry a "Relay & bill" override — the operator has
+ * eyeballed the actual post, so their consent trumps the gate. It runs the REAL money path
+ * (enrich → webhook → wallet debit), hence the confirm.
+ */
+function LeadTable({ leads, runId, onRelayed }) {
   const [filter, setFilter] = useState('all');
+  const [relayingId, setRelayingId] = useState('');
+  const [relayErr, setRelayErr] = useState('');
   const shown = filter === 'all' ? leads : leads.filter((l) => l.stage === filter);
   const counts = leads.reduce((m, l) => ({ ...m, [l.stage]: (m[l.stage] || 0) + 1 }), {});
+
+  const relay = async (l) => {
+    if (!window.confirm('Relay this lead to the org anyway? It scrapes the full post, delivers it through the normal webhook, and bills the org the standard per-lead price (~₹2.6).')) return;
+    setRelayingId(l.id);
+    setRelayErr('');
+    try {
+      await adminSourcingRelayLead({ runId, leadId: l.id });
+      await onRelayed();
+    } catch (e) {
+      setRelayErr(e?.message || 'Relay failed. Nothing was billed.');
+    } finally {
+      setRelayingId('');
+    }
+  };
   return (
     <div>
       <div className="mb-2 flex flex-wrap gap-1.5">
@@ -167,6 +191,7 @@ function LeadTable({ leads }) {
           </button>
         ))}
       </div>
+      {relayErr && <p className="mb-2 rounded bg-rose-50 px-2 py-1 text-[11px] text-rose-700">{relayErr}</p>}
       {!shown.length ? (
         <p className="text-xs text-ink-soft">Nothing in this band.</p>
       ) : (
@@ -208,6 +233,18 @@ function LeadTable({ leads }) {
                   <td className="py-1.5 pr-2 text-ink-soft">{l.postedAt ? day(l.postedAt) : '—'}</td>
                   <td className="py-1.5 pr-2">
                     <span className={`rounded px-1.5 py-0.5 font-medium ${STAGE_BADGE[l.stage] || ''}`}>{l.stage}</span>
+                    {l.manual && <span className="ml-1 rounded bg-sky-50 px-1 py-0.5 text-[10px] text-sky-700" title="Relayed by the operator's override, not the pipeline">manual</span>}
+                    {l.stage === 'dropped' && (
+                      <button
+                        type="button"
+                        onClick={() => relay(l)}
+                        disabled={!!relayingId}
+                        className="mt-1 block rounded border border-line px-1.5 py-0.5 text-[10px] font-medium text-ink-soft hover:bg-canvas disabled:opacity-50"
+                        title="Operator override: scrape the full post, relay it through the normal webhook, and bill the org the standard per-lead price."
+                      >
+                        {relayingId === l.id ? 'Relaying…' : 'Relay & bill'}
+                      </button>
+                    )}
                   </td>
                   <td className="py-1.5 text-ink-soft">
                     {l.dropStage ? <span className="font-medium text-ink">{l.dropStage}</span> : '—'}
@@ -232,14 +269,16 @@ function RunRow({ run, showOrg }) {
 
   // Keep the failure OUT of `detail` — parking it there made the empty-table branch render alongside
   // the error and hid the retry button behind `!detail`.
-  const loadLeads = async () => {
-    if (detail) return;
+  // `reloadLeads` always refetches (a manual relay changed rows server-side); `loadLeads` is the
+  // cheap first-open path that skips the round-trip when the table is already loaded.
+  const reloadLeads = async () => {
     setBusy(true);
     setLeadErr('');
     try { const { data } = await adminSourcingRunDetail({ runId: run.id }); setDetail(data); }
     catch { setLeadErr('Failed to load listings.'); }
     finally { setBusy(false); }
   };
+  const loadLeads = () => { if (!detail) reloadLeads(); };
 
   const f = run.funnel || {};
   const statusCls = run.status === 'error' || run.status === 'timeout' ? 'bg-rose-50 text-rose-600'
@@ -327,7 +366,7 @@ function RunRow({ run, showOrg }) {
             </div>
             {run.leadRows === 0 && <p className="text-xs text-ink-soft">No listing rows recorded for this run.</p>}
             {leadErr && <p className="text-xs text-bad">{leadErr}</p>}
-            {detail?.leads && <LeadTable leads={detail.leads} />}
+            {detail?.leads && <LeadTable leads={detail.leads} runId={run.id} onRelayed={reloadLeads} />}
           </div>
         </div>
       )}

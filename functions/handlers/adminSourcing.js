@@ -1,8 +1,9 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS } from '../utils/sourcing.js';
-import { runForOrg, sourceTopTargets } from './runSourcingJobs.js';
+import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts } from '../utils/sourcing.js';
+import { runForOrg, sourceTopTargets, relayOne } from './runSourcingJobs.js';
 import { startRun } from '../utils/sourcingRun.js';
+import { priceForSourcedBatch } from '../utils/billing.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed (see utils/gemini.js).
 
@@ -261,6 +262,7 @@ export const adminSourcingRunDetail = onCall({ region: 'asia-south1' }, async (r
       city: l.city || null,
       query: l.query || null,
       stage: l.stage,
+      manual: Boolean(l.manual), // relayed by the operator's override, not the pipeline
       dropStage: l.dropStage || null,
       dropReason: l.dropReason || null,
       postedAt: l.postedAt || null,
@@ -324,6 +326,138 @@ export const adminSourcingLeadLedger = onCall({ region: 'asia-south1' }, async (
   for (const l of leads) if (l.dropReason) byReason[l.dropReason] = (byReason[l.dropReason] || 0) + 1;
   return { mode, leads, byReason, generatedAt: Date.now() };
 });
+
+/**
+ * Relay ONE recorded lead by hand — the operator's override for a lead the automated gates got
+ * wrong (e.g. classify judged a truncated SERP title that cut off right before the locality, or the
+ * operator wants a stale-but-real listing through despite the freshness window). The gates are
+ * advice; the human is the backstop — but the MONEY RULES NEVER BEND for the override: the lead is
+ * enriched (paid scrape), HMAC-relayed through the exact same webhook path as an automatic lead,
+ * marked seen, and the org wallet is debited the same one-lead unit price. A webhook reject bills
+ * nothing. Takes the run + lead row ids from the sourcing audit panel.
+ */
+export const adminSourcingRelayLead = onCall(
+  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 120, memory: '512MiB' },
+  async (request) => {
+    const email = requireAdmin(request);
+    const runId = String(request.data?.runId ?? '').trim();
+    const leadId = String(request.data?.leadId ?? '').trim();
+    if (!runId || !leadId) throw new HttpsError('invalid-argument', 'runId and leadId required.');
+
+    const db = getFirestore();
+    const runRef = db.collection('sourcingRuns').doc(runId);
+    const leadRef = runRef.collection('leads').doc(leadId);
+    const [runSnap, leadSnap] = await Promise.all([runRef.get(), leadRef.get()]);
+    if (!runSnap.exists || !leadSnap.exists) throw new HttpsError('not-found', 'Run or lead not found.');
+    const orgId = runSnap.data().orgId;
+    const lead = leadSnap.data();
+    if (!lead.url) throw new HttpsError('failed-precondition', 'This lead row carries no URL.');
+    if (lead.stage === 'relayed') throw new HttpsError('failed-precondition', 'This lead was already relayed.');
+
+    const [orgSnap, secretSnap] = await Promise.all([
+      db.collection('organisations').doc(orgId).get(),
+      db.collection('orgSecrets').doc(orgId).get(),
+    ]);
+    const cfg = orgSnap.exists ? orgSnap.data().sourcing || {} : {};
+    const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
+    if (!cfg.webhookUrl || !secret) {
+      throw new HttpsError('failed-precondition', 'This org has no sourcing webhook/secret configured.');
+    }
+
+    // The dedup-forever ledger is still the truth: a lead relayed by a LATER run (or an earlier
+    // manual click) must not be delivered and billed twice. A dead marker is fine — un-burying the
+    // wrongly-dropped is this callable's whole purpose.
+    const key = lead.key || listingKey(lead.url);
+    const seenRef = db.collection('sourcingSeen').doc(orgId).collection('keys').doc(key);
+    const seenSnap = await seenRef.get();
+    if (seenSnap.exists && seenSnap.data().relayedAt && !seenSnap.data().dropped) {
+      throw new HttpsError('failed-precondition', 'Already relayed to this org (by a later run or an earlier manual relay).');
+    }
+
+    // Same paid enrichment an automatic relay gets — full post text, owner phone, photos, the real
+    // post date. Best-effort: a scrape miss falls back to the recorded SERP snippet, exactly like
+    // the pipeline's own enrich-miss path (the operator has seen the post; the relay still stands).
+    const listing = {
+      url: lead.url,
+      title: lead.title || '',
+      snippet: lead.snippet || '',
+      sourceQuery: lead.query || null,
+      postedAt: lead.postedAt || null,
+      leadType: lead.leadType || null,
+      classifyStatus: 'manual', // provenance: a human, not the classifier, vouched for this lead
+    };
+    const enriched = (await enrichPosts({ apifyToken: process.env.APIFY_TOKEN, urls: [lead.url] })).get(lead.url);
+    if (enriched) {
+      if (enriched.text && enriched.text.length > listing.snippet.length) listing.snippet = enriched.text;
+      if (enriched.phone) listing.phone = enriched.phone;
+      if (enriched.postedAt) listing.postedAt = enriched.postedAt;
+      if (enriched.images?.length) listing.images = enriched.images;
+    }
+
+    const ok = await relayOne({ webhookUrl: cfg.webhookUrl, secret, orgId, listing });
+    if (!ok) throw new HttpsError('unavailable', 'The org webhook did not accept the lead (non-2xx). Nothing was billed.');
+
+    // Delivered — now the money, mirroring the batch path: mark seen (plain set, clearing any dead
+    // marker), then one transactional unit-price debit.
+    const { amountInr, unitPrices } = priceForSourcedBatch(1);
+    await seenRef.set({
+      url: listing.url,
+      title: listing.title,
+      postedAt: listing.postedAt || null,
+      leadType: listing.leadType || null,
+      relayedAt: FieldValue.serverTimestamp(),
+      manual: true,
+      relayedBy: email,
+    });
+    await db.runTransaction(async (tx) => {
+      const orgRef = db.collection('organisations').doc(orgId);
+      const s = await tx.get(orgRef);
+      if (!s.exists) return;
+      tx.update(orgRef, { balance: Number(s.data().balance ?? 0) - amountInr });
+      tx.set(db.collection('transactions').doc(), {
+        orgId,
+        type: 'debit',
+        kind: 'sourcing',
+        manual: true,
+        runId,
+        leadKey: key,
+        amount: amountInr,
+        count: 1,
+        unitPrices,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    // Audit updates are best-effort — the recorder is never a gate (same rule as sourcingRun.js).
+    // The original dropStage/dropReason are kept on the row so the history still shows WHY the
+    // automation dropped it before the operator overrode.
+    try {
+      await leadRef.set({
+        stage: 'relayed',
+        manual: true,
+        relayedBy: email,
+        postedAt: listing.postedAt || null,
+        hasPhone: Boolean(listing.phone),
+        imageCount: listing.images?.length || 0,
+      }, { merge: true });
+      await runRef.update({
+        relayed: FieldValue.increment(1),
+        amountInr: FieldValue.increment(amountInr),
+        'funnel.relayed': FieldValue.increment(1),
+      });
+    } catch (e) {
+      console.error('adminSourcingRelayLead:audit', runId, leadId, e?.message || e);
+    }
+
+    return {
+      ok: true,
+      amountInr,
+      phone: listing.phone || null,
+      imageCount: listing.images?.length || 0,
+      postedAt: listing.postedAt || null,
+    };
+  },
+);
 
 // Turn an org's relay off without dropping its secret/config (so re-enabling is one flag flip and
 // the customer's webhook keeps validating).

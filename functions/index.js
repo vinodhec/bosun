@@ -59,6 +59,7 @@ export {
   adminSourcingRuns,
   adminSourcingRunDetail,
   adminSourcingLeadLedger,
+  adminSourcingRelayLead,
 } from './handlers/adminSourcing.js';
 
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,
