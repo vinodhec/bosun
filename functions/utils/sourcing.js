@@ -245,7 +245,7 @@ export function signPayload(secret, bodyString, timestamp = Date.now()) {
  * windows; defaults cover an older platform that doesn't send one), or null on any failure
  * (degrade-safe: a bad pull just means nothing to source).
  */
-export async function fetchQueryMatrix({ matrixUrl, secret, limit, maxTargets, dryRun = true }) {
+export async function fetchQueryMatrix({ matrixUrl, secret, limit, maxTargets, dryRun = true, runId }) {
   if (!matrixUrl || !secret) return null;
   const { signature, timestamp } = signPayload(secret, 'query-matrix');
   let url;
@@ -261,6 +261,10 @@ export async function fetchQueryMatrix({ matrixUrl, secret, limit, maxTargets, d
   // Without this, a non-dry pull advances lastServedAt on ~limit/2 targets while we consume topN,
   // burning the due pool days ahead of real scraping. An older platform ignores the param.
   if (maxTargets) url.searchParams.set('maxTargets', String(maxTargets));
+  // Audit provenance: our sourcingRuns/{runId} doc id rides along so the platform can stamp WHICH
+  // Bosun run served each target (lastRunId) — the admin's "did it really run?" link back to the
+  // Bosun run funnel. An older platform ignores the param.
+  if (runId) url.searchParams.set('runId', String(runId));
   try {
     const resp = await fetch(url.toString(), {
       method: 'GET',

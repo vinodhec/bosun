@@ -62,6 +62,10 @@ export {
   adminSourcingRelayLead,
 } from './handlers/adminSourcing.js';
 
+// Customer-facing (HMAC-signed) read of the org's own sourcing run history — powers the platform
+// admin console's "Bosun runs" popup ("did that serve really fetch/scrape/relay?").
+export { sourcingRunsFeed } from './handlers/sourcingRunsFeed.js';
+
 // Operator: connect an org's GitHub repo (+ token + MCP vault) so fixes can run,
 // and run a fix against any org's repo for testing.
 export {

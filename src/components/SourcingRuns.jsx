@@ -260,9 +260,11 @@ function LeadTable({ leads, runId, onRelayed }) {
   );
 }
 
-/** One run row — collapsed to its headline, expanding into targets and (on demand) its leads. */
-function RunRow({ run, showOrg }) {
-  const [open, setOpen] = useState(false);
+/** One run row — collapsed to its headline, expanding into targets and (on demand) its leads.
+ *  `autoOpen` starts it expanded with its lead table loading — used by the ?run=<id> deep link the
+ *  platform's target console points at ("did this target really get sourced?"). */
+function RunRow({ run, showOrg, autoOpen = false }) {
+  const [open, setOpen] = useState(autoOpen);
   const [detail, setDetail] = useState(null);
   const [leadErr, setLeadErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -279,6 +281,7 @@ function RunRow({ run, showOrg }) {
     finally { setBusy(false); }
   };
   const loadLeads = () => { if (!detail) reloadLeads(); };
+  useEffect(() => { if (autoOpen && run.leadRows > 0) reloadLeads(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const f = run.funnel || {};
   const statusCls = run.status === 'error' || run.status === 'timeout' ? 'bg-rose-50 text-rose-600'
@@ -471,6 +474,17 @@ export default function SourcingRuns({ orgs }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [running, setRunning] = useState('');
+  // Deep link from the platform's target console: /admin?run=<sourcingRunId> pins that run at the
+  // top, already expanded — the "did this target really get sourced?" audit jump.
+  const [pinnedRun, setPinnedRun] = useState(null);
+  const [pinnedErr, setPinnedErr] = useState('');
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('run');
+    if (!id) return;
+    adminSourcingRunDetail({ runId: id })
+      .then(({ data: d }) => setPinnedRun({ ...d.run, orgName: d.run.orgId }))
+      .catch(() => setPinnedErr(`Linked run ${id} not found (runs are kept 90 days).`));
+  }, []);
 
   const load = async (id = orgId) => {
     setBusy(true);
@@ -529,6 +543,13 @@ export default function SourcingRuns({ orgs }) {
 
       {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-bad">{err}</p>}
 
+      {pinnedErr && tab === 'runs' && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">{pinnedErr}</p>}
+      {pinnedRun && tab === 'runs' && (
+        <div className="rounded-xl border-2 border-brand-300 p-1">
+          <div className="px-2 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand-700">Linked run</div>
+          <RunRow run={pinnedRun} showOrg autoOpen />
+        </div>
+      )}
       {tab === 'ledger' ? (
         <LeadLedger orgs={orgs} />
       ) : (
