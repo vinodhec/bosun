@@ -562,7 +562,7 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   const run = startRun(db, orgId, trigger);
   try {
     const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
-    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, dryRun });
+    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, maxTargets: topN, dryRun });
     const returned = Array.isArray(matrix?.targets) ? matrix.targets : [];
     const targets = returned.filter(isPlausibleTarget);
     // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix
