@@ -1,7 +1,7 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { callSerpActor, listingKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
-import { classifyListing, hasPropertySignal } from '../utils/classifyListing.js';
+import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { startRun, NULL_LEG } from '../utils/sourcingRun.js';
@@ -134,7 +134,7 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG } = {},
+  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG } = {},
 ) {
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
@@ -241,6 +241,18 @@ export async function runForOrg(
   // the residual authoritative-date drop. Overflow isn't marked seen, so the next run picks it up.
   const cap = Math.max(0, Math.floor(Number(cfg.maxPerRun) || 0));
   const classifying = !!(target && target.locality);
+  // Salvage lanes for what the classify gate used to throw away — both OPT-IN per org, because each
+  // relays a lead the platform webhook must know how to route (`listing.leadType`). Flip them on only
+  // once the receiver handles the tag; until then the posts keep their current fate.
+  //   buyerLeads      — a genuine "wanted / looking for" post (side:'seeking') relays as leadType
+  //                     'buyer' instead of being dropped. Usually phone-less (the 2026-07-17
+  //                     experiment measured 0/4 with a number — buyers say "DM me"), so the lead's
+  //                     value is the post link + request text, not a callable number.
+  //   offTargetLeads  — a CONFIDENT genuine listing whose only failure is the locality relays as
+  //                     leadType 'off-target' (its real place rides in extracted.locality) instead
+  //                     of being buried dead. Real inventory is inventory wherever it sits.
+  const harvestBuyers = classifying && !!cfg.buyerLeads;
+  const salvageOffTarget = classifying && !!cfg.offTargetLeads;
 
   // 3a) CHEAP SERP-date pre-filter (fail-open). Google's SERP already carries a coarse relative
   // "lastUpdated" (parsed to serpAgeMs = the youngest plausible instant for the phrase). Skip posts it
@@ -282,21 +294,46 @@ export async function runForOrg(
   // Apify post scrape, so classifying the whole prospect pool is cheap.
   if (classifying) {
     await mapLimit(prospects, CLASSIFY_CONCURRENCY, async (c) => {
-      if (!hasPropertySignal(c.listing.snippet)) {
+      // Title + snippet, not snippet alone: on FB group pages Google often serves a snippet lifted
+      // from an ADJACENT post, while the title still names the locality/intent — snippet-only
+      // classification was killing genuine on-target leads as "off-target" (and marking them dead).
+      const serpText = [c.listing.title, c.listing.snippet].filter(Boolean).join('\n');
+      if (!hasPropertySignal(serpText)) {
         c.drop = true;
         c.dropReason = 'no-signal';
         return;
       }
-      const verdict = await classifyListing({
-        text: c.listing.snippet,
+      const verdict = await classify({
+        text: serpText,
         locality: target.locality,
         city: target.city,
         shape: target.shape,
       });
+      const side = verdict.side || 'offering'; // degraded verdicts carry no side — fail toward supply
       if (!verdict.keep && !verdict.degraded) {
-        c.drop = true;
-        c.dropReason = verdict.reason || 'off-target';
-        return;
+        // Off-target salvage: a confident genuine LISTING whose only failure is the locality is real
+        // inventory, not junk — relay it tagged instead of burying it. Requires the extracted
+        // locality (a lead the platform can't place is worthless) and the same confidence bar as
+        // `keep`. Seeking-side off-target posts stay dropped (a buyer for somewhere else is noise).
+        const salvageable = salvageOffTarget && side === 'offering' && verdict.isListing
+          && !verdict.localityMatches && verdict.confidence >= MIN_CONFIDENCE
+          && verdict.extracted?.locality;
+        if (!salvageable) {
+          c.drop = true;
+          c.dropReason = verdict.reason || 'off-target';
+          return;
+        }
+        c.listing.leadType = 'off-target';
+      }
+      if (!c.drop && side === 'seeking' && !verdict.degraded) {
+        // A genuine on-target "wanted" post. Without the org opt-in it's dropped as before — but
+        // RETRYABLY (see RETRYABLE_DROP below), so enabling the flag later still catches live posts.
+        if (!harvestBuyers) {
+          c.drop = true;
+          c.dropReason = 'buyer-post';
+          return;
+        }
+        c.listing.leadType = 'buyer';
       }
       // Degraded fail-open is SIGNAL-GATED: when the classifier is down we still relay plausible
       // Indian listings (Indian mobile / ₹-lakh-crore price / the target locality named in the text)
@@ -312,26 +349,39 @@ export async function runForOrg(
       if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
       if (verdict.extracted) c.listing.extracted = verdict.extracted;
     });
-    // Only a CONFIDENT off-target reject is dead — never enrich it again. Two rejects are deliberately
+    // Only a CONFIDENT off-target reject is dead — never enrich it again. Three rejects are deliberately
     // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
-    // and 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
-    // a genuine listing with a sparse Google description must get another chance, not be buried unseen.
-    const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal']);
+    // 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
+    // a genuine listing with a sparse Google description must get another chance, not be buried unseen —
+    // and 'buyer-post', a flag-off policy drop: burying it would blind the org to every buyer post
+    // still live the day it turns sourcing.buyerLeads on (cheap to retry — it never reached enrichment).
+    const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal', 'buyer-post']);
     for (const c of prospects) {
       if (c.drop && !RETRYABLE_DROP.has(c.dropReason)) markDead(c, c.dropReason || 'off-target');
     }
     for (const c of prospects) {
       if (!c.drop) continue;
-      // Split the three classify rejects apart: they mean very different things. 'no-signal' is our
-      // own cheap filter, 'off-target' is Gemini rejecting a real listing, and the degraded drop
-      // means the classifier was DOWN — a spike there is an incident, not a dry locality.
+      // Split the classify rejects apart: they mean very different things. 'no-signal' is our
+      // own cheap filter, 'off-target' is Gemini rejecting a real listing, 'buyer-post' is a genuine
+      // buyer lead the org hasn't opted into harvesting, and the degraded drop means the classifier
+      // was DOWN — a spike there is an incident, not a dry locality.
       if (c.dropReason === 'no-signal') leg.bump('noSignalDropped');
       else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
+      else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
       else leg.bump('offTargetDropped');
       leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify', dropReason: c.dropReason || 'off-target' });
     }
     const kept = prospects.filter((c) => !c.drop);
-    console.log('runSourcingJobs:classify', orgId, JSON.stringify({ pool: prospects.length, kept: kept.length, target: target.locality }));
+    // Lane priority under the enrich-pool / maxPerRun caps: on-target listings first, then buyer
+    // leads, then off-target salvage — the salvage lanes are bonus yield and must never displace
+    // the inventory the target was actually sourced for. Stable sort keeps SERP order within a lane.
+    const laneRank = (c) => (c.listing.leadType === 'off-target' ? 2 : c.listing.leadType === 'buyer' ? 1 : 0);
+    kept.sort((a, b) => laneRank(a) - laneRank(b));
+    console.log('runSourcingJobs:classify', orgId, JSON.stringify({
+      pool: prospects.length, kept: kept.length, target: target.locality,
+      buyers: kept.filter((c) => c.listing.leadType === 'buyer').length,
+      offTarget: kept.filter((c) => c.listing.leadType === 'off-target').length,
+    }));
     prospects = kept;
   }
   if (!prospects.length) {
@@ -488,10 +538,13 @@ export async function runForOrg(
         url: listing.url,
         title: listing.title || '',
         postedAt: listing.postedAt || null, // FB post date (for recency audits)
+        leadType: listing.leadType || null, // 'buyer' / 'off-target' salvage lanes; null = supply
         relayedAt: FieldValue.serverTimestamp(),
       });
       if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
+      if (listing.leadType === 'buyer') leg.bump('buyerRelayed');
+      else if (listing.leadType === 'off-target') leg.bump('offTargetRelayed');
       leg.lead({ key, listing, stage: 'relayed' });
     } else {
       // A webhook reject is the one drop that costs us everything (SERP + classify + the paid FB

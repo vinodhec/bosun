@@ -166,6 +166,7 @@ async function main() {
   assert.ok(!seenDocs.some((d) => d.url === P(6)), 'a coarse SERP-date skip stays retryable — never marked seen');
 
   await maxPerRunScenario();
+  await classifyLanesScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -214,6 +215,105 @@ async function maxPerRunScenario() {
   assert.equal(seenUrls.size, 2, 'only the 2 relayed leads are marked seen');
   for (const l of deferred) assert.ok(!seenUrls.has(l.url), 'a deferred lead is never marked seen — it must retry');
   console.log('\nmaxPerRun scenario: 5 new → 2 relayed, 3 deferred and still retryable ✓');
+}
+
+/**
+ * The classify gate's salvage lanes: a 'seeking' post becomes a buyer lead and a confident
+ * wrong-locality listing becomes an off-target lead — but ONLY when the org opts in
+ * (sourcing.buyerLeads / sourcing.offTargetLeads), because each tag must be routable by the
+ * platform webhook. Three runs pin the flag-off fates (buyer retryable, off-target dead), the
+ * flag-on relays (leadType on the wire, on the seen doc, and in the lane counters), and the lane
+ * priority under maxPerRun (salvage never displaces on-target inventory).
+ */
+async function classifyLanesScenario() {
+  const TARGET = { locality: 'Velachery', city: 'Chennai' };
+  // Keyed off the SERP text the pipeline hands to classify (title + snippet) — the stub stands in
+  // for Gemini, one verdict per post. Snippets carry a property keyword so hasPropertySignal passes.
+  // A FACTORY, not a constant: the pipeline mutates listing objects in place (snippet enrichment,
+  // leadType, extracted), so each run must get fresh copies or the runs contaminate each other.
+  const serp4 = () => [
+    { url: P(201), title: 'on-target listing', snippet: 'flat for sale velachery' },
+    { url: P(202), title: 'buyer wanted', snippet: 'looking for 2bhk flat' },
+    { url: P(203), title: 'offtarget listing', snippet: 'house for sale tambaram' },
+    { url: P(204), title: 'junk shop ad', snippet: 'silk saree price offer' },
+  ];
+  const classifyStub = async ({ text }) => {
+    if (text.includes('buyer wanted')) return { keep: true, side: 'seeking', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Rent', locality: 'Velachery' } };
+    if (text.includes('offtarget')) return { keep: false, side: 'offering', isListing: true, localityMatches: false, confidence: 0.9, reason: 'off-target', extracted: { listingType: 'Sale', locality: 'Tambaram' } };
+    if (text.includes('junk')) return { keep: false, side: 'offering', isListing: false, localityMatches: false, confidence: 0.9, reason: 'not-a-listing' };
+    return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery' } };
+  };
+
+  const runOnce = async (cfgExtra) => {
+    const db = new FakeDb();
+    db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+    db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+    const relayBodies = [];
+    globalThis.fetch = async (url, opts) => {
+      if (String(url).includes('apify')) {
+        const body = JSON.parse(opts.body);
+        const items = body.startUrls.map(({ url: u }) => ({ facebookUrl: u, text: `full ${u}`, time: new Date(FRESH).toISOString() }));
+        return { ok: true, status: 200, json: async () => items };
+      }
+      relayBodies.push(JSON.parse(opts.body));
+      return { ok: true, status: 200 };
+    };
+    const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+    const { startRun } = await import('../utils/sourcingRun.js');
+    const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: ['q1'], freshnessMonths: 3, maxPerRun: 0, ...cfgExtra };
+    const run = startRun(db, ORG, 'test');
+    const leg = run.leg({ target: TARGET, queries: cfg.queries });
+    await runForOrg(db, 'tok', ORG, cfg, { fetchSerp: async () => serp4(), classify: classifyStub, target: TARGET, leg });
+    await run.finish();
+    return { db, funnel: db.store.get(`sourcingRuns/${run.id}`).funnel, relayBodies };
+  };
+
+  // ── Flags OFF: today's behaviour, but the buyer post must stay retryable while off-target dies.
+  {
+    const { db, funnel: f } = await runOnce({});
+    assert.equal(f.relayed, 1, 'flags off: only the on-target listing relays');
+    assert.equal(f.buyerDropped, 1, 'flags off: the seeking post is counted as a buyer drop');
+    assert.equal(f.offTargetDropped, 2, 'flags off: wrong-locality listing + junk both drop as off-target class');
+    assert.equal(f.buyerRelayed, 0);
+    assert.equal(f.offTargetRelayed, 0);
+    const seen = db.under(`sourcingSeen/${ORG}/keys/`);
+    assert.ok(!seen.some((d) => d.url === P(202)), 'flags off: buyer post is NOT buried — enabling the flag later must still catch it');
+    assert.ok(seen.some((d) => d.url === P(203) && d.dropped), 'flags off: confident off-target listing stays dead');
+    assert.ok(seen.some((d) => d.url === P(204) && d.dropped), 'junk is dead');
+  }
+
+  // ── Flags ON: both lanes relay, tagged on the wire, on the seen doc, and in the counters.
+  {
+    const { db, funnel: f, relayBodies } = await runOnce({ buyerLeads: true, offTargetLeads: true });
+    assert.equal(f.relayed, 3, 'flags on: listing + buyer + off-target all relay');
+    assert.equal(f.buyerRelayed, 1, 'buyer lane counted');
+    assert.equal(f.offTargetRelayed, 1, 'off-target lane counted');
+    assert.equal(f.buyerDropped, 0);
+    assert.equal(f.offTargetDropped, 1, 'only the junk still drops');
+    const byUrl = new Map(relayBodies.map((b) => [b.listing.url, b.listing]));
+    assert.equal(byUrl.get(P(201)).leadType, undefined, 'supply lead carries no tag');
+    assert.equal(byUrl.get(P(202)).leadType, 'buyer', 'buyer lead tagged on the wire');
+    assert.equal(byUrl.get(P(203)).leadType, 'off-target', 'off-target lead tagged on the wire');
+    assert.equal(byUrl.get(P(203)).extracted.locality, 'Tambaram', 'off-target lead carries its REAL locality');
+    const seen = db.under(`sourcingSeen/${ORG}/keys/`);
+    assert.equal(seen.find((d) => d.url === P(202))?.leadType, 'buyer', 'seen doc records the lane');
+    // Billing treats the lanes like any relayed lead (v1 — one unit price for all three).
+    const txns = db.under('transactions/');
+    assert.equal(txns[0].count, 3, 'all three relayed leads billed');
+  }
+
+  // ── Lane priority under maxPerRun: salvage never displaces on-target inventory.
+  {
+    const { funnel: f, relayBodies } = await runOnce({ buyerLeads: true, offTargetLeads: true, maxPerRun: 2 });
+    assert.equal(f.relayed, 2, 'cap 2: two leads relay');
+    const relayedUrls = relayBodies.map((b) => b.listing.url);
+    assert.ok(relayedUrls.includes(P(201)), 'cap: the on-target listing always makes the cut');
+    assert.ok(relayedUrls.includes(P(202)), 'cap: the buyer lead outranks off-target salvage');
+    assert.ok(!relayedUrls.includes(P(203)), 'cap: off-target salvage is the first to defer');
+    assert.equal(f.offTargetRelayed, 0);
+  }
+
+  console.log('\nclassify-lanes scenario: buyer + off-target salvage flags, tagging, retryability and lane priority ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); process.exit(1); });

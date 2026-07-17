@@ -38,7 +38,8 @@ const FUNNEL_STEPS = [
   { key: 'newProspects', label: 'New prospects', kind: 'stage', hint: 'Genuinely new listings entering the vetting gates.' },
   { key: 'serpStaleSkipped', label: 'Skipped: SERP date', kind: 'drop', hint: 'Google reported it as clearly older than the window — skipped before paying to scrape. Retryable.' },
   { key: 'noSignalDropped', label: 'Dropped: no signal', kind: 'drop', hint: 'Our cheap property-signal filter found nothing property-like in the snippet. Retryable.' },
-  { key: 'offTargetDropped', label: 'Dropped: off-target', kind: 'drop', hint: 'Gemini confidently rejected it — wrong locality or not a listing. Permanent (never re-scraped).' },
+  { key: 'offTargetDropped', label: 'Dropped: off-target', kind: 'drop', hint: 'Gemini confidently rejected it — wrong locality or not a listing. Permanent (never re-scraped). With sourcing.offTargetLeads on, confident wrong-locality LISTINGS relay tagged instead of landing here.' },
+  { key: 'buyerDropped', label: 'Dropped: buyer post', kind: 'drop', hint: 'A genuine "wanted / looking for" post, but the org hasn’t opted into buyer leads (sourcing.buyerLeads). Retryable — flipping the flag catches posts still live.' },
   { key: 'degradedDropped', label: 'Dropped: classifier down', kind: 'drop', hint: 'Classifier errored AND no India signal. A spike here is an incident, not a dry locality. Retryable.' },
   { key: 'poolDeferred', label: 'Deferred: enrich pool', kind: 'defer', hint: 'Vetted but over this run’s enrich pool. Not marked seen — the next run picks it up.' },
   { key: 'enriched', label: 'Enriched (paid scrape)', kind: 'stage', hint: 'Facebook post scrapes actually paid for. This is the Apify bill.' },
@@ -50,6 +51,8 @@ const FUNNEL_STEPS = [
   { key: 'relayAttempted', label: 'Relay attempted', kind: 'stage', hint: 'POSTed to the customer webhook.' },
   { key: 'relayFailed', label: 'Relay failed', kind: 'drop', hint: 'Webhook did not return 2xx. We paid everything and earned nothing — but it retries next run.' },
   { key: 'relayed', label: 'Relayed & billed', kind: 'win', hint: 'Delivered, marked seen, and charged to the org wallet.' },
+  { key: 'buyerRelayed', label: '… of which buyer leads', kind: 'win', hint: 'Relayed with leadType "buyer" — a demand post ("wanted / looking for"), usually phone-less; the value is the post link + request text.' },
+  { key: 'offTargetRelayed', label: '… of which off-target', kind: 'win', hint: 'Relayed with leadType "off-target" — a real listing outside the searched locality; its actual place rides in extracted.locality.' },
 ];
 
 const KIND_CLS = {
@@ -192,6 +195,8 @@ function LeadTable({ leads }) {
                       {l.priceText && <span className="rounded bg-canvas px-1">{l.priceText}</span>}
                       {l.hasPhone && <span className="rounded bg-canvas px-1">📞</span>}
                       {l.imageCount > 0 && <span className="rounded bg-canvas px-1">🖼 {l.imageCount}</span>}
+                      {l.leadType === 'buyer' && <span className="rounded bg-sky-50 px-1 text-sky-700">buyer</span>}
+                      {l.leadType === 'off-target' && <span className="rounded bg-violet-50 px-1 text-violet-700">off-target</span>}
                       {l.classifyStatus === 'unverified' && <span className="rounded bg-amber-50 px-1 text-amber-700">unverified</span>}
                       {l.freshness === 'stale-fallback' && <span className="rounded bg-amber-50 px-1 text-amber-700">stale fallback</span>}
                     </div>

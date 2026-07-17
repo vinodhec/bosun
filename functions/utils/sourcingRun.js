@@ -49,6 +49,7 @@ function blankFunnel() {
     serpStaleSkipped: 0,   // 3a — cheap SERP-date pre-filter (fail-open, not marked dead)
     noSignalDropped: 0,    // 3b — deterministic property-signal pre-filter
     offTargetDropped: 0,   // 3b — Gemini classify said off-target (confident reject → dead)
+    buyerDropped: 0,       // 3b — genuine buyer post, org hasn't opted into buyerLeads (→ retries)
     degradedDropped: 0,    // 3b — classifier down AND no India signal (transient → retries)
     poolDeferred: 0,       // 3c — trimmed to the enrich pool; NOT dropped, next run picks it up
     enriched: 0,           // 3c1 — paid FB scrapes actually attempted
@@ -61,6 +62,8 @@ function blankFunnel() {
     capDeferred: 0,        // trimmed by maxPerRun; NOT dropped, next run picks it up
     relayAttempted: 0,
     relayed: 0,            // webhook returned 2xx → marked seen AND billed
+    buyerRelayed: 0,       //   … of which leadType:'buyer' (the buyer-harvest salvage lane)
+    offTargetRelayed: 0,   //   … of which leadType:'off-target' (real listing, wrong locality)
     relayFailed: 0,        // non-2xx / timeout → not seen, not billed, retries next run
   };
 }
@@ -208,6 +211,7 @@ export function startRun(db, orgId, trigger) {
             postedAt: listing.postedAt || null,
             serpAgeMs: listing.serpAgeMs || null,
             freshness: listing.freshness || null,
+            leadType: listing.leadType || null, // 'buyer' / 'off-target' salvage lanes; null = supply
             classifyStatus: listing.classifyStatus || null,
             listingType: listing.extracted?.listingType || null,
             propertyType: listing.extracted?.propertyType || null,

@@ -203,6 +203,14 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   sale/unknown-intent leads older than `saleMonths` are dropped (unknown `postedAt` is kept). A
   target left with ZERO fresh leads re-admits up to `fallbackMaxLeads` newest stale ones as
   `freshness:'stale-fallback'`; everything else relays as `'fresh'`.
+- **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
+  With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
+  `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with
+  `sourcing.offTargetLeads`, a confident genuine listing whose only failure is the locality relays
+  as `leadType:'off-target'` carrying its real place in `extracted.locality`. Both flags default OFF
+  — the platform webhook must route the tag first. Flag-off buyer posts drop RETRYABLY (never
+  buried); off-target rejects stay dead as before. Under the enrich-pool/maxPerRun caps the lanes
+  rank supply → buyer → off-target so salvage never displaces on-target inventory.
 - **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
   it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
 - **Audit trail** — `utils/sourcingRun.js` records each run to `sourcingRuns/{runId}`: the per-target
