@@ -110,5 +110,15 @@ export { usageMeter } from './handlers/usageMeter.js';
 // platform's 07:00 IST on-demand safety trigger (same HMAC as usageMeter).
 export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 
+// Nightly Session Intelligence (02:30 IST): classify yesterday's sessions into intent segments,
+// build the daily demand map, refresh the engagement message library (EN+TA, {count}-grounded),
+// flag anomalies, deliver the engagement-pack to the platform. Covered by the base fee up to the
+// monthly session pool (org.sessionMeter.<yyyymm> counts toward it).
+export { sessionIntelligence } from './handlers/sessionIntelligence.js';
+
+// Composed reports: weekly intelligence (Mon 03:30 IST) + monthly proof-of-value (1st 04:00 IST) —
+// deterministic aggregates from our ledgers, Flash prose, delivered to the platform's report ingest.
+export { weeklyIntelligence, monthlyProofOfValue } from './handlers/intelligenceReports.js';
+
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
