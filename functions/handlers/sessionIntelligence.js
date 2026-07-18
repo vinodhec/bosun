@@ -31,7 +31,7 @@ import { signPayload } from '../utils/sourcing.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
 import { tuneRules, buildDevTaskProposals, buildStaffingProposals, rollupActions } from '../utils/rulesTuner.js';
 import { createIssue } from '../utils/githubIssues.js';
-import { pricePopupBatch, accrueComposeCharge, isServicePaused } from '../shared/billing.js';
+import { pricePopupBatch, accrueComposeCharge, isServicePaused, CONVERSION_POPUP_TOPUP_PAISE } from '../shared/billing.js';
 
 const REGION = 'asia-south1';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -261,12 +261,22 @@ export function detectAnomalies(today, baselineDays) {
  * all safely re-runnable and each popup is charged exactly once. Prices exist ONLY in bosun.
  */
 export async function settlePopupsForDate(db, orgId, dateKey, actionRows) {
-  const result = { qty: 0, chargedInr: 0, deltaBilled: 0 };
+  const result = { qty: 0, converted: 0, chargedInr: 0, deltaBilled: 0 };
   try {
-    const popupShows = (actionRows || [])
-      .filter((a) => a.slot === 'overlay' && a.event === 'shown')
+    const overlayRows = (actionRows || []).filter((a) => a.slot === 'overlay');
+    const popupShows = overlayRows
+      .filter((a) => a.event === 'shown')
       .reduce((n, a) => n + (Number(a.count) || 0), 0);
+    // Conversions: the visitor signed in or left their number after our popup. Capped at shows —
+    // a conversion without a recorded show can't out-bill reality.
+    const popupConversions = Math.min(
+      overlayRows
+        .filter((a) => a.event === 'login_success' || a.event === 'captured')
+        .reduce((n, a) => n + (Number(a.count) || 0), 0),
+      popupShows,
+    );
     result.qty = popupShows;
+    result.converted = popupConversions;
     if (popupShows <= 0) return result;
 
     const logRef = db.collection('usage_meter_log').doc(`${orgId}:conversion_popup:${dateKey}`);
@@ -275,21 +285,29 @@ export async function settlePopupsForDate(db, orgId, dateKey, actionRows) {
       const orgSnap = await tx.get(orgRef);
       if (!orgSnap.exists) return { delta: 0, debitInr: 0 };
       const logSnap = await tx.get(logRef);
-      const billedSoFar = logSnap.exists ? Number(logSnap.data().qty) || 0 : 0;
+      const prev = logSnap.exists ? logSnap.data() : {};
+      const billedSoFar = Number(prev.qty) || 0;
+      const convBilledSoFar = Number(prev.convQty) || 0;
       const delta = popupShows - billedSoFar;
-      if (delta <= 0) return { delta: 0, debitInr: 0 };
+      // Outcome top-up: conversions billed exactly once each, whenever they land (possibly hours
+      // after their show was billed at the base rate) — converted popup ≈ 75p total.
+      const deltaConv = popupConversions - convBilledSoFar;
+      if (delta <= 0 && deltaConv <= 0) return { delta: 0, debitInr: 0 };
 
       const org = orgSnap.data();
-      const deltaPaise = pricePopupBatch(delta);
-      const prev = logSnap.exists ? logSnap.data() : {};
+      const deltaPaise =
+        (delta > 0 ? pricePopupBatch(delta) : 0) +
+        (deltaConv > 0 ? deltaConv * CONVERSION_POPUP_TOPUP_PAISE : 0);
       const base = {
         orgId,
         service: 'conversion_popup',
         idempotencyKey: dateKey,
-        qty: popupShows, // billed-so-far after this settle
-        pricePaise: null, // random per popup — see billing.js band
+        qty: Math.max(popupShows, billedSoFar), // shows billed so far after this settle
+        convQty: Math.max(popupConversions, convBilledSoFar), // conversions topped-up so far
+        pricePaise: null, // random per popup + conversion top-up — see billing.js
         totalPaise: (Number(prev.totalPaise) || 0) + deltaPaise,
-        lastDeltaQty: delta,
+        lastDeltaQty: Math.max(delta, 0),
+        lastDeltaConv: Math.max(deltaConv, 0),
         updatedAt: FieldValue.serverTimestamp(),
         ...(logSnap.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
       };
@@ -301,26 +319,29 @@ export async function settlePopupsForDate(db, orgId, dateKey, actionRows) {
           waived: true,
           waivedPaise: (Number(prev.waivedPaise) || 0) + deltaPaise,
         }, { merge: true });
-        return { delta, debitInr: 0 };
+        return { delta: Math.max(delta, 0) + Math.max(deltaConv, 0), debitInr: 0 };
       }
 
       const { debitInr, accrualPaise } = accrueComposeCharge(org.popupAccrualPaise, deltaPaise);
       const update = { popupAccrualPaise: accrualPaise };
       if (debitInr > 0) {
         update.balance = Number(org.balance ?? 0) - debitInr;
+        const parts = [];
+        if (delta > 0) parts.push(`${delta} shown × ~₹0.40–0.60`);
+        if (deltaConv > 0) parts.push(`${deltaConv} converted × +₹0.25 top-up (→ ~₹0.75 each)`);
         tx.set(db.collection('transactions').doc(), {
           orgId,
           type: 'debit',
           kind: 'conversion_popup',
           amount: debitInr,
-          count: delta,
-          description: `Conversion popups opened (${delta} × ~₹0.40–0.60)`,
+          count: Math.max(delta, 0) + Math.max(deltaConv, 0),
+          description: `Conversion popups (${parts.join(' · ')})`,
           createdAt: FieldValue.serverTimestamp(),
         });
       }
       tx.update(orgRef, update);
       tx.set(logRef, { ...base, debitInr: (Number(prev.debitInr) || 0) + debitInr }, { merge: true });
-      return { delta, debitInr };
+      return { delta: Math.max(delta, 0) + Math.max(deltaConv, 0), debitInr };
     });
     result.deltaBilled = settled.delta;
     result.chargedInr = settled.debitInr;

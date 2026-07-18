@@ -620,3 +620,16 @@ export function pricePopupBatch(count, rng = Math.random) {
   }
   return total;
 }
+
+/**
+ * Outcome pricing (operator decision 2026-07-19): a popup that CONVERTED (the visitor signed in or
+ * left their number) is worth 75 paise, not the base 40–60. Shows are billed as they happen at the
+ * random base rate (average 50p), and a conversion — which can land hours after its show was
+ * billed — adds a flat TOP-UP of (75 − 50) = 25p, so converted popups settle at 75p in expectation
+ * while unconverted ones keep the base band. Same delta-billing discipline: each conversion tops up
+ * exactly once.
+ */
+export const CONVERSION_POPUP_CONVERTED_PAISE = 75;
+export const CONVERSION_POPUP_TOPUP_PAISE =
+  CONVERSION_POPUP_CONVERTED_PAISE -
+  Math.round((CONVERSION_POPUP_MIN_PAISE + CONVERSION_POPUP_MAX_PAISE) / 2);
