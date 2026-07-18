@@ -29,7 +29,7 @@ import crypto from 'node:crypto';
 import { signPayload } from '../utils/sourcing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
-import { DAILY_PLAN_PRICE_PAISE, accrueComposeCharge } from '../shared/billing.js';
+import { DAILY_PLAN_PRICE_PAISE, accrueComposeCharge, isServicePaused } from '../shared/billing.js';
 import { allocateTasks, briefingPrompt, BRIEFING_SCHEMA } from '../utils/planTasks.js';
 
 const REGION = 'asia-south1';
@@ -188,6 +188,27 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
       const dupe = await tx.get(logRef);
       if (dupe.exists) return 0;
       const org = orgSnap.data();
+
+      // Waived line (testing / goodwill): log it for idempotency + reconciliation, charge nothing.
+      if (isServicePaused(org, 'daily_plan')) {
+        tx.set(logRef, {
+          orgId,
+          service: 'daily_plan',
+          idempotencyKey: dateKey,
+          qty: 1,
+          planRunId,
+          trigger,
+          taskCount,
+          adminCount: plans.length,
+          pricePaise: DAILY_PLAN_PRICE_PAISE,
+          debitInr: 0,
+          waived: true,
+          waivedPaise: DAILY_PLAN_PRICE_PAISE,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return 0;
+      }
+
       const { debitInr, accrualPaise } = accrueComposeCharge(org.plannerAccrualPaise, DAILY_PLAN_PRICE_PAISE);
       const update = { plannerAccrualPaise: accrualPaise };
       if (debitInr > 0) {

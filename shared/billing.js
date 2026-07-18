@@ -581,3 +581,20 @@ export const WA_LEAD_ACCEPTED_PRICE_PAISE = 300; // ₹3 per accepted posting (b
  * a ledger replay/backfill prices identically). Accrued on the org as `plannerAccrualPaise`.
  */
 export const DAILY_PLAN_PRICE_PAISE = 20000; // ₹200 per plan-day (confirm with operator at enablement)
+
+/**
+ * ── Billing pause (testing / goodwill) ─────────────────────────────────────────────────────────
+ * An org may pause specific metered service lines while a new capability is validated on a testing
+ * environment. A paused settle still writes its idempotency log row (so re-runs stay no-ops) but
+ * WAIVES the debit — no balance change, no transactions row — and records `waived:true` +
+ * `waivedPaise` so the operator can reconcile (add credits back / start charging) with an exact
+ * number later. The pause is per SERVICE, so live lines (e.g. sourcing relay) keep charging while
+ * only the new lines (daily_plan, whatsapp_*, session/conversion) are waived.
+ *
+ * Shape: `organisations/{orgId}.billingPaused` = array of service kinds (e.g.
+ * ['daily_plan','wa_message_delivered','wa_lead_accepted']). Absent/empty ⇒ nothing paused.
+ */
+export function isServicePaused(org, service) {
+  const paused = org && org.billingPaused;
+  return Array.isArray(paused) && paused.includes(service);
+}

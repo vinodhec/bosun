@@ -31,6 +31,7 @@ import {
   WA_LEAD_ACCEPTED_PRICE_PAISE,
   DAILY_PLAN_PRICE_PAISE,
   accrueComposeCharge,
+  isServicePaused,
 } from '../shared/billing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
@@ -166,6 +167,25 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
       if (dupe.exists) return 0; // raced with a concurrent identical event
 
       const org = orgSnap.data();
+
+      // Waived line (testing / goodwill): record it for idempotency + reconciliation, charge nothing.
+      if (isServicePaused(org, service)) {
+        tx.set(logRef, {
+          orgId,
+          service,
+          idempotencyKey,
+          qty,
+          leadId: String(body.leadId || ''),
+          refId: String(body.refId || ''),
+          pricePaise: unitPaise,
+          debitInr: 0,
+          waived: true,
+          waivedPaise: unitPaise * qty,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return 0;
+      }
+
       const { debitInr, accrualPaise } = accrueComposeCharge(org[def.accrualField], unitPaise * qty);
 
       const update = { [def.accrualField]: accrualPaise };

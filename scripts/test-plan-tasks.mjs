@@ -162,3 +162,33 @@ const planFor = (result, uid) => result.plans.find((p) => p.adminUid === uid);
 }
 
 console.log('planTasks: all 10 fixture tests passed ✓');
+
+// 11. Skills gate: a consent_calls-only admin never receives buyer/freshness tasks; a null-skills
+// admin takes anything; skill beats round-robin availability.
+{
+  const { allocateTasks: alloc } = await import('../functions/utils/planTasks.js');
+  const r = alloc(
+    ws(
+      [
+        admin('caller', { adminSkillsIgnored: true, skills: ['consent_calls'] }),
+        admin('checker', { skills: ['freshness_check'] }),
+      ],
+      {
+        untouched_lead: [cand('L1'), cand('L2')],
+        freshness_check: [cand('F1', { convertedBy: null, propertyId: 'p1' })],
+      },
+    ),
+  );
+  const callerTasks = planFor(r, 'caller').tasks.map((t) => t.type);
+  const checkerTasks = planFor(r, 'checker').tasks.map((t) => t.type);
+  assert.ok(callerTasks.every((t) => t === 'untouched_lead'), 'caller only gets call tasks');
+  assert.deepEqual(checkerTasks, ['freshness_check'], 'checker only gets freshness tasks');
+}
+
+// 12. Null skills = full-skill admin (backward compatible).
+{
+  const { allocateTasks: alloc } = await import('../functions/utils/planTasks.js');
+  const r = alloc(ws([admin('a', { skills: null })], { untouched_lead: [cand('L1')], freshness_check: [cand('F1', { propertyId: 'p1' })] }));
+  assert.equal(planFor(r, 'a').tasks.length, 2);
+}
+console.log('planTasks: skills fixtures passed ✓');

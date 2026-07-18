@@ -58,10 +58,23 @@ export function fnv1a(str) {
   return h >>> 0;
 }
 
+// Task type → responsibility. Mirrors the platform's ADMIN_SKILLS catalog (lib/adminSkills.ts) —
+// change them in lockstep. The three call-queue types share one skill: they're all consent calls.
+export const TASK_SKILL = {
+  callback_due: 'consent_calls',
+  untouched_lead: 'consent_calls',
+  rnr_retry: 'consent_calls',
+  buyer_followup: 'buyer_followup',
+  freshness_check: 'freshness_check',
+};
+
 function eligible(admin, task) {
   if (admin.quota <= admin.assigned.length) return false;
   if (task.type === 'buyer_followup' && !admin.canAccessBuyerLeads) return false;
-  if (admin.sourcingLanguages == null) return true; // full access
+  // Skills/responsibilities: null = full-skill admin; an array must cover the task's skill.
+  const skill = TASK_SKILL[task.type];
+  if (skill && Array.isArray(admin.skills) && !admin.skills.includes(skill)) return false;
+  if (admin.sourcingLanguages == null) return true; // full language access
   return admin.sourcingLanguages.includes(task.language);
 }
 
