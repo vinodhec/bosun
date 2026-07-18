@@ -29,7 +29,7 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import crypto from 'node:crypto';
 import { signPayload } from '../utils/sourcing.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
-import { tuneRules, buildDevTaskProposals, rollupActions } from '../utils/rulesTuner.js';
+import { tuneRules, buildDevTaskProposals, buildStaffingProposals, rollupActions } from '../utils/rulesTuner.js';
 import { createIssue } from '../utils/githubIssues.js';
 
 const REGION = 'asia-south1';
@@ -294,8 +294,19 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
     const activeRules = Array.isArray(digest.activeRules) ? digest.activeRules : [];
     const tuning = activeRules.length ? tuneRules(activeRules, digest.actions || []) : { rules: null, changes: [] };
 
-    // 4c) Dev-task proposals (human-in-the-loop): structural findings → superadmin approval queue.
-    const devTasks = buildDevTaskProposals({ ...digest, anomalies });
+    // 4c) Proposals (human-in-the-loop): structural findings → dev tasks; planner allocation gaps
+    // → staffing recommendations (recruit / re-skill / ramp — kind:'staffing', never filed to
+    // GitHub). Both land in the same superadmin approval queue.
+    const plannerSnap = await db
+      .collection('plannerRuns')
+      .doc(orgId)
+      .collection('runs')
+      .orderBy('createdAt', 'desc')
+      .limit(5)
+      .get()
+      .catch(() => ({ docs: [] }));
+    const staffing = buildStaffingProposals(plannerSnap.docs.map((d) => d.data()));
+    const devTasks = [...buildDevTaskProposals({ ...digest, anomalies }), ...staffing].slice(0, 4);
 
     // 4d) File APPROVED proposals from previous nights as real GitHub issues — capped, deduped by
     // fingerprint via the filedTasks ledger, token = the org's stored repo token.

@@ -81,3 +81,19 @@ const act = (ruleId, event, count) => ({ ruleId, actionKind: 'login_popup', even
 }
 
 console.log('rulesTuner: all fixture tests passed ✓');
+
+// 8. Staffing proposals from planner unassigned history: gap → proposal (kind staffing), blip → none.
+{
+  const { buildStaffingProposals } = await import('../functions/utils/rulesTuner.js');
+  const runs = [
+    { unassigned: { buyer_followup: 6 } },
+    { unassigned: { buyer_followup: 7, callback_due: 2 } },
+  ];
+  const proposals = buildStaffingProposals(runs);
+  assert.equal(proposals.length, 1, 'only the real gap proposes');
+  assert.equal(proposals[0].kind, 'staffing');
+  assert.equal(proposals[0].fingerprint, 'staffing-gap-buyer_followup');
+  assert.ok(proposals[0].labels.includes('staffing'));
+  assert.equal(buildStaffingProposals([{ unassigned: {} }]).length, 0);
+}
+console.log('rulesTuner: staffing fixtures passed ✓');

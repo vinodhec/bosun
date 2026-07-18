@@ -162,3 +162,46 @@ export function buildDevTaskProposals(digest) {
 
   return proposals.slice(0, 2); // ≤2 proposals per night — a trickle the superadmin will actually read
 }
+
+/**
+ * Staffing proposals — recruit / re-skill / ramp guidance for the superadmin, built from the
+ * planner's own unassigned-task history (tasks nobody was eligible for = a skill/language gap;
+ * persistent zero-unassigned with saturated quotas would be a ramp-up signal). kind:'staffing' —
+ * these go into the SAME approval queue as dev tasks but are NEVER filed to GitHub: approving one
+ * is the superadmin acknowledging an operations action (recruit, change skills on the staffing
+ * page, adjust capacity).
+ */
+export function buildStaffingProposals(recentPlannerRuns) {
+  const proposals = [];
+  const unassignedByCategory = {};
+  let daysWithData = 0;
+  for (const run of recentPlannerRuns || []) {
+    const un = run.unassigned || run.stats?.unassigned || {};
+    if (Object.keys(un).length) daysWithData++;
+    for (const [category, count] of Object.entries(un)) {
+      unassignedByCategory[category] = (unassignedByCategory[category] || 0) + Number(count || 0);
+    }
+  }
+  for (const [category, total] of Object.entries(unassignedByCategory)) {
+    if (total < 10) continue; // a real gap, not a blip
+    proposals.push({
+      kind: 'staffing',
+      fingerprint: `staffing-gap-${category}`,
+      title: `Staffing gap: ${total} ${category.replace(/_/g, ' ')} tasks had NO eligible admin recently`,
+      body: [
+        '## Context / problem',
+        `Across the last ${daysWithData || recentPlannerRuns.length} planned days, ${total} "${category}" tasks could not be assigned — no admin had the matching responsibility/language with free capacity.`,
+        '## Suggested operator actions',
+        `- Grant the "${category}" responsibility to an existing admin on /admin/sourcing-languages, or`,
+        '- Raise a capable admin\'s daily capacity (Tasks/day), or',
+        '- Recruit for this area.',
+        '## Notes',
+        'Auto-proposed by the Bosun nightly agent from planner allocation data. Approving acknowledges the action — nothing is filed to GitHub.',
+      ].join('\n'),
+      labels: ['staffing'],
+      severity: total >= 30 ? 'high' : 'info',
+      evidence: `${total} unassigned ${category} tasks across recent plans`,
+    });
+  }
+  return proposals.slice(0, 2);
+}
