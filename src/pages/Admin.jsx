@@ -290,7 +290,7 @@ function SourcingOverview({ data: s }) {
 // always still held as paise — shown as "pending" rather than quietly missing from the totals.
 // The session pool tracks the base fee's 1,50,000 processed-sessions/month coverage; overage
 // (₹0.20/session) is reconciled at invoice time from this counter, never auto-billed.
-function MeteredLanes({ lanes, total, sessionPool }) {
+function MeteredLanes({ lanes, total, sessionPool, waived }) {
   if (!lanes?.length) return null;
   return (
     <section className="rounded-2xl border border-line bg-white p-5">
@@ -321,6 +321,25 @@ function MeteredLanes({ lanes, total, sessionPool }) {
             sub={`billable ${formatINR(sessionPool.overageInr)} @ ₹${sessionPool.overageRateInr}/session`}
             tone={sessionPool.overageSessions > 0 ? 'good' : undefined}
           />
+        </div>
+      )}
+
+      {waived && waived.totalInr > 0 && (
+        <div className="mt-3 rounded-xl border border-dashed border-amber-300 bg-amber-50/40 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+            Waived (testing / goodwill) — recorded, not charged
+          </div>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <span className="text-lg font-bold text-amber-800">{formatINR(waived.totalInr)}</span>
+            <span className="text-[11px] text-ink-soft">{waived.events} events held back — add back / start charging any time</span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {Object.entries(waived.byService).map(([svc, inr]) => (
+              <span key={svc} className="rounded-md bg-white px-2 py-0.5 text-[11px] text-ink-soft ring-1 ring-inset ring-amber-200">
+                {svc}: {formatINR(inr)}
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1458,7 +1477,7 @@ export default function Admin() {
 
         <SourcingOverview data={metrics?.sourcing} />
 
-        {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} sessionPool={metrics.sessionPool} />}
+        {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} sessionPool={metrics.sessionPool} waived={metrics.waived} />}
 
         <SourcingRuns orgs={orgs} />
 

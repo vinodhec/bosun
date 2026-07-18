@@ -379,7 +379,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   const db = getFirestore();
   const rate = await getUsdToInrRate();
 
-  const [orgsSnap, tasksSnap, creditSnap, laneSnap] = await Promise.all([
+  const [orgsSnap, tasksSnap, creditSnap, laneSnap, waivedSnap] = await Promise.all([
     db.collection('organisations').get(),
     db.collection('tasks').get(),
     db.collection('transactions').where('type', '==', 'credit').get(),
@@ -393,8 +393,23 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     db.collection('transactions')
       .where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage'])
       .get(),
+    // Waived meter events (testing / goodwill pause): recorded but never debited — the reconcilable
+    // "what we chose not to charge" figure. Single-field filter (auto-indexed).
+    db.collection('usage_meter_log').where('waived', '==', true).limit(5000).get(),
   ]);
   const sourcingSnap = { docs: laneSnap.docs.filter((d) => d.data().kind === 'sourcing') };
+
+  // Roll up waived (uncharged) revenue by service + org — what the operator could add back / start
+  // charging once testing signs off. Never debited, so this is pure "held-back" visibility.
+  const waivedByService = {};
+  let waivedTotalInr = 0;
+  for (const d of waivedSnap.docs) {
+    const w = d.data();
+    const inr = (Number(w.waivedPaise) || 0) / 100;
+    waivedByService[w.service] = (waivedByService[w.service] || 0) + inr;
+    waivedTotalInr += inr;
+  }
+  const waived = { totalInr: waivedTotalInr, byService: waivedByService, events: waivedSnap.size };
 
   // Apify (SERP + FB enrichment) is the only sourcing COGS and we don't meter it per run — sourcing
   // is a deliberately near-zero-COGS lane. Estimate it for a profit view; clearly labelled "est".
@@ -670,7 +685,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     overageRateInr: SESSION_OVERAGE_INR,
   };
 
-  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, generatedAt: now };
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, waived, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
