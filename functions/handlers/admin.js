@@ -694,6 +694,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     const cfg = orgDoc.data().sourcing || {};
     if (!cfg.intelligence?.enabled) continue;
     try {
+      // Bosun's own record of the last tuning (changes/outcomes/proposals).
       const daySnap = await db
         .collection('intelRuns')
         .doc(orgDoc.id)
@@ -701,16 +702,39 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
         .orderBy('dateKey', 'desc')
         .limit(3)
         .get();
-      const withRules = daySnap.docs.map((d) => d.data()).find((d) => Array.isArray(d.rules) && d.rules.length);
+      const lastRun = daySnap.docs.map((d) => d.data()).find((d) => Array.isArray(d.rules) && d.rules.length);
+
+      // The AUTHORITATIVE live rulebook is what the customer site is actually serving — fetch it
+      // from the platform's public rules endpoint (derived from the planner base URL) so the panel
+      // shows the real rules even before the first nightly tuning (when they're the built-in defaults).
+      let liveRules = [];
+      let liveSource = null;
+      try {
+        const planUrl = cfg.planner?.planUrl || cfg.intelligence?.packUrl || '';
+        const base = planUrl ? new URL(planUrl).origin : '';
+        if (base) {
+          const resp = await fetch(`${base}/api/engagement/rules`, { signal: AbortSignal.timeout(8000) });
+          if (resp.ok) {
+            const body = await resp.json();
+            liveRules = Array.isArray(body.rules) ? body.rules : [];
+            liveSource = body.source || null;
+          }
+        }
+      } catch (e) {
+        console.error('adminMetrics:liveRules:err', orgDoc.id, e?.message || e);
+      }
+
+      const rules = liveRules.length ? liveRules : lastRun?.rules || [];
       conversionRules = {
         orgId: orgDoc.id,
         orgName: orgDoc.data().name || orgDoc.id,
-        defaultsActive: !withRules,
-        dateKey: withRules?.dateKey || null,
-        rules: withRules?.rules || [],
-        ruleChanges: withRules?.ruleChanges || [],
-        actions: withRules?.actions || null,
-        devTasksProposed: withRules?.devTasksProposed || 0,
+        defaultsActive: liveSource === 'defaults' || (!liveRules.length && !lastRun),
+        source: liveSource,
+        dateKey: lastRun?.dateKey || null,
+        rules,
+        ruleChanges: lastRun?.ruleChanges || [],
+        actions: lastRun?.actions || null,
+        devTasksProposed: lastRun?.devTasksProposed || 0,
       };
     } catch (e) {
       console.error('adminMetrics:conversionRules:err', orgDoc.id, e?.message || e);
