@@ -165,6 +165,10 @@ async function composeFor(loc, segmentFor) {
     kind,
     city: loc ? loc.city : '',
     locality: loc ? loc.locality : '',
+    // These popups sell owner-contact access — they belong to the property-BROWSE moment. Copy for
+    // other moments (tools) is composed separately; the platform never serves browse copy to a
+    // tools popup (surface matching in pickMessage).
+    surface: kind === 'popup' ? 'browse' : '',
     lang,
     headline: String(m.headline || '').slice(0, 140),
     body: String(m.body || '').slice(0, 280),
@@ -176,6 +180,51 @@ async function composeFor(loc, segmentFor) {
     mk('popup', 'en', out.popup_en),
     mk('popup', 'ta', out.popup_ta),
   ].filter((m) => m.headline && m.body);
+}
+
+const TOOLS_POPUP_SCHEMA = {
+  type: 'object',
+  properties: {
+    popup_en: { type: 'object', properties: { headline: { type: 'string' }, body: { type: 'string' }, cta: { type: 'string' } }, required: ['headline', 'body', 'cta'] },
+    popup_ta: { type: 'object', properties: { headline: { type: 'string' }, body: { type: 'string' }, cta: { type: 'string' } }, required: ['headline', 'body', 'cta'] },
+  },
+  required: ['popup_en', 'popup_ta'],
+};
+
+/**
+ * Tools-moment popup copy — a calculator/converter user is mid-task; the pitch is CONTINUING and
+ * SAVING their work (plus what an account adds), never "owner contact details" (that's the browse
+ * moment's pitch — operator feedback 2026-07-19). Count-free by design: nothing to ground.
+ */
+async function composeToolsPopup() {
+  const out = await generateJson({
+    model: GEMINI_FLASH,
+    prompt: [
+      'Write a sign-in popup for a real-estate marketplace visitor who is actively USING free tools',
+      '(EMI, stamp duty, rental yield, unit converters) as a guest.',
+      'Sell what signing in adds to their TOOL experience: save calculations, revisit results,',
+      'personalised reports/rates. Do NOT mention owner contact details or property counts.',
+      'Produce JSON {popup_en, popup_ta (Tamil)} each {headline ≤60 chars, body ≤140, cta ≤20}.',
+      'No emojis, no invented claims, no numbers.',
+    ].join('\n'),
+    schema: TOOLS_POPUP_SCHEMA,
+    temperature: 0.6,
+    maxOutputTokens: 900,
+    thinkingBudget: 0,
+  });
+  if (!out) return [];
+  const mk = (lang, m) => ({
+    segment: 'serious',
+    kind: 'popup',
+    city: '',
+    locality: '',
+    surface: 'tools',
+    lang,
+    headline: String(m.headline || '').slice(0, 140),
+    body: String(m.body || '').slice(0, 280),
+    cta: String(m.cta || '').slice(0, 60),
+  });
+  return [mk('en', out.popup_en), mk('ta', out.popup_ta)].filter((m) => m.headline && m.body);
 }
 
 /** Deterministic anomaly checks vs the trailing runs. Exported for tests. */
@@ -257,8 +306,10 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
     // high-intent moments per the proposal). One call per top locality + one generic fallback.
     const segmentFor = (kind) => (kind === 'popup' ? 'serious' : 'warm');
     const batches = await mapLimit([null, ...locs], COMPOSE_CONCURRENCY, (loc) => composeFor(loc, segmentFor));
-    const messages = batches.flat();
-    const composeFailures = batches.filter((b) => !b.length).length;
+    // Moment-specific copy: the tools popup is its own composition (never property-count copy).
+    const toolsMessages = await composeToolsPopup();
+    const messages = [...batches.flat(), ...toolsMessages];
+    const composeFailures = batches.filter((b) => !b.length).length + (toolsMessages.length ? 0 : 1);
 
     // 4) Anomalies vs our own trailing runs (+ plan-completion escalation).
     const baselineSnap = await db
