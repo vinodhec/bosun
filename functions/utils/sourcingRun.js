@@ -65,6 +65,9 @@ function blankFunnel() {
     intentStaleDropped: 0, // 3e — per-intent freshness (rent vs sale) (→ dead unless re-admitted)
     staleReadmitted: 0,    // 3e — stale-fallback re-admits for a target with zero fresh leads
     capDeferred: 0,        // trimmed by maxPerRun; NOT dropped, next run picks it up
+    ownerDupInRun: 0,      // 3f — same owner+property fingerprint twice within this run (→ dead)
+    ownerDupSeen: 0,       // 3f — owner+property fingerprint we already relayed on a prior run (→ dead)
+    ownerDeduped: 0,       // 3f — ownerDupInRun + ownerDupSeen (total same-property reposts collapsed)
     relayAttempted: 0,
     relayed: 0,            // webhook returned 2xx → marked seen AND billed
     buyerRelayed: 0,       //   … of which leadType:'buyer' (the buyer-harvest salvage lane)

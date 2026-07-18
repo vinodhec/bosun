@@ -202,6 +202,35 @@ export function listingKey(url) {
   return crypto.createHash('sha256').update(canonicalizeUrl(url)).digest('hex');
 }
 
+/** Last-10-digit form of an Indian mobile, or '' when the input isn't one. Owner identity is the
+ *  number, not its +91/0/spacing formatting, so we normalize before using it as a dedup component. */
+function normalizePhoneDigits(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  const last10 = d.length > 10 ? d.slice(-10) : d;
+  return /^[6-9]\d{9}$/.test(last10) ? last10 : '';
+}
+
+/**
+ * A cross-run OWNER dedup id: the same owner (phone) reposting the SAME property (same coarse
+ * price/BHK/type fingerprint) in a different group/locality on a different day gets a NEW post URL
+ * every time, so URL dedup can't see it — but the phone can. Returns `owner_<sha256>` or null.
+ *
+ * null (→ no dedup, relay as normal) unless we have BOTH a real phone AND at least one substantive
+ * property field (priceText or bhk). The fingerprint is deliberately STRICT — a false MERGE silently
+ * buries a broker's genuinely distinct listing (same number, different property), which is far worse
+ * than relaying an occasional dupe, so we only collapse when phone + all present fields line up. Two
+ * copy-pasted reposts match verbatim; a broker's second, differently-priced flat does not.
+ */
+export function ownerListingKey({ phone, priceText, bhk, propertyType } = {}) {
+  const ph = normalizePhoneDigits(phone);
+  const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const price = norm(priceText);
+  const rooms = norm(bhk);
+  if (!ph || (!price && !rooms)) return null;
+  const sig = [ph, rooms, norm(propertyType), price].join('|');
+  return `owner_${crypto.createHash('sha256').update(sig).digest('hex')}`;
+}
+
 // Facebook path/query markers that identify an INDIVIDUAL post. Individual posts are the real
 // listings and enrich cleanly (full description + phone); group/page LANDING pages can't be enriched
 // and aren't listings anyway, so we drop them upstream.

@@ -168,7 +168,81 @@ async function main() {
   await maxPerRunScenario();
   await classifyLanesScenario();
   await localityUnknownScenario();
+  await ownerDedupScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
+}
+
+/**
+ * OWNER dedup (3f): the same owner reposting the SAME property in a new group/locality gets a fresh
+ * post URL every time, so URL dedup can't see it (the "3 property same property" complaint). We key
+ * on phone + a coarse price/BHK/type fingerprint AFTER enrichment/classify populate them. Pins: an
+ * in-run repost collapses (one relays), a broker's DIFFERENT property under the SAME number is
+ * spared, a phone-less lead is never deduped, and a repost on a LATER run is caught cross-run and
+ * marked dead so it's never re-enriched a third time.
+ */
+async function ownerDedupScenario() {
+  const TARGET = { locality: 'Velachery', city: 'Chennai' };
+  const classifyStub = async ({ text }) => {
+    // A1/A2 share phone + fingerprint (a repost); B shares the phone but is a distinct property;
+    // D carries no phone. Phone rides in via verdict.extracted.phone (runSourcingJobs.js:368).
+    if (text.includes('propA')) return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery', propertyType: 'flat', bhk: '2', priceText: '50 lakh', phone: '9876543210' } };
+    if (text.includes('propB')) return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery', propertyType: 'flat', bhk: '3', priceText: '80 lakh', phone: '9876543210' } };
+    return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery', propertyType: 'plot', bhk: '', priceText: '30 lakh' } };
+  };
+
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const relayBodies = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('apify')) {
+      const body = JSON.parse(opts.body);
+      const items = body.startUrls.map(({ url: u }) => ({ facebookUrl: u, text: `full ${u}`, time: new Date(FRESH).toISOString() }));
+      return { ok: true, status: 200, json: async () => items };
+    }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: ['q1'], freshnessMonths: 3, maxPerRun: 0 };
+  const runOne = async (serp) => {
+    const run = startRun(db, ORG, 'test');
+    const leg = run.leg({ target: TARGET, queries: cfg.queries });
+    await runForOrg(db, 'tok', ORG, cfg, { fetchSerp: async () => serp, classify: classifyStub, target: TARGET, leg });
+    await run.finish();
+    return db.store.get(`sourcingRuns/${run.id}`).funnel;
+  };
+
+  // Run 1: property A posted twice in one run + broker's other property + a phone-less lead.
+  const f1 = await runOne([
+    { url: P(401), title: 'propA repost one', snippet: 'flat for sale velachery' },
+    { url: P(402), title: 'propA repost two', snippet: 'flat for sale velachery' },
+    { url: P(403), title: 'propB other flat', snippet: 'flat for sale velachery' },
+    { url: P(404), title: 'propD no phone', snippet: 'plot for sale velachery' },
+  ]);
+  assert.equal(f1.ownerDupInRun, 1, 'the in-run repost of property A collapses');
+  assert.equal(f1.ownerDeduped, 1, 'exactly one lead deduped this run');
+  assert.equal(f1.relayed, 3, 'A (once) + B + D relay');
+  const r1 = new Set(relayBodies.map((b) => b.listing.url));
+  assert.ok(r1.has(P(401)) && !r1.has(P(402)), 'the first repost wins, the second is dropped');
+  assert.ok(r1.has(P(403)), "a broker's DIFFERENT property under the same number is spared");
+  assert.ok(r1.has(P(404)), 'a phone-less lead is never deduped');
+  const seen1 = db.under(`sourcingSeen/${ORG}/keys/`);
+  assert.ok(seen1.some((d) => d.url === P(402) && d.dropped && d.dropReason === 'duplicate-owner'), 'the collapsed repost is marked dead');
+  assert.ok(seen1.some((d) => d.owner === true), 'the relayed owner fingerprint is recorded for cross-run dedup');
+
+  // Run 2: property A reposted AGAIN with a brand-new URL. URL dedup can't see it — owner dedup must.
+  relayBodies.length = 0;
+  const f2 = await runOne([{ url: P(405), title: 'propA repost three', snippet: 'flat for sale velachery' }]);
+  assert.equal(f2.ownerDupSeen, 1, 'the later-run repost is caught by cross-run owner dedup');
+  assert.equal(f2.relayed, 0, 'the same property is never delivered (or billed) a second time');
+  assert.equal(relayBodies.length, 0, 'the repost never reaches the webhook');
+  const seen2 = db.under(`sourcingSeen/${ORG}/keys/`);
+  assert.ok(seen2.some((d) => d.url === P(405) && d.dropped && d.dropReason === 'duplicate-owner'), 'the cross-run repost is marked dead so it is not re-enriched a third time');
+
+  console.log('\nowner-dedup scenario: same-owner reposts collapse in-run and cross-run, brokers and phone-less leads spared ✓');
 }
 
 /**

@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, ownerListingKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -619,11 +619,79 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
+  // 3f) OWNER dedup — collapse the same owner reposting the SAME property. URL dedup (steps 2-3) can't
+  // see this: a reposted property gets a fresh post URL in every group/locality, so daily reposts sail
+  // through as distinct leads (the Kavitha "3 property same property" complaint). The phone is the
+  // stable identity; we key on phone + a coarse price/BHK/type fingerprint (ownerListingKey), which is
+  // only knowable HERE — after enrichment + classify populate listing.phone/extracted. A phone-less
+  // lead (many buyer posts) or one with no property fields yields a null key and is never deduped.
+  // A collapsed repost is PERMANENT (that URL will always be a dupe of an already-known property), so
+  // its URL key is marked dead — it's never re-enriched next run.
+  {
+    const withOwner = candidates.map((c) => ({
+      c,
+      owner: ownerListingKey({
+        phone: c.listing.phone,
+        priceText: c.listing.extracted?.priceText,
+        bhk: c.listing.extracted?.bhk,
+        propertyType: c.listing.extracted?.propertyType,
+      }),
+    }));
+    // In-run: two reposts of one property caught in the same run — keep the first, drop the rest.
+    const seenThisRun = new Set();
+    const survived = [];
+    let dupInRun = 0;
+    for (const { c, owner } of withOwner) {
+      if (owner && seenThisRun.has(owner)) {
+        markDead(c, 'duplicate-owner');
+        leg.bump('ownerDupInRun');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'owner-dedup', dropReason: 'duplicate-owner (same run)' });
+        dupInRun += 1;
+        continue;
+      }
+      if (owner) seenThisRun.add(owner);
+      survived.push({ c, owner });
+    }
+    // Cross-run: an owner+property fingerprint we've relayed on ANY prior run for this org. Stored as
+    // `owner_*` docs alongside the URL keys in the same seen collection.
+    const ownerKeys = [...new Set(survived.map((s) => s.owner).filter(Boolean))];
+    const relayedOwners = new Set();
+    for (let i = 0; i < ownerKeys.length; i += GETALL_CHUNK) {
+      const refs = ownerKeys.slice(i, i + GETALL_CHUNK).map((k) => seenCol.doc(k));
+      const snaps = await db.getAll(...refs);
+      for (const s of snaps) if (s.exists) relayedOwners.add(s.id);
+    }
+    const kept = [];
+    let dupSeen = 0;
+    for (const { c, owner } of survived) {
+      if (owner && relayedOwners.has(owner)) {
+        markDead(c, 'duplicate-owner');
+        leg.bump('ownerDupSeen');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'owner-dedup', dropReason: 'duplicate-owner (prior run)' });
+        dupSeen += 1;
+        continue;
+      }
+      c.ownerKey = owner; // carried into step 4 so a successful relay records it
+      kept.push(c);
+    }
+    if (dupInRun || dupSeen) {
+      console.log('runSourcingJobs:owner-dedup', orgId, JSON.stringify({ dupInRun, dupSeen, kept: kept.length, target: target.locality }));
+    }
+    leg.count('ownerDeduped', dupInRun + dupSeen);
+    candidates = kept;
+  }
+  if (!candidates.length) {
+    console.log('runSourcingJobs:none-after-owner-dedup', orgId);
+    await flushDead();
+    leg.done({ note: 'every survivor was a repost of an already-known property (owner dedup)' });
+    return { relayed: 0, amountInr: 0 };
+  }
+
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
-  await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing }) => {
+  await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
     const ok = await relayOne({ webhookUrl, secret, orgId, listing });
     if (ok) {
       await seenCol.doc(key).set({
@@ -633,6 +701,17 @@ export async function runForOrg(
         leadType: listing.leadType || null, // 'buyer' / 'off-target' salvage lanes; null = supply
         relayedAt: FieldValue.serverTimestamp(),
       });
+      // Record the owner+property fingerprint so a future run's repost (a NEW URL for the SAME
+      // property) is caught by the cross-run owner dedup (3f). Only a RELAYED lead writes this — a
+      // failed relay leaves the owner un-recorded so the retry can still deliver.
+      if (ownerKey) {
+        await seenCol.doc(ownerKey).set({
+          owner: true,
+          url: listing.url,
+          phone: listing.phone || null,
+          relayedAt: FieldValue.serverTimestamp(),
+        });
+      }
       if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
       if (listing.leadType === 'buyer') leg.bump('buyerRelayed');
