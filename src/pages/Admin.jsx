@@ -282,12 +282,15 @@ function SourcingOverview({ data: s }) {
 }
 
 // The metered property lanes side by side — leads relayed (₹2.40–2.60 each), WhatsApp messages
-// composed (₹0.25) and listings auto-posted (₹0.50). Sourcing used to be reported alone, which made
-// the relay look like the whole property business while the other two earned invisibly.
+// composed (₹0.25), listings auto-posted (₹0.50), daily work plans (₹200/plan-day) and WhatsApp
+// outreach events (₹1.65 delivered / ₹3 accepted). Sourcing used to be reported alone, which made
+// the relay look like the whole property business while the others earned invisibly.
 //
 // Sub-rupee lanes accrue on the org and only debit as they cross ₹1, so a little earned revenue is
 // always still held as paise — shown as "pending" rather than quietly missing from the totals.
-function MeteredLanes({ lanes, total }) {
+// The session pool tracks the base fee's 1,50,000 processed-sessions/month coverage; overage
+// (₹0.20/session) is reconciled at invoice time from this counter, never auto-billed.
+function MeteredLanes({ lanes, total, sessionPool }) {
   if (!lanes?.length) return null;
   return (
     <section className="rounded-2xl border border-line bg-white p-5">
@@ -297,12 +300,29 @@ function MeteredLanes({ lanes, total }) {
       </div>
 
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="Revenue (all lanes)" value={formatINR(total.revenueInr)} sub="sourcing + compose + auto-post" tone="good" />
+        <MetricCard label="Revenue (all lanes)" value={formatINR(total.revenueInr)} sub="all metered service lines" tone="good" />
         <MetricCard label="Est. Apify cost" value={inrPrecise(total.estCostInr)} sub="per relayed lead" />
         <MetricCard label="Profit" value={formatINR(total.profitInr)} sub={`${total.marginPct}% margin · est.`}
           tone={total.profitInr >= 0 ? 'good' : 'bad'} />
         <MetricCard label="Today" value={formatINR(total.today.revenueInr)} sub="since 00:00 IST" tone="good" />
       </div>
+
+      {sessionPool && (
+        <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <MetricCard
+            label={`Sessions processed · ${sessionPool.monthKey}`}
+            value={sessionPool.processed.toLocaleString('en-IN')}
+            sub={`of ${sessionPool.poolSize.toLocaleString('en-IN')} pool (${sessionPool.usedPct}%)`}
+            tone={sessionPool.usedPct >= 100 ? 'bad' : undefined}
+          />
+          <MetricCard
+            label="Session overage"
+            value={sessionPool.overageSessions.toLocaleString('en-IN')}
+            sub={`billable ${formatINR(sessionPool.overageInr)} @ ₹${sessionPool.overageRateInr}/session`}
+            tone={sessionPool.overageSessions > 0 ? 'good' : undefined}
+          />
+        </div>
+      )}
 
       <div className="mt-4 overflow-x-auto">
         <table className="w-full min-w-[620px] text-left text-xs">
@@ -1438,7 +1458,7 @@ export default function Admin() {
 
         <SourcingOverview data={metrics?.sourcing} />
 
-        {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} />}
+        {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} sessionPool={metrics.sessionPool} />}
 
         <SourcingRuns orgs={orgs} />
 

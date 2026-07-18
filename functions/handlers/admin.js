@@ -6,7 +6,7 @@ import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamificatio
 import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
 import { buildGstr1, renderGstr1Html } from '../utils/gstReport.js';
-import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE } from '../shared/billing.js';
+import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -388,7 +388,11 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     //   sourcing        — one row per run batch,  count = leads relayed
     //   selfpost_compose— WhatsApp message composed for an owner (₹0.25, accrued)
     //   autopost_usage  — customer's sweep auto-published a Bosun lead (₹0.50, accrued)
-    db.collection('transactions').where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage']).get(),
+    //   daily_plan      — nightly admin work-queue plan (₹200/plan-day flat, accrued)
+    //   whatsapp_usage  — outreach-bot delivered messages (₹1.65) + accepted postings (₹3), accrued
+    db.collection('transactions')
+      .where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage'])
+      .get(),
   ]);
   const sourcingSnap = { docs: laneSnap.docs.filter((d) => d.data().kind === 'sourcing') };
 
@@ -561,6 +565,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     sourcing: { label: 'Leads relayed', unit: 'lead', pricePaise: null },
     selfpost_compose: { label: 'WhatsApp messages', unit: 'message', pricePaise: SELFPOST_COMPOSE_PRICE_PAISE },
     autopost_usage: { label: 'Auto-posted listings', unit: 'post', pricePaise: AUTOPOST_USAGE_PRICE_PAISE },
+    daily_plan: { label: 'Daily work plans', unit: 'plan-day', pricePaise: DAILY_PLAN_PRICE_PAISE },
+    whatsapp_usage: { label: 'WhatsApp outreach', unit: 'event', pricePaise: null }, // mixed ₹1.65 / ₹3
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -595,9 +601,13 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   // nobody can tell whether it's drift or just the carry.
   let composeAccrualPaise = 0;
   let autopostAccrualPaise = 0;
+  let plannerAccrualPaise = 0;
+  let waAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
     composeAccrualPaise += Number(o.data().composeAccrualPaise) || 0;
     autopostAccrualPaise += Number(o.data().autopostAccrualPaise) || 0;
+    plannerAccrualPaise += Number(o.data().plannerAccrualPaise) || 0;
+    waAccrualPaise += Number(o.data().waAccrualPaise) || 0;
   }
 
   const lanes = Object.entries(LANES).map(([kind, meta]) => {
@@ -614,7 +624,9 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       today: a.today,
       trailing: { d1: a.d1, d7: a.d7, d30: a.d30 },
       pendingAccrualInr: kind === 'selfpost_compose' ? composeAccrualPaise / 100
-        : kind === 'autopost_usage' ? autopostAccrualPaise / 100 : 0,
+        : kind === 'autopost_usage' ? autopostAccrualPaise / 100
+        : kind === 'daily_plan' ? plannerAccrualPaise / 100
+        : kind === 'whatsapp_usage' ? waAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });
@@ -634,10 +646,31 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       d7: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d7.revenueInr, 0) },
       d30: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d30.revenueInr, 0) },
     },
-    pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise) / 100,
+    pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise + plannerAccrualPaise + waAccrualPaise) / 100,
   };
 
-  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, generatedAt: now };
+  // ── Session pool: the base-fee coverage (1,50,000 processed sessions / month). sessionMeter.<yyyymm>
+  // is bumped by the nightly session-intelligence run; overage (₹0.20/session) is reconciled from
+  // this counter at invoice time, not auto-billed — this block is how the operator watches it.
+  const SESSION_POOL_MONTHLY = 150000;
+  const SESSION_OVERAGE_INR = 0.2;
+  const istNow = new Date(now + 5.5 * 60 * 60 * 1000);
+  const monthKey = `${istNow.getUTCFullYear()}${String(istNow.getUTCMonth() + 1).padStart(2, '0')}`;
+  let sessionsThisMonth = 0;
+  for (const o of orgsSnap.docs) {
+    sessionsThisMonth += Number(o.data().sessionMeter?.[monthKey]) || 0;
+  }
+  const sessionPool = {
+    monthKey,
+    processed: sessionsThisMonth,
+    poolSize: SESSION_POOL_MONTHLY,
+    usedPct: Math.round((sessionsThisMonth / SESSION_POOL_MONTHLY) * 100),
+    overageSessions: Math.max(0, sessionsThisMonth - SESSION_POOL_MONTHLY),
+    overageInr: Math.max(0, sessionsThisMonth - SESSION_POOL_MONTHLY) * SESSION_OVERAGE_INR,
+    overageRateInr: SESSION_OVERAGE_INR,
+  };
+
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
