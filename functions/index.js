@@ -100,7 +100,15 @@ export { sourcingCompose } from './handlers/sourcingCompose.js';
 // HTTP (customer→Bosun, same HMAC): usage-event meter. The customer's platform reports each
 // listing its sweep auto-published off a Bosun-sourced lead; priced here (₹0.50/auto_post,
 // shared/billing.js) — the event carries no price on the wire. Idempotent per lead, replay-safe.
+// Also prices the WhatsApp outreach events (wa_message_delivered / wa_lead_accepted) and can
+// replay daily_plan events — see SERVICE_DEFS in the handler.
 export { usageMeter } from './handlers/usageMeter.js';
+
+// Nightly admin work-queue planner (daily_plan service line): 01:30 IST cron pulls the platform's
+// work-state, allocates per-admin task plans (utils/planTasks.js — the ONLY copy of the rules),
+// composes Flash briefings, POSTs the plan back, settles ₹/plan-day. sourcingPlanNow is the
+// platform's 07:00 IST on-demand safety trigger (same HMAC as usageMeter).
+export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
