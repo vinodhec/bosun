@@ -290,6 +290,94 @@ function SourcingOverview({ data: s }) {
 // always still held as paise — shown as "pending" rather than quietly missing from the totals.
 // The session pool tracks the base fee's 1,50,000 processed-sessions/month coverage; overage
 // (₹0.20/session) is reconciled at invoice time from this counter, never auto-billed.
+// The live conversion rulebook Bosun runs on the customer's portal, plus last night's tuning.
+// Rules are stored + enforced on the customer platform; Bosun writes them nightly and records what
+// it delivered — this panel is the operator's window into "what am I running, and what did I change?"
+const TRIGGER_LABEL = {
+  property_views: 'views a property',
+  tool_uses: 'uses a tool',
+  blog_reads: 'reads a blog',
+  searches: 'searches',
+  pages: 'views a page',
+};
+const ACTION_LABEL = {
+  login_popup: 'show login popup',
+  capture_number: 'capture number',
+  properties_card: 'show properties card',
+  post_property_card: 'show post-property card',
+  offer_subscription: 'offer subscription',
+};
+function ConversionRules({ data }) {
+  if (!data) return null;
+  return (
+    <section className="rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-ink">Conversion rulebook — {data.orgName}</h2>
+        <span className="text-[10px] text-ink-soft">
+          {data.defaultsActive ? 'built-in defaults active · first tuning tonight' : `tuned ${data.dateKey}`}
+        </span>
+      </div>
+      {data.defaultsActive && (
+        <p className="mt-2 rounded-lg bg-brand-50/40 px-3 py-2 text-xs text-ink-soft">
+          The engine is running the 6 built-in default rules on the portal now. The nightly agent
+          tunes them from real outcomes and this panel then shows the changes.
+        </p>
+      )}
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[560px] text-left text-xs">
+          <thead>
+            <tr className="border-b border-line text-ink-soft">
+              <th className="py-1.5 pr-3 font-medium">When a visitor…</th>
+              <th className="py-1.5 pr-3 font-medium">≥</th>
+              <th className="py-1.5 pr-3 font-medium">Bosun does</th>
+              <th className="py-1.5 pr-3 font-medium">Why (agent’s note)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.rules || []).map((r) => (
+              <tr key={r.id} className="border-b border-line/60">
+                <td className="py-1.5 pr-3 text-ink">{TRIGGER_LABEL[r.trigger?.kind] || r.trigger?.kind}</td>
+                <td className="py-1.5 pr-3 font-semibold text-brand-700">{r.trigger?.threshold}×</td>
+                <td className="py-1.5 pr-3 text-ink">
+                  {ACTION_LABEL[r.action?.kind] || r.action?.kind}
+                  <span className="text-ink-soft"> · {r.action?.slot}</span>
+                  {r.enabled === false && <span className="ml-1 text-warn">(off)</span>}
+                </td>
+                <td className="py-1.5 pr-3 text-ink-soft">{r.reason || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {data.ruleChanges && data.ruleChanges.length > 0 && (
+        <div className="mt-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-orange-600">Last night’s changes</div>
+          <ul className="mt-1 space-y-0.5 text-xs text-ink-soft">
+            {data.ruleChanges.map((c, i) => (
+              <li key={i}>
+                <span className="font-mono text-ink">{c.id}</span>: {c.what} — {c.why}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {data.actions && (
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-ink-soft">
+          <span className="rounded-md bg-brand-50 px-2 py-0.5 ring-1 ring-inset ring-brand-100">
+            actions shown: <strong className="text-ink">{data.actions.shown || 0}</strong>
+          </span>
+          <span className="rounded-md bg-brand-50 px-2 py-0.5 ring-1 ring-inset ring-brand-100">
+            converted: <strong className="text-ink">{data.actions.converted || 0}</strong>
+          </span>
+          <span className="rounded-md bg-brand-50 px-2 py-0.5 ring-1 ring-inset ring-brand-100">
+            dev tasks proposed: <strong className="text-ink">{data.devTasksProposed || 0}</strong>
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function MeteredLanes({ lanes, total, sessionPool, waived }) {
   if (!lanes?.length) return null;
   return (
@@ -1478,6 +1566,7 @@ export default function Admin() {
         <SourcingOverview data={metrics?.sourcing} />
 
         {metrics?.lanes && <MeteredLanes lanes={metrics.lanes} total={metrics.propertyTotal} sessionPool={metrics.sessionPool} waived={metrics.waived} />}
+        {metrics?.conversionRules && <ConversionRules data={metrics.conversionRules} />}
 
         <SourcingRuns orgs={orgs} />
 

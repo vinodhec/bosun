@@ -685,7 +685,40 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     overageRateInr: SESSION_OVERAGE_INR,
   };
 
-  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, waived, generatedAt: now };
+  // Conversion rulebook — the live rules the nightly agent last delivered for each org (from
+  // intelRuns), so the operator can SEE what Bosun is running on the portal + last night's changes.
+  // Until the first nightly tuning run, the portal runs the platform's built-in defaults (the
+  // engagement engine still works) — surfaced as `defaultsActive`.
+  let conversionRules = null;
+  for (const orgDoc of orgsSnap.docs) {
+    const cfg = orgDoc.data().sourcing || {};
+    if (!cfg.intelligence?.enabled) continue;
+    try {
+      const daySnap = await db
+        .collection('intelRuns')
+        .doc(orgDoc.id)
+        .collection('days')
+        .orderBy('dateKey', 'desc')
+        .limit(3)
+        .get();
+      const withRules = daySnap.docs.map((d) => d.data()).find((d) => Array.isArray(d.rules) && d.rules.length);
+      conversionRules = {
+        orgId: orgDoc.id,
+        orgName: orgDoc.data().name || orgDoc.id,
+        defaultsActive: !withRules,
+        dateKey: withRules?.dateKey || null,
+        rules: withRules?.rules || [],
+        ruleChanges: withRules?.ruleChanges || [],
+        actions: withRules?.actions || null,
+        devTasksProposed: withRules?.devTasksProposed || 0,
+      };
+    } catch (e) {
+      console.error('adminMetrics:conversionRules:err', orgDoc.id, e?.message || e);
+    }
+    break; // one sourcing org in practice
+  }
+
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, waived, conversionRules, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
