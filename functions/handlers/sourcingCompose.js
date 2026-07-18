@@ -19,13 +19,30 @@
  * ₹0. The customer falls back to their own template — an owner must never miss a message because our
  * LLM blinked, and we must never bill for a message we didn't write.
  *
- * Request  { orgId, leadId, sendCount, opened, url, missingFieldLabels[], lead{…} }
+ * Two message modes, one lane:
+ *   - mode:'seller' (default) — the owner self-post invite (missingFieldLabels + lead{}).
+ *   - mode:'buyer'            — a pitch to a "wanted / looking for" poster: we have N matching
+ *                               listings, browse them all at `url` (a consolidated /properties link).
+ * Same HMAC, same ₹0.25 charge, same idempotency — the buyer key is namespaced so a buyer pitch and a
+ * seller invite for the same lead can never collide in the compose log.
+ *
+ * Request  seller: { orgId, leadId, sendCount, opened, url, missingFieldLabels[], lead{…} }
+ *          buyer:  { orgId, leadId, sendCount, mode:'buyer', url, buyer{…}, listings[], count,
+ *                    language?, variant?, single? }
  *          headers: x-bosun-signature: sha256=…, x-bosun-timestamp: <ms>
  * Response { composed, message, language, cached, charged }
+ *
+ * Buyer extensions (all optional, all backwards-compatible):
+ *   - language: force the compose language ('en'|'ta'|'hi'|'te'|'kn'|'ml') instead of mirroring the post.
+ *   - variant:  extra idempotency namespace within the lead (e.g. 'lang:ta', 'listing:<id>:ta') — the
+ *               customer caches per language / per listing, so two different composes at the same
+ *               sendCount must not resolve to one log row.
+ *   - single:   the url is ONE property's page, not the consolidated browse link; the pitch must not
+ *               promise multiple listings.
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { composeSelfPostMessage } from '../utils/composeSelfPost.js';
+import { composeSelfPostMessage, composeBuyerPitch } from '../utils/composeSelfPost.js';
 import { SELFPOST_COMPOSE_PRICE_PAISE, accrueComposeCharge } from '../shared/billing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
@@ -53,8 +70,13 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
 
   const orgId = String(body.orgId || '');
   const leadId = String(body.leadId || '');
+  const mode = body.mode === 'buyer' ? 'buyer' : 'seller';
   const sendCount = Math.max(1, Math.floor(Number(body.sendCount) || 1));
   const url = String(body.url || '');
+  // Buyer extensions — sanitised hard, they end up inside a Firestore doc id (variant) and a prompt.
+  const variant = String(body.variant || '').replace(/[^A-Za-z0-9:_-]/g, '').slice(0, 120);
+  const forceLanguage = String(body.language || '').trim().toLowerCase().slice(0, 8);
+  const single = body.single === true;
   if (!orgId || !leadId || !url) {
     logReject('sourcingCompose', {
       orgId,
@@ -84,9 +106,16 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
     return;
   }
 
-  // Idempotency: one compose per (lead, attempt). A retried timeout must return the first message and
-  // must not bill twice — the customer cannot tell a lost response from a lost request.
-  const logRef = db.collection(COMPOSE_LOG).doc(`${orgId}:${leadId}:${sendCount}`);
+  // Idempotency: one compose per (lead, mode, variant, attempt). A retried timeout must return the
+  // first message and must not bill twice — the customer cannot tell a lost response from a lost
+  // request. The buyer key is namespaced so a buyer pitch never collides with a seller invite for the
+  // same lead+sendCount; `variant` further namespaces per-language / per-listing composes (the
+  // customer caches each separately, so each is its own attempt). Keys without a variant are left
+  // unchanged so pre-variant history keeps resolving.
+  const logKey = mode === 'buyer'
+    ? `${orgId}:${leadId}:buyer:${variant ? `${variant}:` : ''}${sendCount}`
+    : `${orgId}:${leadId}:${sendCount}`;
+  const logRef = db.collection(COMPOSE_LOG).doc(logKey);
   const existing = await logRef.get();
   if (existing.exists) {
     const d = existing.data();
@@ -102,20 +131,31 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
 
   let composed = null;
   try {
-    composed = await composeSelfPostMessage({
-      lead: body.lead || {},
-      url,
-      missingFieldLabels: Array.isArray(body.missingFieldLabels) ? body.missingFieldLabels.slice(0, 12).map(String) : [],
-      sendCount,
-      opened: Boolean(body.opened),
-    });
+    composed = mode === 'buyer'
+      ? await composeBuyerPitch({
+          buyer: body.buyer || {},
+          listings: Array.isArray(body.listings) ? body.listings.slice(0, 10) : [],
+          count: Math.max(0, Math.floor(Number(body.count) || 0)),
+          url,
+          city: String(body.city || body.buyer?.city || ''),
+          sendCount,
+          forceLanguage,
+          single,
+        })
+      : await composeSelfPostMessage({
+          lead: body.lead || {},
+          url,
+          missingFieldLabels: Array.isArray(body.missingFieldLabels) ? body.missingFieldLabels.slice(0, 12).map(String) : [],
+          sendCount,
+          opened: Boolean(body.opened),
+        });
   } catch (e) {
-    console.error('sourcingCompose:gemini:err', e?.message || e);
+    console.error('sourcingCompose:gemini:err', mode, e?.message || e);
   }
 
   if (!composed) {
     // No message, no charge. The customer's template takes over.
-    console.log('sourcingCompose:degraded', orgId, leadId, JSON.stringify({ sendCount }));
+    console.log('sourcingCompose:degraded', orgId, leadId, JSON.stringify({ mode, sendCount }));
     res.status(200).json({ composed: false, charged: 0 });
     return;
   }
@@ -142,11 +182,13 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
         tx.set(db.collection('transactions').doc(), {
           orgId,
           type: 'debit',
+          // Same metered lane + price for both modes, so metrics stay one line; `mode` disambiguates.
           kind: 'selfpost_compose',
+          mode,
           amount: debitInr,
           // 4 composes per ₹1 — the ledger row covers several, so record what it settled.
           count: Math.round(100 / SELFPOST_COMPOSE_PRICE_PAISE),
-          description: `Self-post message composition (₹${(SELFPOST_COMPOSE_PRICE_PAISE / 100).toFixed(2)} × ${Math.round(100 / SELFPOST_COMPOSE_PRICE_PAISE)})`,
+          description: `${mode === 'buyer' ? 'Buyer pitch' : 'Self-post'} message composition (₹${(SELFPOST_COMPOSE_PRICE_PAISE / 100).toFixed(2)} × ${Math.round(100 / SELFPOST_COMPOSE_PRICE_PAISE)})`,
           createdAt: FieldValue.serverTimestamp(),
         });
       }
@@ -154,6 +196,8 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
       tx.set(logRef, {
         orgId,
         leadId,
+        mode,
+        ...(variant ? { variant } : {}),
         sendCount,
         message: composed.message,
         language: composed.language,
@@ -169,7 +213,7 @@ export const sourcingCompose = onRequest({ region: REGION, cors: false }, async 
     console.error('sourcingCompose:bill:err', orgId, leadId, e?.message || e);
   }
 
-  console.log('sourcingCompose:ok', orgId, leadId, JSON.stringify({ sendCount, language: composed.language, charged }));
+  console.log('sourcingCompose:ok', orgId, leadId, JSON.stringify({ mode, variant: variant || undefined, sendCount, language: composed.language, charged }));
   res.status(200).json({
     composed: true,
     message: composed.message,
