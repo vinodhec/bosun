@@ -253,6 +253,121 @@ export function detectAnomalies(today, baselineDays) {
   return anomalies;
 }
 
+/**
+ * Delta-bill the popups opened on `dateKey` — every overlay shown (login popup / capture overlay),
+ * deterministic or LLM alike, priced randomly per popup within the billing.js band. The log doc
+ * `usage_meter_log/{orgId}:conversion_popup:{dateKey}` tracks `qty` billed SO FAR for the day; each
+ * settle bills only the delta, so the hourly cron, the nightly catch-up, and manual triggers are
+ * all safely re-runnable and each popup is charged exactly once. Prices exist ONLY in bosun.
+ */
+export async function settlePopupsForDate(db, orgId, dateKey, actionRows) {
+  const result = { qty: 0, chargedInr: 0, deltaBilled: 0 };
+  try {
+    const popupShows = (actionRows || [])
+      .filter((a) => a.slot === 'overlay' && a.event === 'shown')
+      .reduce((n, a) => n + (Number(a.count) || 0), 0);
+    result.qty = popupShows;
+    if (popupShows <= 0) return result;
+
+    const logRef = db.collection('usage_meter_log').doc(`${orgId}:conversion_popup:${dateKey}`);
+    const settled = await db.runTransaction(async (tx) => {
+      const orgRef = db.collection('organisations').doc(orgId);
+      const orgSnap = await tx.get(orgRef);
+      if (!orgSnap.exists) return { delta: 0, debitInr: 0 };
+      const logSnap = await tx.get(logRef);
+      const billedSoFar = logSnap.exists ? Number(logSnap.data().qty) || 0 : 0;
+      const delta = popupShows - billedSoFar;
+      if (delta <= 0) return { delta: 0, debitInr: 0 };
+
+      const org = orgSnap.data();
+      const deltaPaise = pricePopupBatch(delta);
+      const prev = logSnap.exists ? logSnap.data() : {};
+      const base = {
+        orgId,
+        service: 'conversion_popup',
+        idempotencyKey: dateKey,
+        qty: popupShows, // billed-so-far after this settle
+        pricePaise: null, // random per popup — see billing.js band
+        totalPaise: (Number(prev.totalPaise) || 0) + deltaPaise,
+        lastDeltaQty: delta,
+        updatedAt: FieldValue.serverTimestamp(),
+        ...(logSnap.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      };
+
+      if (isServicePaused(org, 'conversion_popup')) {
+        tx.set(logRef, {
+          ...base,
+          debitInr: Number(prev.debitInr) || 0,
+          waived: true,
+          waivedPaise: (Number(prev.waivedPaise) || 0) + deltaPaise,
+        }, { merge: true });
+        return { delta, debitInr: 0 };
+      }
+
+      const { debitInr, accrualPaise } = accrueComposeCharge(org.popupAccrualPaise, deltaPaise);
+      const update = { popupAccrualPaise: accrualPaise };
+      if (debitInr > 0) {
+        update.balance = Number(org.balance ?? 0) - debitInr;
+        tx.set(db.collection('transactions').doc(), {
+          orgId,
+          type: 'debit',
+          kind: 'conversion_popup',
+          amount: debitInr,
+          count: delta,
+          description: `Conversion popups opened (${delta} × ~₹0.40–0.60)`,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+      tx.update(orgRef, update);
+      tx.set(logRef, { ...base, debitInr: (Number(prev.debitInr) || 0) + debitInr }, { merge: true });
+      return { delta, debitInr };
+    });
+    result.deltaBilled = settled.delta;
+    result.chargedInr = settled.debitInr;
+    return result;
+  } catch (e) {
+    console.error('settlePopupsForDate:err', orgId, dateKey, e?.message || e);
+    return result;
+  }
+}
+
+// Hourly intraday popup billing: pull ONLY the action rollup for TODAY (IST) via the digest's
+// actionsOnly mode and delta-settle. Cheap (one bounded query platform-side), safely re-runnable.
+export const settleConversionPopups = onSchedule(
+  { region: REGION, schedule: '10 * * * *', timeZone: 'Asia/Kolkata', timeoutSeconds: 120, memory: '256MiB' },
+  async () => {
+    const db = getFirestore();
+    const snap = await db.collection('organisations').where('sourcing.enabled', '==', true).get();
+    for (const orgDoc of snap.docs) {
+      const cfg = orgDoc.data().sourcing || {};
+      const intel = cfg.intelligence || {};
+      if (!intel.enabled || !intel.digestUrl) continue;
+      try {
+        const secretSnap = await db.collection('orgSecrets').doc(orgDoc.id).get();
+        const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
+        if (!secret) continue;
+        const todayKey = istDateKey(); // TODAY — intraday billing
+        const { signature, timestamp } = signPayload(secret, 'session-digest');
+        const url = new URL(intel.digestUrl);
+        url.searchParams.set('date', todayKey);
+        url.searchParams.set('actionsOnly', '1');
+        const resp = await fetch(url.toString(), {
+          headers: { 'x-bosun-signature': signature, 'x-bosun-timestamp': timestamp },
+          signal: AbortSignal.timeout(30000),
+        });
+        if (!resp.ok) continue;
+        const body = await resp.json();
+        const res = await settlePopupsForDate(db, orgDoc.id, todayKey, body.actions || []);
+        if (res.deltaBilled > 0) {
+          console.log('settleConversionPopups:billed', orgDoc.id, JSON.stringify(res));
+        }
+      } catch (e) {
+        console.error('settleConversionPopups:org', orgDoc.id, e?.message || e);
+      }
+    }
+  },
+);
+
 export async function runIntelligenceForOrg(db, orgId, cfg) {
   const intel = cfg.intelligence || {};
   // The pack describes YESTERDAY (the last completed IST day).
@@ -421,72 +536,10 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       return summary;
     }
 
-    // 5b) BILL the day's popups — every overlay the agent OPENED (login popup / capture overlay),
-    // deterministic or LLM alike, priced randomly per popup within the billing.js band. The price
-    // lives ONLY here: the platform's ledger rows carry no cost and no MaadiVeedu surface shows
-    // one. One settle per (org, day); the usual waive branch applies if the operator pauses it.
-    let popupBilling = { qty: 0, chargedInr: 0 };
-    try {
-      const popupShows = (digest.actions || [])
-        .filter((a) => a.slot === 'overlay' && a.event === 'shown')
-        .reduce((n, a) => n + (Number(a.count) || 0), 0);
-      if (popupShows > 0) {
-        const popupLogRef = db.collection('usage_meter_log').doc(`${orgId}:conversion_popup:${dateKey}`);
-        const chargedInr = await db.runTransaction(async (tx) => {
-          const orgRef = db.collection('organisations').doc(orgId);
-          const orgSnap = await tx.get(orgRef);
-          if (!orgSnap.exists) return 0;
-          const dupe = await tx.get(popupLogRef);
-          if (dupe.exists) return 0;
-          const org = orgSnap.data();
-          const totalPaise = pricePopupBatch(popupShows);
-          if (isServicePaused(org, 'conversion_popup')) {
-            tx.set(popupLogRef, {
-              orgId,
-              service: 'conversion_popup',
-              idempotencyKey: dateKey,
-              qty: popupShows,
-              pricePaise: null, // random per popup — see billing.js band
-              totalPaise,
-              debitInr: 0,
-              waived: true,
-              waivedPaise: totalPaise,
-              createdAt: FieldValue.serverTimestamp(),
-            });
-            return 0;
-          }
-          const { debitInr, accrualPaise } = accrueComposeCharge(org.popupAccrualPaise, totalPaise);
-          const update = { popupAccrualPaise: accrualPaise };
-          if (debitInr > 0) {
-            update.balance = Number(org.balance ?? 0) - debitInr;
-            tx.set(db.collection('transactions').doc(), {
-              orgId,
-              type: 'debit',
-              kind: 'conversion_popup',
-              amount: debitInr,
-              count: popupShows,
-              description: `Conversion popups opened (${popupShows} × ~₹0.40–0.60)`,
-              createdAt: FieldValue.serverTimestamp(),
-            });
-          }
-          tx.update(orgRef, update);
-          tx.set(popupLogRef, {
-            orgId,
-            service: 'conversion_popup',
-            idempotencyKey: dateKey,
-            qty: popupShows,
-            pricePaise: null,
-            totalPaise,
-            debitInr,
-            createdAt: FieldValue.serverTimestamp(),
-          });
-          return debitInr;
-        });
-        popupBilling = { qty: popupShows, chargedInr };
-      }
-    } catch (e) {
-      console.error('sessionIntelligence:popup-billing:err', orgId, e?.message || e);
-    }
+    // 5b) BILL the day's popups (final catch-up — the hourly settleConversionPopups cron bills
+    // intraday; this closes any remainder for the completed day). Delta-billing: only popups not
+    // yet billed for this dateKey are charged.
+    const popupBilling = await settlePopupsForDate(db, orgId, dateKey, digest.actions || []);
 
     // 6) Record the run (idempotency + weekly-report raw material) and bump the monthly pool
     // counter — no per-day charge: sessions are covered by the base fee up to the pool.

@@ -114,7 +114,7 @@ export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 // build the daily demand map, refresh the engagement message library (EN+TA, {count}-grounded),
 // flag anomalies, deliver the engagement-pack to the platform. Covered by the base fee up to the
 // monthly session pool (org.sessionMeter.<yyyymm> counts toward it).
-export { sessionIntelligence } from './handlers/sessionIntelligence.js';
+export { sessionIntelligence, settleConversionPopups } from './handlers/sessionIntelligence.js';
 
 // Composed reports: weekly intelligence (Mon 03:30 IST) + monthly proof-of-value (1st 04:00 IST) —
 // deterministic aggregates from our ledgers, Flash prose, delivered to the platform's report ingest.
