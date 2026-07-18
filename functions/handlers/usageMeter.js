@@ -25,15 +25,53 @@
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { AUTOPOST_USAGE_PRICE_PAISE, accrueComposeCharge } from '../shared/billing.js';
+import {
+  AUTOPOST_USAGE_PRICE_PAISE,
+  WA_MESSAGE_DELIVERED_PRICE_PAISE,
+  WA_LEAD_ACCEPTED_PRICE_PAISE,
+  DAILY_PLAN_PRICE_PAISE,
+  accrueComposeCharge,
+} from '../shared/billing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
 const METER_LOG = 'usage_meter_log';
 
-/** Per-service pricing. Unknown services are rejected, not defaulted — a typo must not bill. */
-const SERVICE_PRICE_PAISE = {
-  auto_post: AUTOPOST_USAGE_PRICE_PAISE,
+/**
+ * Per-service pricing + ledger identity. Unknown services are rejected, not defaulted — a typo must
+ * not bill. Each service accrues on its OWN org field (paise) and writes its own transaction kind,
+ * so the operator's ledger stays legible per service line.
+ *
+ * The WhatsApp pair arrives as service:'whatsapp_outreach' with the concrete event in `event`
+ * (the platform's bosunMeter payload shape) — normalised below. `daily_plan` is normally settled
+ * in-process by planDailyTasks; registering it here means a ledger replay/backfill through this
+ * endpoint prices identically and dedupes on the same log row.
+ */
+const SERVICE_DEFS = {
+  auto_post: {
+    pricePaise: AUTOPOST_USAGE_PRICE_PAISE,
+    accrualField: 'autopostAccrualPaise',
+    kind: 'autopost_usage',
+    label: 'Auto-posted listing service',
+  },
+  wa_message_delivered: {
+    pricePaise: WA_MESSAGE_DELIVERED_PRICE_PAISE,
+    accrualField: 'waAccrualPaise',
+    kind: 'whatsapp_usage',
+    label: 'WhatsApp outreach — delivered message',
+  },
+  wa_lead_accepted: {
+    pricePaise: WA_LEAD_ACCEPTED_PRICE_PAISE,
+    accrualField: 'waAccrualPaise',
+    kind: 'whatsapp_usage',
+    label: 'WhatsApp outreach — accepted posting',
+  },
+  daily_plan: {
+    pricePaise: DAILY_PLAN_PRICE_PAISE,
+    accrualField: 'plannerAccrualPaise',
+    kind: 'daily_plan',
+    label: 'Nightly admin work-queue plan',
+  },
 };
 
 export const usageMeter = onRequest({ region: REGION, cors: false }, async (req, res) => {
@@ -55,8 +93,11 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   }
 
   const orgId = String(body.orgId || '');
-  const service = String(body.service || '');
-  const idempotencyKey = String(body.idempotencyKey || '');
+  // The WhatsApp meter reports service:'whatsapp_outreach' with the billable event name in `event`
+  // and its dedupe key in `eventId` — normalise both to the generic (service, idempotencyKey) pair.
+  let service = String(body.service || '');
+  if (service === 'whatsapp_outreach' && body.event) service = String(body.event);
+  const idempotencyKey = String(body.idempotencyKey || body.eventId || '');
   const qty = Math.min(10, Math.max(1, Math.floor(Number(body.qty) || 1)));
   if (!orgId || !service || !idempotencyKey) {
     logReject('usageMeter', {
@@ -68,13 +109,14 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
     res.status(400).json({ error: 'orgId, service and idempotencyKey are required' });
     return;
   }
-  const unitPaise = SERVICE_PRICE_PAISE[service];
+  const def = SERVICE_DEFS[service];
+  const unitPaise = def?.pricePaise;
   if (!unitPaise) {
     logReject('usageMeter', {
       orgId,
       status: 400,
       reason: 'unknown-service',
-      extra: { service, known: Object.keys(SERVICE_PRICE_PAISE) },
+      extra: { service, known: Object.keys(SERVICE_DEFS) },
     });
     res.status(400).json({ error: `unknown service: ${service}` });
     return;
@@ -124,20 +166,20 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
       if (dupe.exists) return 0; // raced with a concurrent identical event
 
       const org = orgSnap.data();
-      const { debitInr, accrualPaise } = accrueComposeCharge(org.autopostAccrualPaise, unitPaise * qty);
+      const { debitInr, accrualPaise } = accrueComposeCharge(org[def.accrualField], unitPaise * qty);
 
-      const update = { autopostAccrualPaise: accrualPaise };
+      const update = { [def.accrualField]: accrualPaise };
       if (debitInr > 0) {
         // Org may go negative — same policy as the sourcing batch debit; the operator reconciles.
         update.balance = Number(org.balance ?? 0) - debitInr;
         tx.set(db.collection('transactions').doc(), {
           orgId,
           type: 'debit',
-          kind: 'autopost_usage',
+          kind: def.kind,
           amount: debitInr,
-          // 2 auto-posts per ₹1 — the ledger row covers several, so record what it settled.
-          count: Math.round((debitInr * 100) / unitPaise),
-          description: `Auto-posted listing service (₹${(unitPaise / 100).toFixed(2)} × ${Math.round((debitInr * 100) / unitPaise)})`,
+          // Sub-₹1 unit prices settle several events per ledger row — record how many it covered.
+          count: Math.max(1, Math.round((debitInr * 100) / unitPaise)),
+          description: `${def.label} (₹${(unitPaise / 100).toFixed(2)} × ${Math.max(1, Math.round((debitInr * 100) / unitPaise))})`,
           createdAt: FieldValue.serverTimestamp(),
         });
       }
