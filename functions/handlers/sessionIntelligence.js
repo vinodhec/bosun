@@ -29,6 +29,8 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import crypto from 'node:crypto';
 import { signPayload } from '../utils/sourcing.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
+import { tuneRules, buildDevTaskProposals, rollupActions } from '../utils/rulesTuner.js';
+import { createIssue } from '../utils/githubIssues.js';
 
 const REGION = 'asia-south1';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -258,7 +260,7 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
     const messages = batches.flat();
     const composeFailures = batches.filter((b) => !b.length).length;
 
-    // 4) Anomalies vs our own trailing runs.
+    // 4) Anomalies vs our own trailing runs (+ plan-completion escalation).
     const baselineSnap = await db
       .collection('intelRuns')
       .doc(orgId)
@@ -266,12 +268,61 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       .orderBy('dateKey', 'desc')
       .limit(ANOMALY_BASELINE_DAYS)
       .get();
-    const baseline = baselineSnap.docs.map((d) => d.data());
+    const baselineDocs = baselineSnap.docs.map((d) => d.data());
     const leads = (digest.sessions || []).filter((s) => s.flags?.enquiry || s.flags?.contact).length;
     const searchVolume = (digest.searches || []).reduce((a, r) => a + (r.searches || 1), 0);
-    const anomalies = detectAnomalies({ sessions: segments.total, leads, searches: searchVolume }, baseline);
+    const anomalies = detectAnomalies({ sessions: segments.total, leads, searches: searchVolume }, baselineDocs);
+    // Escalation: admins ignoring the daily plan is an ops problem the operator must see same-day.
+    const planTotals = (digest.planCompletion || []).reduce(
+      (acc, p) => ({ total: acc.total + p.total, closed: acc.closed + p.done + p.skipped + p.autoDone }),
+      { total: 0, closed: 0 },
+    );
+    if (planTotals.total >= 20 && planTotals.closed / planTotals.total < 0.4) {
+      anomalies.push({
+        kind: 'plan-completion-slump',
+        severity: 'high',
+        metric: 'plan_completion',
+        value: Math.round((planTotals.closed / planTotals.total) * 100),
+        baseline: 100,
+        message: `Daily work-plan completion at ${Math.round((planTotals.closed / planTotals.total) * 100)}% (${planTotals.closed}/${planTotals.total} tasks) — admins may not be working from the plan.`,
+      });
+    }
 
-    // 5) Deliver the pack.
+    // 4b) Rules tuning: the digest echoes the ACTIVE pack (stored or platform defaults), so we
+    // always tune what is genuinely live. Every change carries a written reason; the platform's
+    // fence re-clamps whatever we send.
+    const activeRules = Array.isArray(digest.activeRules) ? digest.activeRules : [];
+    const tuning = activeRules.length ? tuneRules(activeRules, digest.actions || []) : { rules: null, changes: [] };
+
+    // 4c) Dev-task proposals (human-in-the-loop): structural findings → superadmin approval queue.
+    const devTasks = buildDevTaskProposals({ ...digest, anomalies });
+
+    // 4d) File APPROVED proposals from previous nights as real GitHub issues — capped, deduped by
+    // fingerprint via the filedTasks ledger, token = the org's stored repo token.
+    const filedDevTasks = [];
+    const approved = (digest.approvedDevTasks || []).slice(0, 3);
+    if (approved.length) {
+      const orgDoc = await db.collection('organisations').doc(orgId).get();
+      const repoFullName = orgDoc.data()?.github?.repoFullName || '';
+      const ghToken = (await db.collection('orgSecrets').doc(orgId).get()).data()?.githubToken || '';
+      for (const task of approved) {
+        const filedRef = db.collection('filedDevTasks').doc(`${orgId}_${task.fingerprint}`);
+        if ((await filedRef.get()).exists) continue; // already filed on a previous night
+        const res = await createIssue(repoFullName, { title: task.title, body: task.body, labels: task.labels }, ghToken);
+        if (res.ok) {
+          await filedRef.set({
+            orgId,
+            fingerprint: task.fingerprint,
+            issueNumber: res.number,
+            issueUrl: res.url,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+          filedDevTasks.push({ fingerprint: task.fingerprint, issueUrl: res.url, issueNumber: res.number });
+        }
+      }
+    }
+
+    // 5) Deliver the pack — content + rules + dev-task proposals + filed confirmations in one POST.
     const packRunId = `ep_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
     const body = JSON.stringify({
       orgId,
@@ -282,6 +333,9 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       demandMap: demandMap.slice(0, 500),
       messages,
       anomalies,
+      ...(tuning.rules ? { rules: tuning.rules } : {}),
+      ...(devTasks.length ? { devTasks } : {}),
+      ...(filedDevTasks.length ? { filedDevTasks } : {}),
     });
     const signed = signPayload(secret, body);
     const post = await fetch(intel.packUrl, {
@@ -302,6 +356,15 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
 
     // 6) Record the run (idempotency + weekly-report raw material) and bump the monthly pool
     // counter — no per-day charge: sessions are covered by the base fee up to the pool.
+    // Action-ledger volumes recorded per day: the (later-priced) conversion_action revenue basis —
+    // Bosun earns per action DELIVERED, deterministic or LLM alike; the counts are kept from day
+    // one so pricing can attach retroactively.
+    const actionRollup = rollupActions(digest.actions || []);
+    const actionTotals = Object.values(actionRollup).reduce(
+      (acc, r) => ({ shown: acc.shown + r.shown, converted: acc.converted + r.converted }),
+      { shown: 0, converted: 0 },
+    );
+
     await runRef.set({
       dateKey,
       packRunId,
@@ -314,6 +377,14 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       messageCount: messages.length,
       composeFailures,
       sessionsTruncated: Boolean(digest.counts?.sessionsTruncated),
+      // Rules pack we delivered (the tuner's next-night baseline) + what changed and why.
+      ...(tuning.rules ? { rules: tuning.rules } : {}),
+      ruleChanges: tuning.changes,
+      // Conversion-action volumes (billing basis, record-only until priced) + outcomes.
+      actions: { byRule: actionRollup, shown: actionTotals.shown, converted: actionTotals.converted },
+      devTasksProposed: devTasks.length,
+      devTasksFiled: filedDevTasks.length,
+      planCompletion: planTotals,
       createdAt: FieldValue.serverTimestamp(),
     });
     const monthKey = dateKey.slice(0, 6);
