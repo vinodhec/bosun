@@ -391,7 +391,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     //   daily_plan      — nightly admin work-queue plan (₹200/plan-day flat, accrued)
     //   whatsapp_usage  — outreach-bot delivered messages (₹1.65) + accepted postings (₹3), accrued
     db.collection('transactions')
-      .where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage'])
+      .where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage', 'conversion_popup'])
       .get(),
     // Waived meter events (testing / goodwill pause): recorded but never debited — the reconcilable
     // "what we chose not to charge" figure. Single-field filter (auto-indexed).
@@ -582,6 +582,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     autopost_usage: { label: 'Auto-posted listings', unit: 'post', pricePaise: AUTOPOST_USAGE_PRICE_PAISE },
     daily_plan: { label: 'Daily work plans', unit: 'plan-day', pricePaise: DAILY_PLAN_PRICE_PAISE },
     whatsapp_usage: { label: 'WhatsApp outreach', unit: 'event', pricePaise: null }, // mixed ₹1.65 / ₹3
+    conversion_popup: { label: 'Popups opened', unit: 'popup', pricePaise: null }, // random ₹0.40–0.60 each
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -618,11 +619,13 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let autopostAccrualPaise = 0;
   let plannerAccrualPaise = 0;
   let waAccrualPaise = 0;
+  let popupAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
     composeAccrualPaise += Number(o.data().composeAccrualPaise) || 0;
     autopostAccrualPaise += Number(o.data().autopostAccrualPaise) || 0;
     plannerAccrualPaise += Number(o.data().plannerAccrualPaise) || 0;
     waAccrualPaise += Number(o.data().waAccrualPaise) || 0;
+    popupAccrualPaise += Number(o.data().popupAccrualPaise) || 0;
   }
 
   const lanes = Object.entries(LANES).map(([kind, meta]) => {
@@ -641,7 +644,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       pendingAccrualInr: kind === 'selfpost_compose' ? composeAccrualPaise / 100
         : kind === 'autopost_usage' ? autopostAccrualPaise / 100
         : kind === 'daily_plan' ? plannerAccrualPaise / 100
-        : kind === 'whatsapp_usage' ? waAccrualPaise / 100 : 0,
+        : kind === 'whatsapp_usage' ? waAccrualPaise / 100
+        : kind === 'conversion_popup' ? popupAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });
@@ -661,7 +665,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       d7: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d7.revenueInr, 0) },
       d30: { revenueInr: lanes.reduce((n, l) => n + l.trailing.d30.revenueInr, 0) },
     },
-    pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise + plannerAccrualPaise + waAccrualPaise) / 100,
+    pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise + plannerAccrualPaise + waAccrualPaise + popupAccrualPaise) / 100,
   };
 
   // ── Session pool: the base-fee coverage (1,50,000 processed sessions / month). sessionMeter.<yyyymm>

@@ -598,3 +598,25 @@ export function isServicePaused(org, service) {
   const paused = org && org.billingPaused;
   return Array.isArray(paused) && paused.includes(service);
 }
+
+/**
+ * ── Conversion popups (conversion_popup) ───────────────────────────────────────────────────────
+ * Every popup the agent OPENS on the customer's portal (login popup / number-capture overlay) is a
+ * billable conversion action — deterministic or LLM alike, per the operator's per-action principle.
+ * Priced RANDOMLY per popup within [MIN, MAX] paise (operator decision 2026-07-19), settled once
+ * per day by the nightly session-intelligence run from the action-ledger rollup. The price exists
+ * ONLY here — the customer platform's events never carry a cost, and no MaadiVeedu surface shows
+ * one. Accrued on the org as `popupAccrualPaise`.
+ */
+export const CONVERSION_POPUP_MIN_PAISE = 40;
+export const CONVERSION_POPUP_MAX_PAISE = 60;
+
+/** Total paise for N popups, each drawn uniformly in [MIN, MAX]. */
+export function pricePopupBatch(count, rng = Math.random) {
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    total += CONVERSION_POPUP_MIN_PAISE +
+      Math.floor(rng() * (CONVERSION_POPUP_MAX_PAISE - CONVERSION_POPUP_MIN_PAISE + 1));
+  }
+  return total;
+}

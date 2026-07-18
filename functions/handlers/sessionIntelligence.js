@@ -31,6 +31,7 @@ import { signPayload } from '../utils/sourcing.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
 import { tuneRules, buildDevTaskProposals, buildStaffingProposals, rollupActions } from '../utils/rulesTuner.js';
 import { createIssue } from '../utils/githubIssues.js';
+import { pricePopupBatch, accrueComposeCharge, isServicePaused } from '../shared/billing.js';
 
 const REGION = 'asia-south1';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -416,6 +417,73 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       return summary;
     }
 
+    // 5b) BILL the day's popups — every overlay the agent OPENED (login popup / capture overlay),
+    // deterministic or LLM alike, priced randomly per popup within the billing.js band. The price
+    // lives ONLY here: the platform's ledger rows carry no cost and no MaadiVeedu surface shows
+    // one. One settle per (org, day); the usual waive branch applies if the operator pauses it.
+    let popupBilling = { qty: 0, chargedInr: 0 };
+    try {
+      const popupShows = (digest.actions || [])
+        .filter((a) => a.slot === 'overlay' && a.event === 'shown')
+        .reduce((n, a) => n + (Number(a.count) || 0), 0);
+      if (popupShows > 0) {
+        const popupLogRef = db.collection('usage_meter_log').doc(`${orgId}:conversion_popup:${dateKey}`);
+        const chargedInr = await db.runTransaction(async (tx) => {
+          const orgRef = db.collection('organisations').doc(orgId);
+          const orgSnap = await tx.get(orgRef);
+          if (!orgSnap.exists) return 0;
+          const dupe = await tx.get(popupLogRef);
+          if (dupe.exists) return 0;
+          const org = orgSnap.data();
+          const totalPaise = pricePopupBatch(popupShows);
+          if (isServicePaused(org, 'conversion_popup')) {
+            tx.set(popupLogRef, {
+              orgId,
+              service: 'conversion_popup',
+              idempotencyKey: dateKey,
+              qty: popupShows,
+              pricePaise: null, // random per popup — see billing.js band
+              totalPaise,
+              debitInr: 0,
+              waived: true,
+              waivedPaise: totalPaise,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            return 0;
+          }
+          const { debitInr, accrualPaise } = accrueComposeCharge(org.popupAccrualPaise, totalPaise);
+          const update = { popupAccrualPaise: accrualPaise };
+          if (debitInr > 0) {
+            update.balance = Number(org.balance ?? 0) - debitInr;
+            tx.set(db.collection('transactions').doc(), {
+              orgId,
+              type: 'debit',
+              kind: 'conversion_popup',
+              amount: debitInr,
+              count: popupShows,
+              description: `Conversion popups opened (${popupShows} × ~₹0.40–0.60)`,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+          }
+          tx.update(orgRef, update);
+          tx.set(popupLogRef, {
+            orgId,
+            service: 'conversion_popup',
+            idempotencyKey: dateKey,
+            qty: popupShows,
+            pricePaise: null,
+            totalPaise,
+            debitInr,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+          return debitInr;
+        });
+        popupBilling = { qty: popupShows, chargedInr };
+      }
+    } catch (e) {
+      console.error('sessionIntelligence:popup-billing:err', orgId, e?.message || e);
+    }
+
     // 6) Record the run (idempotency + weekly-report raw material) and bump the monthly pool
     // counter — no per-day charge: sessions are covered by the base fee up to the pool.
     // Action-ledger volumes recorded per day: the (later-priced) conversion_action revenue basis —
@@ -447,6 +515,7 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       devTasksProposed: devTasks.length,
       devTasksFiled: filedDevTasks.length,
       planCompletion: planTotals,
+      popupBilling,
       createdAt: FieldValue.serverTimestamp(),
     });
     const monthKey = dateKey.slice(0, 6);
