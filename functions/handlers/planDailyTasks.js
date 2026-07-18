@@ -36,7 +36,10 @@ const REGION = 'asia-south1';
 const METER_LOG = 'usage_meter_log';
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const BRIEFING_CONCURRENCY = 4; // same Vertex-quota discipline as the classify pool
-const PLAN_POST_TIMEOUT_MS = 20000;
+// Generous: the platform's ingest runs one idempotent transaction per admin plan, and a
+// cross-region hop (testing runs Vercel-US against an asia-south1 Firestore) makes a big roster
+// legitimately slow. The platform side is idempotent, so even a timeout here never double-writes.
+const PLAN_POST_TIMEOUT_MS = 60000;
 
 /** IST calendar date as yyyymmdd — must match the platform's istDateKey exactly. */
 export function istDateKey(nowMs = Date.now()) {
