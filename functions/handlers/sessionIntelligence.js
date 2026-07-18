@@ -141,9 +141,13 @@ function composePrompt(loc) {
     `Write real-estate marketplace engagement copy for visitors interested in ${place}.`,
     loc ? `Yesterday ${loc.searchedCount} searches hit this locality${loc.unservedCount ? ` (${loc.unservedCount} found no fresh listings)` : ''}.` : '',
     'Produce FOUR variants as JSON: banner_en, banner_ta (Tamil), popup_en, popup_ta (Tamil).',
-    'BANNER = a browse nudge shown on the landing page. POPUP = a sign-in prompt shown at a high-intent moment; its message must make signing in feel worth it (owner contact details unlock).',
-    'Use the literal placeholder {count} exactly once in each banner headline or body for the number of live listings — NEVER write a real number yourself; the platform substitutes the live count.',
-    `The popup may also use {count}. Place name "${loc ? loc.locality : ''}" may appear naturally.`,
+    'BANNER = a browse nudge shown on the landing page.',
+    'POPUP = shown while the visitor is LOOKING AT A PROPERTY PAGE (their 3rd view). The headline',
+    'must anchor to the property in front of them — e.g. "See this owner\'s contact details" — and',
+    'the body reinforces with the wider supply: use the literal placeholders {count} and {place},',
+    'e.g. "Plus {count} more owner listings in {place}." Sign-in completes what they are doing NOW.',
+    'Use {count} exactly once in each banner headline or body, and once in each popup body —',
+    'NEVER write a real number or place yourself; the platform substitutes live values.',
     'Keep headlines ≤ 60 chars, bodies ≤ 140 chars, CTA ≤ 20 chars. No emojis, no exclamation spam, no invented claims (no prices, no "verified" unless the copy says "listings").',
   ]
     .filter(Boolean)
