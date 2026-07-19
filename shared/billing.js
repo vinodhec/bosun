@@ -609,7 +609,7 @@ export function isServicePaused(org, service) {
  * one. Accrued on the org as `popupAccrualPaise`.
  */
 export const CONVERSION_POPUP_MIN_PAISE = 40;
-export const CONVERSION_POPUP_MAX_PAISE = 60;
+export const CONVERSION_POPUP_MAX_PAISE = 50; // reverted from 60 (operator decision 2026-07-19)
 
 /** Total paise for N popups, each drawn uniformly in [MIN, MAX]. */
 export function pricePopupBatch(count, rng = Math.random) {
@@ -623,9 +623,9 @@ export function pricePopupBatch(count, rng = Math.random) {
 
 /**
  * Outcome pricing (operator decision 2026-07-19): a popup that CONVERTED (the visitor signed in or
- * left their number) is worth 75 paise, not the base 40–60. Shows are billed as they happen at the
- * random base rate (average 50p), and a conversion — which can land hours after its show was
- * billed — adds a flat TOP-UP of (75 − 50) = 25p, so converted popups settle at 75p in expectation
+ * left their number) is worth 75 paise, not the base 40–50. Shows are billed as they happen at the
+ * random base rate (average 45p), and a conversion — which can land hours after its show was
+ * billed — adds a flat TOP-UP of (75 − 45) = 30p, so converted popups settle at 75p in expectation
  * while unconverted ones keep the base band. Same delta-billing discipline: each conversion tops up
  * exactly once.
  */
