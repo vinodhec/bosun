@@ -579,8 +579,11 @@ export const WA_LEAD_ACCEPTED_PRICE_PAISE = 300; // ₹3 per accepted posting (b
  * carries taskCount for reporting). One event per org per IST date, idempotencyKey = dateKey,
  * settled directly by planDailyTasks on the platform's ingest ack (registered in usageMeter too so
  * a ledger replay/backfill prices identically). Accrued on the org as `plannerAccrualPaise`.
+ *
+ * TEMPORARY (operator decision 2026-07-19): held at a token ₹10/plan-day while the planner is still
+ * under development / being confirmed. Restore to 20000 (₹200) once development is completed.
  */
-export const DAILY_PLAN_PRICE_PAISE = 20000; // ₹200 per plan-day (confirm with operator at enablement)
+export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day (TEMP dev rate; real rate ₹200 = 20000)
 
 /**
  * ── Billing pause (testing / goodwill) ─────────────────────────────────────────────────────────
