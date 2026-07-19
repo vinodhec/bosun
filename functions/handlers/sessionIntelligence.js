@@ -187,7 +187,7 @@ async function composeFor(loc, segmentFor) {
   ].filter((m) => m.headline && m.body);
 }
 
-const TOOLS_POPUP_SCHEMA = {
+const POPUP_PAIR = {
   type: 'object',
   properties: {
     popup_en: { type: 'object', properties: { headline: { type: 'string' }, body: { type: 'string' }, cta: { type: 'string' } }, required: ['headline', 'body', 'cta'] },
@@ -196,40 +196,94 @@ const TOOLS_POPUP_SCHEMA = {
   required: ['popup_en', 'popup_ta'],
 };
 
+const TOOLS_POPUP_SCHEMA = {
+  type: 'object',
+  properties: {
+    families: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { key: { type: 'string' }, ...POPUP_PAIR.properties },
+        required: ['key', 'popup_en', 'popup_ta'],
+      },
+    },
+    generic: { type: 'array', items: POPUP_PAIR },
+  },
+  required: ['families', 'generic'],
+};
+
+/**
+ * The customer platform's tool families (route slugs) — copy is written per FAMILY and fanned out
+ * to each slug as tool-targeted library messages, so the wall on the EMI calculator talks about
+ * saving EMI plans, not generic "tools" (operator request 2026-07-19: rotate messages AND match
+ * the tool the visitor is in). Keep in sync with the platform's /tools routes.
+ */
+const TOOL_FAMILIES = [
+  { key: 'loan', slugs: ['home-loan-calculator', 'affordability-calculator', 'down-payment-calculator'], desc: 'home-loan EMI / affordability / down-payment calculators (visitor is planning a loan)' },
+  { key: 'tax', slugs: ['stamp-duty-calculator', 'capital-gains-tax-calculator', 'property-tax-calculator'], desc: 'stamp duty / capital gains / property tax calculators (visitor is estimating taxes and charges)' },
+  { key: 'rental', slugs: ['rental-yield-calculator', 'rental-agreement', 'buy-rent-calculator'], desc: 'rental yield / rental agreement / buy-vs-rent tools (visitor is working a rental decision)' },
+  { key: 'convert', slugs: ['real-estate-unit-converter', 'convert', 'appliance-power-calculator'], desc: 'land-unit converters and power calculators (visitor is converting measurements)' },
+  { key: 'value', slugs: ['property-valuation-tool', 'investment-roi-calculator'], desc: 'property valuation / investment ROI tools (visitor is sizing up an investment)' },
+];
+
 /**
  * Tools-moment popup copy — a calculator/converter user is mid-task; the pitch is CONTINUING and
  * SAVING their work (plus what an account adds), never "owner contact details" (that's the browse
  * moment's pitch — operator feedback 2026-07-19). Count-free by design: nothing to ground.
+ *
+ * One variant per tool family (fanned out per slug, en+ta) plus a few generic rotations — the
+ * platform's picker prefers this-tool copy and rotates among equal matches, so the wall reads
+ * differently across tools and across days.
  */
 async function composeToolsPopup() {
   const out = await generateJson({
     model: GEMINI_FLASH,
     prompt: [
-      'Write a sign-in popup for a real-estate marketplace visitor who is actively USING free tools',
-      '(EMI, stamp duty, rental yield, unit converters) as a guest.',
-      'Sell what signing in adds to their TOOL experience: save calculations, revisit results,',
-      'personalised reports/rates. Do NOT mention owner contact details or property counts.',
-      'Produce JSON {popup_en, popup_ta (Tamil)} each {headline ≤60 chars, body ≤140, cta ≤20}.',
-      'No emojis, no invented claims, no numbers.',
+      'Write sign-in popup copy for a real-estate marketplace visitor who is actively USING free',
+      'tools as a guest. Sell what signing in adds to their TOOL experience: save calculations,',
+      'revisit results, personalised reports/rates. Do NOT mention owner contact details or',
+      'property counts. No emojis, no invented claims, no numbers.',
+      '',
+      'Produce JSON {families, generic}:',
+      `- families: one entry per family below, key as given, with copy SPECIFIC to that moment:`,
+      ...TOOL_FAMILIES.map((f) => `    - key "${f.key}": ${f.desc}`),
+      '- generic: 3 DISTINCT variants usable on any tool (vary the angle: save work / continue',
+      '  anywhere / personalised insights).',
+      'Every entry has {popup_en, popup_ta (Tamil)} each {headline ≤60 chars, body ≤140, cta ≤20}.',
     ].join('\n'),
     schema: TOOLS_POPUP_SCHEMA,
-    temperature: 0.6,
-    maxOutputTokens: 900,
+    temperature: 0.7,
+    maxOutputTokens: 4000,
     thinkingBudget: 0,
   });
   if (!out) return [];
-  const mk = (lang, m) => ({
+  const mk = (lang, m, tool, id) => ({
+    id,
     segment: 'serious',
     kind: 'popup',
     city: '',
     locality: '',
     surface: 'tools',
+    tool,
     lang,
-    headline: String(m.headline || '').slice(0, 140),
-    body: String(m.body || '').slice(0, 280),
-    cta: String(m.cta || '').slice(0, 60),
+    headline: String(m?.headline || '').slice(0, 140),
+    body: String(m?.body || '').slice(0, 280),
+    cta: String(m?.cta || '').slice(0, 60),
   });
-  return [mk('en', out.popup_en), mk('ta', out.popup_ta)].filter((m) => m.headline && m.body);
+  const messages = [];
+  for (const fam of Array.isArray(out.families) ? out.families : []) {
+    const family = TOOL_FAMILIES.find((f) => f.key === fam.key);
+    if (!family) continue;
+    for (const slug of family.slugs) {
+      messages.push(mk('en', fam.popup_en, slug, `tools_gate_${slug}_en`));
+      messages.push(mk('ta', fam.popup_ta, slug, `tools_gate_${slug}_ta`));
+    }
+  }
+  (Array.isArray(out.generic) ? out.generic : []).forEach((g, i) => {
+    messages.push(mk('en', g.popup_en, '', `tools_gate_generic_${i}_en`));
+    messages.push(mk('ta', g.popup_ta, '', `tools_gate_generic_${i}_ta`));
+  });
+  return messages.filter((m) => m.headline && m.body);
 }
 
 /** Deterministic anomaly checks vs the trailing runs. Exported for tests. */
@@ -264,14 +318,23 @@ export async function settlePopupsForDate(db, orgId, dateKey, actionRows) {
   const result = { qty: 0, converted: 0, chargedInr: 0, deltaBilled: 0 };
   try {
     const overlayRows = (actionRows || []).filter((a) => a.slot === 'overlay');
+    // Only 'shown' rows are priced. The login_gate re-shows arrive as 'reshown' (ignored here):
+    // operator decision 2026-07-19 — the tools gate is charged ONCE per visitor, at its original
+    // fire; every latched re-appearance is free.
     const popupShows = overlayRows
       .filter((a) => a.event === 'shown')
       .reduce((n, a) => n + (Number(a.count) || 0), 0);
     // Conversions: the visitor signed in or left their number after our popup. Capped at shows —
-    // a conversion without a recorded show can't out-bill reality.
+    // a conversion without a recorded show can't out-bill reality. login_gate conversions are
+    // excluded from the top-up entirely (same once-only decision: one flat base charge, no
+    // outcome pricing on the gate — other overlay kinds keep the 75p outcome price).
     const popupConversions = Math.min(
       overlayRows
-        .filter((a) => a.event === 'login_success' || a.event === 'captured')
+        .filter(
+          (a) =>
+            (a.event === 'login_success' || a.event === 'captured') &&
+            a.actionKind !== 'login_gate',
+        )
         .reduce((n, a) => n + (Number(a.count) || 0), 0),
       popupShows,
     );

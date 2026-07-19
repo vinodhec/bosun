@@ -31,7 +31,9 @@ export function rollupActions(actions = []) {
   const byRule = {};
   for (const a of actions) {
     const r = (byRule[a.ruleId] = byRule[a.ruleId] || { shown: 0, dismissed: 0, converted: 0 });
-    if (a.event === 'shown') r.shown += a.count;
+    // 'reshown' = a latched login_gate re-appearing in a later session — real exposure for
+    // tuning purposes, but never billed (billing prices 'shown' rows only, see settle).
+    if (a.event === 'shown' || a.event === 'reshown') r.shown += a.count;
     else if (a.event === 'dismissed') r.dismissed += a.count;
     else if (a.event === 'login_success' || a.event === 'captured' || a.event === 'clicked') r.converted += a.count;
   }

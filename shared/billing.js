@@ -628,6 +628,10 @@ export function pricePopupBatch(count, rng = Math.random) {
  * billed — adds a flat TOP-UP of (75 − 45) = 30p, so converted popups settle at 75p in expectation
  * while unconverted ones keep the base band. Same delta-billing discipline: each conversion tops up
  * exactly once.
+ *
+ * EXCEPTION — login_gate (the tools hard wall): charged ONCE per visitor, base band only
+ * (operator decision 2026-07-19). Its re-shows arrive as 'reshown' events (never priced) and its
+ * conversions are excluded from the top-up in the settle.
  */
 export const CONVERSION_POPUP_CONVERTED_PAISE = 75;
 export const CONVERSION_POPUP_TOPUP_PAISE =
