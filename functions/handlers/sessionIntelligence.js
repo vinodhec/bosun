@@ -203,8 +203,11 @@ const TOOLS_POPUP_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        properties: { key: { type: 'string' }, ...POPUP_PAIR.properties },
-        required: ['key', 'popup_en', 'popup_ta'],
+        properties: {
+          key: { type: 'string' },
+          variants: { type: 'array', items: POPUP_PAIR },
+        },
+        required: ['key', 'variants'],
       },
     },
     generic: { type: 'array', items: POPUP_PAIR },
@@ -245,11 +248,12 @@ async function composeToolsPopup() {
       'property counts. No emojis, no invented claims, no numbers.',
       '',
       'Produce JSON {families, generic}:',
-      `- families: one entry per family below, key as given, with copy SPECIFIC to that moment:`,
+      `- families: one entry per family below, key as given, each with 2 DISTINCT variants of copy`,
+      '  SPECIFIC to that moment (different angle each — e.g. save-your-work vs personalised-rates):',
       ...TOOL_FAMILIES.map((f) => `    - key "${f.key}": ${f.desc}`),
       '- generic: 3 DISTINCT variants usable on any tool (vary the angle: save work / continue',
       '  anywhere / personalised insights).',
-      'Every entry has {popup_en, popup_ta (Tamil)} each {headline ≤60 chars, body ≤140, cta ≤20}.',
+      'Every variant has {popup_en, popup_ta (Tamil)} each {headline ≤60 chars, body ≤140, cta ≤20}.',
     ].join('\n'),
     schema: TOOLS_POPUP_SCHEMA,
     temperature: 0.7,
@@ -274,10 +278,13 @@ async function composeToolsPopup() {
   for (const fam of Array.isArray(out.families) ? out.families : []) {
     const family = TOOL_FAMILIES.find((f) => f.key === fam.key);
     if (!family) continue;
-    for (const slug of family.slugs) {
-      messages.push(mk('en', fam.popup_en, slug, `tools_gate_${slug}_en`));
-      messages.push(mk('ta', fam.popup_ta, slug, `tools_gate_${slug}_ta`));
-    }
+    (Array.isArray(fam.variants) ? fam.variants : []).forEach((v, i) => {
+      for (const slug of family.slugs) {
+        // Same top score for every variant of a slug → the platform's picker rotates among them.
+        messages.push(mk('en', v.popup_en, slug, `tools_gate_${slug}_${i}_en`));
+        messages.push(mk('ta', v.popup_ta, slug, `tools_gate_${slug}_${i}_ta`));
+      }
+    });
   }
   (Array.isArray(out.generic) ? out.generic : []).forEach((g, i) => {
     messages.push(mk('en', g.popup_en, '', `tools_gate_generic_${i}_en`));
