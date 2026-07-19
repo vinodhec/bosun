@@ -2,7 +2,6 @@
 // credited amount as taxable value + 18% GST (see shared/billing.js#gstBreakdown). Pure helpers
 // only — the atomic Firestore reads/writes (counter + invoice doc) live in admin.js so they run
 // inside the same transaction as the credit. Invoices are backend-only writes (cardinal rule).
-import qrcode from 'qrcode-generator';
 import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE, PLATFORM_FEE_RATE, platformFeeInr } from '../shared/billing.js';
 import { SIGNATURE_DATA_URI } from './signatureAsset.js';
 import { LOGO_DATA_URI } from './logoAsset.js';
@@ -25,9 +24,6 @@ export const SUPPLIER = {
   // "Authorized Signatory" line. Inline transparent-PNG data URI. Empty = printed line only.
   signatureDataUri: SIGNATURE_DATA_URI,
   bank: { name: 'ICICI Bank, Erode Main Branch', account: '606205039174', ifsc: 'ICIC0006062', holder: 'SRI BALAMURUGAN TRADERS' },
-  // NPCI IFSC-based UPI handle (account@ifsc.ifsc.npci) — lets a per-invoice "scan to pay" QR
-  // be generated for the EXACT invoice amount (see upiQrSvg). Not a fixed-amount static QR.
-  upi: { vpa: '606205039174@ICIC0006062.ifsc.npci', name: 'SRI BALAMURUGAN TRADERS' },
 };
 
 // Software-line invoice series, kept SEPARATE from the proprietor's existing trading-business
@@ -159,18 +155,6 @@ export function invoiceSummary(inv) {
 const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// Per-invoice UPI "scan to pay" QR (inline SVG) encoding the EXACT amount payable + the invoice
-// number as the note — NOT a fixed-amount static QR. Empty string if no UPI handle configured.
-function upiQrSvg(upi, amountInr, note) {
-  if (!upi?.vpa) return '';
-  const uri = `upi://pay?pa=${upi.vpa}&pn=${encodeURIComponent(upi.name || '')}` +
-    `&am=${Number(amountInr).toFixed(2)}&cu=INR&tn=${encodeURIComponent(note || '')}`;
-  const qr = qrcode(0, 'M');
-  qr.addData(uri);
-  qr.make();
-  return qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
-}
-
 /** Self-contained printable HTML for one invoice (customer opens it and saves as PDF). */
 export function renderInvoiceHtml(inv) {
   const d = new Date(inv.issuedAtMs || Date.now());
@@ -183,7 +167,6 @@ export function renderInvoiceHtml(inv) {
   const placeOfSupply = posCode ? `${posState} (State code ${posCode})` : (b.placeOfSupply || posState);
   const payable = inv.payableInr ?? Math.round(inv.totalInr);
   const roundOff = inv.roundOffInr ?? Math.round((payable - inv.totalInr) * 100) / 100;
-  const qr = upiQrSvg(s.upi, payable, inv.number);
   const taxRows = inv.igstInr
     ? `<tr><td>IGST @ ${Math.round(inv.gstRate * 100)}%</td><td class="r">${inr(inv.igstInr)}</td></tr>`
     : `<tr><td>CGST @ ${Math.round(inv.gstRate * 50)}%</td><td class="r">${inr(inv.cgstInr)}</td></tr>
@@ -201,7 +184,6 @@ export function renderInvoiceHtml(inv) {
   .totals td{border:0;padding:4px 10px} .grand{font-weight:700;font-size:16px;border-top:2px solid #111}
   .foot{margin-top:24px;font-size:12px;color:#444;border-top:1px solid #eee;padding-top:14px}
   .payrow{display:flex;gap:20px;align-items:flex-start;justify-content:space-between}
-  .qrwrap{width:112px;height:112px;flex:none} .qrwrap svg{width:100%;height:100%;display:block}
   .sign{text-align:center;min-width:190px}
   .sigspace{min-height:56px;display:flex;align-items:flex-end;justify-content:center}
   .sigspace img{max-height:64px;max-width:200px}
@@ -234,13 +216,11 @@ export function renderInvoiceHtml(inv) {
   <div style="margin-top:10px;font-size:12px"><span class="lbl" style="display:inline">Amount in words:</span> <b>${esc(amountInWords(payable))}</b></div>
   <div class="foot">
     <div class="payrow">
-      ${qr ? `<div class="qrwrap">${qr}</div>` : ''}
       <div style="flex:1">
         <div class="lbl">Pay by UPI / bank transfer</div>
         ${s.bank ? `<div style="font-weight:600">${esc(s.bank.holder || s.legalName)}</div>
         <div>${esc(s.bank.name)}</div>
         <div>A/C ${esc(s.bank.account)} · IFSC ${esc(s.bank.ifsc)}</div>` : ''}
-        ${qr ? `<div style="margin-top:4px">Scan to pay ${inr(payable)}</div>` : ''}
       </div>
       <div class="sign">
         <div style="font-weight:600">For ${esc(s.legalName)}</div>
