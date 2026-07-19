@@ -611,8 +611,8 @@ export function isServicePaused(org, service) {
  * ONLY here — the customer platform's events never carry a cost, and no MaadiVeedu surface shows
  * one. Accrued on the org as `popupAccrualPaise`.
  */
-export const CONVERSION_POPUP_MIN_PAISE = 40;
-export const CONVERSION_POPUP_MAX_PAISE = 50; // reverted from 60 (operator decision 2026-07-19)
+export const CONVERSION_POPUP_MIN_PAISE = 25;
+export const CONVERSION_POPUP_MAX_PAISE = 35; // recentred 40–50 → 25–35, avg 30p (operator decision 2026-07-20)
 
 /**
  * ── Weekly SEO report (seo_weekly_report) ──────────────────────────────────────────────────────
@@ -652,11 +652,11 @@ export function pricePopupBatch(count, rng = Math.random) {
 
 /**
  * Outcome pricing (operator decision 2026-07-19): a popup that CONVERTED (the visitor signed in or
- * left their number) is worth 75 paise, not the base 40–50. Shows are billed as they happen at the
- * random base rate (average 45p), and a conversion — which can land hours after its show was
- * billed — adds a flat TOP-UP of (75 − 45) = 30p, so converted popups settle at 75p in expectation
+ * left their number) is worth 75 paise, not the base 25–35. Shows are billed as they happen at the
+ * random base rate (average 30p), and a conversion — which can land hours after its show was
+ * billed — adds a flat TOP-UP of (75 − 30) = 45p, so converted popups settle at 75p in expectation
  * while unconverted ones keep the base band. Same delta-billing discipline: each conversion tops up
- * exactly once.
+ * exactly once. (TOPUP is computed from the band midpoint below, so it tracks any band change.)
  *
  * EXCEPTION — login_gate (the tools hard wall): charged ONCE per visitor, base band only
  * (operator decision 2026-07-19). Its re-shows arrive as 'reshown' events (never priced) and its

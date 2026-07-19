@@ -582,7 +582,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     autopost_usage: { label: 'Auto-posted listings', unit: 'post', pricePaise: AUTOPOST_USAGE_PRICE_PAISE },
     daily_plan: { label: 'Daily work plans', unit: 'plan-day', pricePaise: DAILY_PLAN_PRICE_PAISE },
     whatsapp_usage: { label: 'WhatsApp outreach', unit: 'event', pricePaise: null }, // mixed ₹1.65 / ₹3
-    conversion_popup: { label: 'Popups opened', unit: 'popup', pricePaise: null }, // random ₹0.40–0.50 each
+    conversion_popup: { label: 'Popups opened', unit: 'popup', pricePaise: null }, // random ₹0.25–0.35 each
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
