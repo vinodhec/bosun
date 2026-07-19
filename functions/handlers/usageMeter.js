@@ -30,6 +30,7 @@ import {
   WA_MESSAGE_DELIVERED_PRICE_PAISE,
   WA_LEAD_ACCEPTED_PRICE_PAISE,
   DAILY_PLAN_PRICE_PAISE,
+  SEO_REPORT_REPLAY_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
 } from '../shared/billing.js';
@@ -72,6 +73,15 @@ const SERVICE_DEFS = {
     accrualField: 'plannerAccrualPaise',
     kind: 'daily_plan',
     label: 'Nightly admin work-queue plan',
+  },
+  // Normally settled in-process by seoWeeklyReport at a price drawn per run in the [MIN, MAX]
+  // band; this fixed midpoint only prices a ledger replay — after any successful run the shared
+  // log row makes such a replay a charged:0 no-op anyway.
+  seo_weekly_report: {
+    pricePaise: SEO_REPORT_REPLAY_PRICE_PAISE,
+    accrualField: 'seoReportAccrualPaise',
+    kind: 'seo_weekly_report',
+    label: 'Weekly SEO report',
   },
 };
 

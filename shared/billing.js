@@ -614,6 +614,32 @@ export function isServicePaused(org, service) {
 export const CONVERSION_POPUP_MIN_PAISE = 40;
 export const CONVERSION_POPUP_MAX_PAISE = 50; // reverted from 60 (operator decision 2026-07-19)
 
+/**
+ * ── Weekly SEO report (seo_weekly_report) ──────────────────────────────────────────────────────
+ * The Monday SEO agent (handlers/seoWeeklyReport.js) pulls Search Console data, computes the
+ * week-over-week tables deterministically, has Flash write the narrative, delivers to the
+ * platform's /api/ingest/seo-report, and settles on the 2xx ack — the daily_plan discipline.
+ * Priced RANDOMLY per report within [MIN, MAX] paise (operator decision 2026-07-19, same
+ * banded-flat principle as conversion popups); the drawn price is recorded on the meter-log row
+ * and the seoRuns audit doc. One event per org per report week, idempotencyKey = periodKey.
+ * Accrued on the org as `seoReportAccrualPaise`. The REPLAY price exists only for usageMeter's
+ * SERVICE_DEFS (a ledger replay after a successful run dedupes to a no-op anyway).
+ */
+// Repriced 2026-07-19 (operator decision) when the live-SERP layers landed: 72-city deep rank
+// tracker (top 50, weekly) + 343-locality rotation (page 1, full sweep monthly) + action-item SERP
+// context. COGS ≈ ₹140/report (Apify-dominated); this band holds the service's ~72% margin.
+export const SEO_REPORT_MIN_PRICE_PAISE = 45000; // ₹450
+export const SEO_REPORT_MAX_PRICE_PAISE = 55000; // ₹550
+export const SEO_REPORT_REPLAY_PRICE_PAISE = 50000; // fixed midpoint — usageMeter replays only
+
+/** One report's price in paise, drawn uniformly in [MIN, MAX]. */
+export function randomSeoReportPricePaise(rng = Math.random) {
+  return (
+    SEO_REPORT_MIN_PRICE_PAISE +
+    Math.floor(rng() * (SEO_REPORT_MAX_PRICE_PAISE - SEO_REPORT_MIN_PRICE_PAISE + 1))
+  );
+}
+
 /** Total paise for N popups, each drawn uniformly in [MIN, MAX]. */
 export function pricePopupBatch(count, rng = Math.random) {
   let total = 0;

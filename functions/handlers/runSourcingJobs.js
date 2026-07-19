@@ -787,6 +787,19 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   try {
     const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
     const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, maxTargets: topN, dryRun, runId: run.id });
+    // Backpressure: the platform PAUSES sourcing once its pending-lead queue hits the cap (default
+    // 3000) — it serves no targets and stamps no cadence. Honour that here, BEFORE any Apify/SERP/
+    // classify spend, so a full queue costs nothing and leaves a clear "paused" note in the run panel.
+    // (The platform also returns empty `targets` while paused, so the stop holds even without this
+    // check; this just makes the reason explicit instead of looking like "no due targets".)
+    if (matrix?.pauseSourcing) {
+      const cap = matrix.pendingCap ?? '?';
+      const pending = matrix.pendingBacklog ?? '?';
+      run.note(`sourcing paused — ${pending} pending leads ≥ cap ${cap}; nothing sourced or charged`);
+      console.warn('runSourcingJobs:paused', orgId, JSON.stringify({ pending, cap }));
+      await run.finish();
+      return { ok: true, runId: run.id, relayed: 0, amountInr: 0, paused: true, pendingBacklog: matrix.pendingBacklog ?? null };
+    }
     const returned = Array.isArray(matrix?.targets) ? matrix.targets : [];
     const targets = returned.filter(isPlausibleTarget);
     // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix

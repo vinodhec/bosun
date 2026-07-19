@@ -120,5 +120,11 @@ export { sessionIntelligence, settleConversionPopups } from './handlers/sessionI
 // deterministic aggregates from our ledgers, Flash prose, delivered to the platform's report ingest.
 export { weeklyIntelligence, monthlyProofOfValue } from './handlers/intelligenceReports.js';
 
+// Weekly SEO report (seo_weekly_report service line): Mon 05:00 IST cron pulls Search Console for
+// the last complete week, computes WoW tables deterministically, re-scores last week's action items
+// (the accountability loop), Flash narrates, delivers to the platform's /api/ingest/seo-report,
+// settles a banded flat fee on the ack. seoReportNow is the on-demand/test trigger (same HMAC).
+export { weeklySeoReport, seoReportNow } from './handlers/seoWeeklyReport.js';
+
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
