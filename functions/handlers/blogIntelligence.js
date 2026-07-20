@@ -212,7 +212,7 @@ export async function runBlogIntelligenceForOrg(
     //    among them; each delivered pack stamps those posts, so the next pass sees the following
     //    slice. A big first-run backlog therefore clears in ONE run (was: 25/night over many nights).
     const capReturn = Math.min(Math.max(1, Number(intel.capBlogs || capReturnOpt || 40)), 100);
-    const capScan = Math.min(Math.max(20, Number(capScanOpt || 500)), 500);
+    const capScan = Math.min(Math.max(20, Number(capScanOpt || 500)), 3000);
     const passCap = Math.min(Math.max(1, Number(maxPasses || 6)), 20);
 
     const byAudience = {};
