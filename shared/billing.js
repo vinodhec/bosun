@@ -680,12 +680,25 @@ export const CONVERSION_POPUP_TOPUP_PAISE =
  * flat 50 paise per blog (operator-set 2026-07-20) — a per-post value fee for the audience-targeting
  * the classification unlocks, comfortably above a 3× cost floor, not a thin cost-plus.
  *
- * Settled in-process by blogIntelligence on the platform's engagement-pack ack — amount =
- * BLOG_CLASSIFY_PRICE_PAISE × (blogs actually classified this run) — held in paise and accrued on
- * the org as `blogClassifyAccrualPaise`, whole rupees debited as the accrual crosses ₹1 (the same
- * "sum, then round once" discipline compose/auto_post/daily_plan use). idempotencyKey = the IST
- * dateKey, so a forced re-run the same day is a charged:0 no-op. Registered in usageMeter too so a
- * ledger replay/backfill prices identically (the shared log row makes a post-settle replay a no-op).
+ * Settled in-process by blogIntelligence PER DELIVERED BATCH on the platform's engagement-pack ack
+ * — amount = BLOG_CLASSIFY_PRICE_PAISE × (blogs in that batch) — held in paise and accrued on the
+ * org as `blogClassifyAccrualPaise`, whole rupees debited as the accrual crosses ₹1 (the same "sum,
+ * then round once" discipline compose/auto_post/daily_plan use). idempotencyKey = the batch's
+ * packRunId, so a retry, a timeout-interrupted run, or a repeat same-day backfill each bill only
+ * their new batches and never double-charge a settled one. Registered in usageMeter too so a ledger
+ * replay/backfill prices identically (the shared per-packRunId log row makes a replay a no-op).
  */
 export const BLOG_CLASSIFY_COST_PAISE = 4;    // measured avg Gemini Flash cost per blog (GST-incl.), for margin only
 export const BLOG_CLASSIFY_PRICE_PAISE = 50;  // flat 50 paise/blog (operator-set 2026-07-20)
+
+/**
+ * ── Lead call-brief (on-demand) ─────────────────────────────────────────────────────────────────
+ * An admin about to phone a website-captured lead taps "Prep call": Bosun reads the lead's session
+ * context (searches, viewed listings, capture reason, live inventory) and Gemini Flash writes a
+ * call brief — summary, action items, and how to capture. Priced at 3× the measured Gemini cost
+ * (operator directive 2026-07-20 "3x of our cost"). Settled in-process per generation, accrued on
+ * the org as `leadBriefAccrualPaise`; idempotencyKey = leadId, so re-opening a cached brief is a
+ * charged:0 no-op and only a REGENERATE (force) bills again.
+ */
+export const LEAD_BRIEF_COST_PAISE = 25;   // measured Gemini Flash cost per brief (GST-incl.), richer than a classify
+export const LEAD_BRIEF_PRICE_PAISE = 75;  // 3× cost (operator-set 2026-07-20)
