@@ -12,10 +12,12 @@
  *   3. POST the verdicts back in an engagement-pack (`blogClassifications`), which stamps
  *      agentAudience/agentTopics onto the blog_v2 doc. The blog page reads that on the next view.
  *
- * Cheap and self-throttling: the digest returns only UNCLASSIFIED posts (default ≤25/run), so a
- * steady site is ~0 calls/night and a backlog clears over a few nights. New posts are picked up the
- * night after they publish. A scheduler retry no-ops via the per-day run doc; even without it,
- * re-running only re-classifies whatever is still unclassified.
+ * DRAINS the backlog in one run: it loops steps 1-3 (page by page, capReturn/page) until nothing
+ * unclassified remains, a pass makes no progress, or a safety pass cap. A first-run backlog clears
+ * in ONE run (was ~25/night over many nights) — bounded only by the digest's newest-capScan window
+ * (max 500); if the backlog is deeper, the run doc's `moreLikely` flags it. A steady site is ~0
+ * work/night. A scheduler retry no-ops via the per-day run doc; billing is idempotent per IST day
+ * (flat 50p/blog delivered, settled once per run — see shared/billing.js).
  *
  * Config: organisations/{orgId}.sourcing.intelligence = { enabled, digestUrl, packUrl,
  * blogDigestUrl?, capBlogs? }. blogDigestUrl defaults to digestUrl with `session-digest` →
@@ -122,7 +124,12 @@ async function classifyOne(blog) {
   };
 }
 
-export async function runBlogIntelligenceForOrg(db, orgId, cfg, { force = false } = {}) {
+export async function runBlogIntelligenceForOrg(
+  db,
+  orgId,
+  cfg,
+  { force = false, capReturn: capReturnOpt, capScan: capScanOpt, maxPasses } = {},
+) {
   const intel = cfg.intelligence || {};
   const dateKey = istDateKey();
   const summary = { orgId, dateKey, status: 'skipped' };
@@ -150,77 +157,108 @@ export async function runBlogIntelligenceForOrg(db, orgId, cfg, { force = false 
       return summary;
     }
 
-    // 1) Pull unclassified posts.
-    const { signature, timestamp } = signPayload(secret, 'blog-digest');
-    const url = new URL(digestUrl);
-    if (intel.capBlogs) url.searchParams.set('capReturn', String(intel.capBlogs));
-    const resp = await fetch(url.toString(), {
-      headers: { 'x-bosun-signature': signature, 'x-bosun-timestamp': timestamp },
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!resp.ok) {
-      summary.status = 'error';
-      summary.reason = `digest-http-${resp.status}`;
-      return summary;
+    // 1) DRAIN the backlog: pull unclassified → classify (Flash) → deliver the verdicts, repeating
+    //    until nothing unclassified remains, a pass makes no progress, or a safety cap. The digest
+    //    hands back the newest `capScan` published posts and up to `capReturn` still-unclassified
+    //    among them; each delivered pack stamps those posts, so the next pass sees the following
+    //    slice. A big first-run backlog therefore clears in ONE run (was: 25/night over many nights).
+    const capReturn = Math.min(Math.max(1, Number(intel.capBlogs || capReturnOpt || 100)), 100);
+    const capScan = Math.min(Math.max(20, Number(capScanOpt || 500)), 500);
+    const passCap = Math.min(Math.max(1, Number(maxPasses || 8)), 20);
+
+    const byAudience = {};
+    const seenIds = new Set();
+    const firstSamples = [];
+    let delivered = 0; // blogs the platform stored this run — the billing basis
+    let lastScanned = 0;
+    let moreLikely = false; // scan window (capScan) was full ⇒ posts OLDER than it may still be unclassified
+    let lastPackRunId = null;
+    let passes = 0;
+    let stopReason = 'pass-cap'; // overwritten on any explicit break; left as-is if we exhaust passCap
+
+    while (passes < passCap) {
+      passes++;
+
+      // Pull one page of unclassified posts.
+      const { signature, timestamp } = signPayload(secret, 'blog-digest');
+      const url = new URL(digestUrl);
+      url.searchParams.set('capReturn', String(capReturn));
+      url.searchParams.set('capScan', String(capScan));
+      const resp = await fetch(url.toString(), {
+        headers: { 'x-bosun-signature': signature, 'x-bosun-timestamp': timestamp },
+        signal: AbortSignal.timeout(60000),
+      });
+      if (!resp.ok) { stopReason = `digest-http-${resp.status}`; break; }
+      const digest = await resp.json();
+      if (!digest?.success) { stopReason = 'digest-malformed'; break; }
+      lastScanned = digest.counts?.scanned || 0;
+      moreLikely = Boolean(digest.counts?.moreLikely);
+
+      const returned = Array.isArray(digest.blogs) ? digest.blogs : [];
+      // Classify only ids we haven't already handled this run — guards against a slow platform stamp
+      // re-surfacing the same posts (which would otherwise loop forever and double-bill within a run).
+      const blogs = returned.filter((b) => b && b.id && !seenIds.has(b.id));
+      if (!blogs.length) { stopReason = returned.length ? 'no-progress' : 'backlog-clear'; break; }
+      blogs.forEach((b) => seenIds.add(b.id));
+
+      // Classify (Flash, bounded concurrency).
+      const results = (await mapLimit(blogs, CLASSIFY_CONCURRENCY, classifyOne)).filter(Boolean);
+      if (!results.length) { stopReason = 'all-classifications-failed'; break; }
+
+      // Deliver — engagement-pack carries just the classifications (the platform ignores absent
+      // demandMap/messages; blogClassifications runs on any pack, not first-of-day).
+      const packRunId = `bc_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
+      const body = JSON.stringify({
+        orgId,
+        packRunId,
+        dateKey,
+        generatedAtMs: Date.now(),
+        blogClassifications: results.map((r) => ({ id: r.id, audience: r.audience, topics: r.topics, confidence: r.confidence })),
+      });
+      const signed = signPayload(secret, body);
+      const post = await fetch(intel.packUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-bosun-signature': signed.signature,
+          'x-bosun-timestamp': signed.timestamp,
+        },
+        body,
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!post.ok) { stopReason = `pack-post-http-${post.status}`; break; }
+
+      delivered += results.length;
+      lastPackRunId = packRunId;
+      for (const r of results) {
+        byAudience[r.audience] = (byAudience[r.audience] || 0) + 1;
+        if (firstSamples.length < 10) firstSamples.push({ id: r.id, audience: r.audience, confidence: r.confidence });
+      }
+
+      // A short page means the window's unclassified posts are exhausted — stop before an empty fetch.
+      if (returned.length < capReturn) { stopReason = 'backlog-clear'; break; }
     }
-    const digest = await resp.json();
-    if (!digest?.success) {
-      summary.status = 'error';
-      summary.reason = 'digest-malformed';
-      return summary;
-    }
-    const blogs = Array.isArray(digest.blogs) ? digest.blogs : [];
-    if (!blogs.length) {
-      await runRef.set({ dateKey, classified: 0, scanned: digest.counts?.scanned || 0, createdAt: FieldValue.serverTimestamp() });
-      summary.status = 'ok';
+
+    // Nothing delivered — the backlog was already clear, or the very first pass errored.
+    if (delivered === 0) {
+      const clean = stopReason === 'backlog-clear' || stopReason === 'no-progress';
+      await runRef.set({
+        dateKey, classified: 0, scanned: lastScanned, passes, stopReason, moreLikely,
+        chargedInr: 0, createdAt: FieldValue.serverTimestamp(),
+      });
+      summary.status = clean ? 'ok' : 'error';
       summary.classified = 0;
-      summary.reason = 'nothing-unclassified';
+      summary.reason = clean ? 'nothing-unclassified' : stopReason;
       return summary;
     }
 
-    // 2) Classify each (Flash, bounded concurrency).
-    const results = (await mapLimit(blogs, CLASSIFY_CONCURRENCY, classifyOne)).filter(Boolean);
-    if (!results.length) {
-      summary.status = 'error';
-      summary.reason = 'all-classifications-failed';
-      return summary;
-    }
-
-    // 3) Deliver — engagement-pack carries just the classifications (the platform ignores absent
-    // demandMap/messages; blogClassifications runs on any pack, not first-of-day).
-    const packRunId = `bc_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
-    const body = JSON.stringify({
-      orgId,
-      packRunId,
-      dateKey,
-      generatedAtMs: Date.now(),
-      blogClassifications: results.map((r) => ({ id: r.id, audience: r.audience, topics: r.topics, confidence: r.confidence })),
-    });
-    const signed = signPayload(secret, body);
-    const post = await fetch(intel.packUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-bosun-signature': signed.signature,
-        'x-bosun-timestamp': signed.timestamp,
-      },
-      body,
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!post.ok) {
-      summary.status = 'error';
-      summary.reason = `pack-post-http-${post.status}`;
-      return summary;
-    }
-    const postBody = await post.json().catch(() => ({}));
-
-    // 4) Settle — a flat per-blog fee (BLOG_CLASSIFY_PRICE_PAISE) × blogs actually classified this
-    // run, held in paise and accrued on the org (blogClassifyAccrualPaise) with whole rupees debited
-    // as the accrual crosses ₹1 — the same "sum, then round once" discipline daily_plan/compose use.
-    // idempotencyKey = dateKey, so a forced same-day re-run finds the log row and charges ₹0. Charged
-    // on the ack: we only reach here after the platform stored the classifications.
+    // 2) Settle ONCE — flat per-blog fee (BLOG_CLASSIFY_PRICE_PAISE) × blogs delivered this run, held
+    //    in paise and accrued on the org (blogClassifyAccrualPaise) with whole rupees debited as the
+    //    accrual crosses ₹1 — the "sum, then round once" discipline daily_plan/compose use.
+    //    idempotencyKey = dateKey, so a forced same-day re-run (which re-classifies nothing new
+    //    anyway) can't double-charge. Charged on the ack: we only reach here after posts were stored.
     const logRef = db.collection(METER_LOG).doc(`${orgId}:blog_classify:${dateKey}`);
-    const pricePaise = BLOG_CLASSIFY_PRICE_PAISE * results.length;
+    const pricePaise = BLOG_CLASSIFY_PRICE_PAISE * delivered;
     let charged = 0;
     charged = await db.runTransaction(async (tx) => {
       const orgRef = db.collection('organisations').doc(orgId);
@@ -233,16 +271,9 @@ export async function runBlogIntelligenceForOrg(db, orgId, cfg, { force = false 
       // Waived line (testing / goodwill): log it for idempotency + reconciliation, charge nothing.
       if (isServicePaused(org, 'blog_classify')) {
         tx.set(logRef, {
-          orgId,
-          service: 'blog_classify',
-          idempotencyKey: dateKey,
-          qty: results.length,
-          packRunId,
-          pricePaise: BLOG_CLASSIFY_PRICE_PAISE,
-          debitInr: 0,
-          waived: true,
-          waivedPaise: pricePaise,
-          createdAt: FieldValue.serverTimestamp(),
+          orgId, service: 'blog_classify', idempotencyKey: dateKey, qty: delivered,
+          packRunId: lastPackRunId, pricePaise: BLOG_CLASSIFY_PRICE_PAISE, debitInr: 0,
+          waived: true, waivedPaise: pricePaise, createdAt: FieldValue.serverTimestamp(),
         });
         return 0;
       }
@@ -252,52 +283,44 @@ export async function runBlogIntelligenceForOrg(db, orgId, cfg, { force = false 
       if (debitInr > 0) {
         update.balance = Number(org.balance ?? 0) - debitInr;
         tx.set(db.collection('transactions').doc(), {
-          orgId,
-          type: 'debit',
-          kind: 'blog_classify',
-          amount: debitInr,
-          count: results.length,
-          description: `Blog audience classification (${dateKey}, ${results.length} blogs × ₹${(BLOG_CLASSIFY_PRICE_PAISE / 100).toFixed(2)})`,
+          orgId, type: 'debit', kind: 'blog_classify', amount: debitInr, count: delivered,
+          description: `Blog audience classification (${dateKey}, ${delivered} blogs × ₹${(BLOG_CLASSIFY_PRICE_PAISE / 100).toFixed(2)})`,
           createdAt: FieldValue.serverTimestamp(),
         });
       }
       tx.update(orgRef, update);
       tx.set(logRef, {
-        orgId,
-        service: 'blog_classify',
-        idempotencyKey: dateKey,
-        qty: results.length,
-        packRunId,
-        pricePaise: BLOG_CLASSIFY_PRICE_PAISE,
-        debitInr,
+        orgId, service: 'blog_classify', idempotencyKey: dateKey, qty: delivered,
+        packRunId: lastPackRunId, pricePaise: BLOG_CLASSIFY_PRICE_PAISE, debitInr,
         createdAt: FieldValue.serverTimestamp(),
       });
       return debitInr;
     });
 
-    // 5) Record the run (idempotency + audit; now also the billing outcome).
-    const byAudience = results.reduce((acc, r) => ({ ...acc, [r.audience]: (acc[r.audience] || 0) + 1 }), {});
+    // 3) Record the run (idempotency + audit + billing outcome).
     await runRef.set({
       dateKey,
-      packRunId,
-      scanned: digest.counts?.scanned || 0,
-      returned: blogs.length,
-      classified: results.length,
+      packRunId: lastPackRunId,
+      scanned: lastScanned,
+      classified: delivered,
+      passes,
+      stopReason,
       byAudience,
       pricePaise: BLOG_CLASSIFY_PRICE_PAISE,
       chargedInr: charged,
-      classifierVersion: digest.classifierVersion || null,
-      moreLikely: Boolean(digest.counts?.moreLikely),
-      samples: results.slice(0, 10).map((r) => ({ id: r.id, audience: r.audience, confidence: r.confidence })),
+      moreLikely,
+      samples: firstSamples,
       createdAt: FieldValue.serverTimestamp(),
     });
 
     summary.status = 'ok';
-    summary.packRunId = packRunId;
-    summary.classified = results.length;
+    summary.packRunId = lastPackRunId;
+    summary.classified = delivered;
+    summary.passes = passes;
+    summary.stopReason = stopReason;
     summary.byAudience = byAudience;
     summary.chargedInr = charged;
-    summary.serverConfirmed = postBody?.stored?.blogsClassified ?? null;
+    summary.moreLikely = moreLikely;
     return summary;
   } catch (e) {
     console.error('blogIntelligence:org', orgId, e?.message || e);
@@ -328,13 +351,20 @@ export const blogIntelligence = onSchedule(
   },
 );
 
-/** On-demand trigger (same shape as sourcingPlanNow): POST { orgId, force? }. For testing + backfill. */
+/**
+ * On-demand trigger (same shape as sourcingPlanNow): POST { orgId, force?, capReturn?, capScan?,
+ * maxPasses? }. For testing + one-shot backlog backfill. The run drains the whole reachable backlog
+ * by default; the cap overrides only matter for tuning a very large backfill.
+ */
 export const blogClassifyNow = onRequest(
   { region: REGION, timeoutSeconds: 540, memory: '512MiB', cors: true },
   async (req, res) => {
     try {
       const orgId = String(req.body?.orgId || req.query?.orgId || '');
       const force = Boolean(req.body?.force || req.query?.force);
+      const capReturn = req.body?.capReturn ?? req.query?.capReturn;
+      const capScan = req.body?.capScan ?? req.query?.capScan;
+      const maxPasses = req.body?.maxPasses ?? req.query?.maxPasses;
       if (!orgId) {
         res.status(400).json({ error: 'orgId required' });
         return;
@@ -345,7 +375,12 @@ export const blogClassifyNow = onRequest(
         res.status(404).json({ error: 'org not found' });
         return;
       }
-      const summary = await runBlogIntelligenceForOrg(db, orgId, orgDoc.data().sourcing || {}, { force });
+      const summary = await runBlogIntelligenceForOrg(db, orgId, orgDoc.data().sourcing || {}, {
+        force,
+        capReturn,
+        capScan,
+        maxPasses,
+      });
       res.json(summary);
     } catch (e) {
       console.error('blogClassifyNow:err', e?.message || e);
