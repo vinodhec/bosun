@@ -116,6 +116,11 @@ export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 // monthly session pool (org.sessionMeter.<yyyymm> counts toward it).
 export { sessionIntelligence, settleConversionPopups } from './handlers/sessionIntelligence.js';
 
+// Blog Intelligence (03:00 IST nightly): read each newly-published post, classify its audience
+// (buyer/seller/investor/neutral) with Gemini Flash, deliver the verdicts to the platform so the
+// blog conversion cards target the right reader. blogClassifyNow is the on-demand test/backfill.
+export { blogIntelligence, blogClassifyNow } from './handlers/blogIntelligence.js';
+
 // Composed reports: weekly intelligence (Mon 03:30 IST) + monthly proof-of-value (1st 04:00 IST) —
 // deterministic aggregates from our ledgers, Flash prose, delivered to the platform's report ingest.
 export { weeklyIntelligence, monthlyProofOfValue } from './handlers/intelligenceReports.js';

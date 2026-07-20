@@ -666,3 +666,26 @@ export const CONVERSION_POPUP_CONVERTED_PAISE = 75;
 export const CONVERSION_POPUP_TOPUP_PAISE =
   CONVERSION_POPUP_CONVERTED_PAISE -
   Math.round((CONVERSION_POPUP_MIN_PAISE + CONVERSION_POPUP_MAX_PAISE) / 2);
+
+/**
+ * ── Blog audience classification (blog_classify) ───────────────────────────────────────────────
+ * The nightly blogIntelligence agent (handlers/blogIntelligence.js) reads each newly-published post
+ * and decides who it's written FOR (buyer / seller / investor / neutral) so the platform's conversion
+ * cards target the right reader. One Gemini Flash call per blog (thinkingBudget:0, ~750 in / ~50 out
+ * tokens on a ≤1600-char excerpt). Was record-only until now; PRICED per operator decision
+ * (2026-07-20): a flat per-blog fee, one-time per post.
+ *
+ * Cost basis (for margin visibility, not the price): ~3.4 paise/blog GST-incl at Flash rates
+ * ($0.30/1M in, $2.50/1M out), rounded to a ~4 paise average to cover longer posts. The PRICE is a
+ * flat 50 paise per blog (operator-set 2026-07-20) — a per-post value fee for the audience-targeting
+ * the classification unlocks, comfortably above a 3× cost floor, not a thin cost-plus.
+ *
+ * Settled in-process by blogIntelligence on the platform's engagement-pack ack — amount =
+ * BLOG_CLASSIFY_PRICE_PAISE × (blogs actually classified this run) — held in paise and accrued on
+ * the org as `blogClassifyAccrualPaise`, whole rupees debited as the accrual crosses ₹1 (the same
+ * "sum, then round once" discipline compose/auto_post/daily_plan use). idempotencyKey = the IST
+ * dateKey, so a forced re-run the same day is a charged:0 no-op. Registered in usageMeter too so a
+ * ledger replay/backfill prices identically (the shared log row makes a post-settle replay a no-op).
+ */
+export const BLOG_CLASSIFY_COST_PAISE = 4;    // measured avg Gemini Flash cost per blog (GST-incl.), for margin only
+export const BLOG_CLASSIFY_PRICE_PAISE = 50;  // flat 50 paise/blog (operator-set 2026-07-20)

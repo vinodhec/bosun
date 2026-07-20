@@ -31,6 +31,7 @@ import {
   WA_LEAD_ACCEPTED_PRICE_PAISE,
   DAILY_PLAN_PRICE_PAISE,
   SEO_REPORT_REPLAY_PRICE_PAISE,
+  BLOG_CLASSIFY_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
 } from '../shared/billing.js';
@@ -82,6 +83,15 @@ const SERVICE_DEFS = {
     accrualField: 'seoReportAccrualPaise',
     kind: 'seo_weekly_report',
     label: 'Weekly SEO report',
+  },
+  // Normally settled in-process by blogIntelligence (amount = price × blogs classified that run,
+  // accrued via blogClassifyAccrualPaise). Registered here so a ledger replay/backfill of a single
+  // classified blog prices identically; the in-process log row makes a post-settle replay a no-op.
+  blog_classify: {
+    pricePaise: BLOG_CLASSIFY_PRICE_PAISE,
+    accrualField: 'blogClassifyAccrualPaise',
+    kind: 'blog_classify',
+    label: 'Blog audience classification',
   },
 };
 
