@@ -30,6 +30,7 @@ import crypto from 'node:crypto';
 import { signPayload } from '../utils/sourcing.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
 import { tuneRules, buildDevTaskProposals, buildStaffingProposals, rollupActions } from '../utils/rulesTuner.js';
+import { clusterErrors, buildErrorDevTaskProposals } from '../utils/errorIntel.js';
 import { createIssue } from '../utils/githubIssues.js';
 import { pricePopupBatch, accrueComposeCharge, isServicePaused, CONVERSION_POPUP_TOPUP_PAISE } from '../shared/billing.js';
 
@@ -311,6 +312,20 @@ export function detectAnomalies(today, baselineDays) {
   check('sessions', today.sessions, avg((d) => d.sessions), { label: 'Visitor sessions' });
   check('leads', today.leads, avg((d) => d.leads), { label: 'Converted leads (enquiry/contact)' });
   check('searches', today.searches, avg((d) => d.searches), { label: 'Search volume' });
+  // Errors invert the spike/drop meaning: MORE is the emergency (a drop is just a good day). Floor
+  // of 5 error sessions so a 0→2 blip never pages; needs recorded history (errorSessions on the
+  // trailing run docs) before it can judge.
+  const errBase = avg((d) => d.errorSessions);
+  if (errBase != null && (today.errorSessions || 0) >= Math.max(5, errBase * 2)) {
+    anomalies.push({
+      kind: 'errors-spike',
+      severity: 'high',
+      metric: 'error_sessions',
+      value: today.errorSessions,
+      baseline: Math.round(errBase),
+      message: `App-error sessions spiked: ${today.errorSessions} vs ~${Math.round(errBase)}/day trailing average — a broken flow is likely live.`,
+    });
+  }
   return anomalies;
 }
 
@@ -533,7 +548,15 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
     const baselineDocs = baselineSnap.docs.map((d) => d.data());
     const leads = (digest.sessions || []).filter((s) => s.flags?.enquiry || s.flags?.contact).length;
     const searchVolume = (digest.searches || []).reduce((a, r) => a + (r.searches || 1), 0);
-    const anomalies = detectAnomalies({ sessions: segments.total, leads, searches: searchVolume }, baselineDocs);
+    // Error intelligence: cluster the day's app_error sessions (digest.errors) — the bug-ticket
+    // feed. Deterministic; clusters feed the anomaly check, the pack's appHealth block, the day
+    // record (weekly/monthly raw material), and the dev-task proposals below.
+    const errorRows = Array.isArray(digest.errors) ? digest.errors : [];
+    const errorClusters = clusterErrors(errorRows);
+    const errorSessions = errorRows.length;
+    const errorEvents = errorRows.reduce((a, r) => a + (Number(r.count) || 1), 0);
+    const errorRatePct = segments.total ? Math.round((errorSessions / segments.total) * 10000) / 100 : 0;
+    const anomalies = detectAnomalies({ sessions: segments.total, leads, searches: searchVolume, errorSessions }, baselineDocs);
     // Escalation: admins ignoring the daily plan is an ops problem the operator must see same-day.
     const planTotals = (digest.planCompletion || []).reduce(
       (acc, p) => ({ total: acc.total + p.total, closed: acc.closed + p.done + p.skipped + p.autoDone }),
@@ -568,7 +591,11 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       .get()
       .catch(() => ({ docs: [] }));
     const staffing = buildStaffingProposals(plannerSnap.docs.map((d) => d.data()));
-    const devTasks = [...buildDevTaskProposals({ ...digest, anomalies }), ...staffing].slice(0, 4);
+    // Error-fix proposals lead the queue — they're concrete broken flows with journey evidence,
+    // not tuning suggestions. Journey deep-links point at the customer console (digest origin).
+    const consoleOrigin = new URL(intel.digestUrl).origin;
+    const errorProposals = buildErrorDevTaskProposals(errorClusters, { consoleOrigin, dateKey });
+    const devTasks = [...errorProposals, ...buildDevTaskProposals({ ...digest, anomalies }), ...staffing].slice(0, 4);
 
     // 4d) File APPROVED proposals from previous nights as real GitHub issues — capped, deduped by
     // fingerprint via the filedTasks ledger, token = the org's stored repo token.
@@ -606,6 +633,12 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       demandMap: demandMap.slice(0, 500),
       messages,
       anomalies,
+      appHealth: {
+        errorSessions,
+        errorEvents,
+        errorRatePct,
+        topErrors: errorClusters.slice(0, 8),
+      },
       ...(tuning.rules ? { rules: tuning.rules } : {}),
       ...(devTasks.length ? { devTasks } : {}),
       ...(filedDevTasks.length ? { filedDevTasks } : {}),
@@ -652,6 +685,9 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
       segments,
       demandTop: demandMap.slice(0, 25),
       anomalies,
+      errorSessions,
+      errorEvents,
+      errorTop: errorClusters.slice(0, 10),
       messageCount: messages.length,
       composeFailures,
       sessionsTruncated: Boolean(digest.counts?.sessionsTruncated),

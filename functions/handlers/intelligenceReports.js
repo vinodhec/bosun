@@ -55,8 +55,11 @@ async function gatherStats(db, orgId, startKey, endKey) {
     waDelivered: 0,
     waAccepted: 0,
     anomalies: 0,
+    errorSessions: 0,
+    errorEvents: 0,
   };
   const unserved = new Map();
+  const errorClusters = new Map();
 
   // intelRuns days — doc field dateKey is a yyyymmdd string, so string range works.
   try {
@@ -78,6 +81,17 @@ async function gatherStats(db, orgId, startKey, endKey) {
         if (!row.locality || !row.unservedCount) continue;
         const key = `${row.locality}, ${row.city}`;
         unserved.set(key, (unserved.get(key) || 0) + row.unservedCount);
+      }
+      // App health: merge each day's error clusters (keyed on the stable cluster key) so the
+      // period report shows which failures RECUR, not just daily blips.
+      stats.errorSessions += Number(r.errorSessions) || 0;
+      stats.errorEvents += Number(r.errorEvents) || 0;
+      for (const c of r.errorTop || []) {
+        if (!c.key) continue;
+        const cur = errorClusters.get(c.key) || { source: c.source || '', message: c.message || '', sessions: 0, days: 0 };
+        cur.sessions += Number(c.sessions) || 0;
+        cur.days += 1;
+        errorClusters.set(c.key, cur);
       }
     }
   } catch (e) {
@@ -142,7 +156,11 @@ async function gatherStats(db, orgId, startKey, endKey) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([place, count]) => ({ place, count }));
-  return { stats, topUnserved };
+  const topErrors = [...errorClusters.values()]
+    .sort((a, b) => b.sessions - a.sessions)
+    .slice(0, 5)
+    .map((c) => ({ ...c, message: String(c.message).slice(0, 120) }));
+  return { stats, topUnserved, topErrors };
 }
 
 async function composeAndDeliver(db, orgId, cfg, period, periodKey, startKey, endKey) {
@@ -166,7 +184,7 @@ async function composeAndDeliver(db, orgId, cfg, period, periodKey, startKey, en
       return summary;
     }
 
-    const { stats, topUnserved } = await gatherStats(db, orgId, startKey, endKey);
+    const { stats, topUnserved, topErrors } = await gatherStats(db, orgId, startKey, endKey);
 
     const label = period === 'monthly' ? 'monthly proof-of-value report' : 'weekly intelligence report';
     const prompt = [
@@ -179,6 +197,10 @@ async function composeAndDeliver(db, orgId, cfg, period, periodKey, startKey, en
       `- Sourced listings relayed: ${stats.listingsRelayed}; auto-published: ${stats.autoPosts}`,
       `- WhatsApp messages delivered: ${stats.waDelivered}; postings accepted via WhatsApp: ${stats.waAccepted}`,
       `- Anomaly alerts raised: ${stats.anomalies}`,
+      `- App health: ${stats.errorSessions} sessions hit app errors (${stats.errorEvents} error events)${stats.sessions ? ` — ${Math.round((stats.errorSessions / stats.sessions) * 10000) / 100}% of sessions` : ''}`,
+      topErrors.length
+        ? `- Top recurring errors (dev tickets are auto-proposed for these): ${topErrors.map((c) => `[${c.source}] "${c.message}" (${c.sessions} sessions across ${c.days} day${c.days === 1 ? '' : 's'})`).join('; ')}`
+        : '',
       topUnserved.length
         ? `- Top unserved demand (searches that found no fresh listing): ${topUnserved.map((u) => `${u.place} (${u.count})`).join('; ')}`
         : '',
@@ -217,7 +239,12 @@ async function composeAndDeliver(db, orgId, cfg, period, periodKey, startKey, en
       summary: report.summary,
       highlights: report.highlights,
       recommendations: report.recommendations,
-      stats: { ...stats, topUnserved: topUnserved.map((u) => `${u.place}: ${u.count}`).join('; ') || '—' },
+      stats: {
+        ...stats,
+        topUnserved: topUnserved.map((u) => `${u.place}: ${u.count}`).join('; ') || '—',
+        // The console renders stats as String(v) chips — keep this a joined string, not objects.
+        topErrors: topErrors.map((c) => `[${c.source}] ${c.message} (${c.sessions} sess/${c.days}d)`).join('; ') || 'none',
+      },
     });
     const signed = signPayload(secret, body);
     const resp = await fetch(intel.reportUrl, {
