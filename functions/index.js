@@ -121,6 +121,11 @@ export { sessionIntelligence, settleConversionPopups } from './handlers/sessionI
 // blog conversion cards target the right reader. blogClassifyNow is the on-demand test/backfill.
 export { blogIntelligence, blogClassifyNow } from './handlers/blogIntelligence.js';
 
+// Lead call-brief: given a website-captured lead's full session context, Gemini writes the call
+// brief (summary, action items, how to capture). HMAC-authed, billed 3× cost per generation,
+// idempotent per lead — the platform calls it ONCE when the lead is created.
+export { leadBriefNow } from './handlers/leadBrief.js';
+
 // Composed reports: weekly intelligence (Mon 03:30 IST) + monthly proof-of-value (1st 04:00 IST) —
 // deterministic aggregates from our ledgers, Flash prose, delivered to the platform's report ingest.
 export { weeklyIntelligence, monthlyProofOfValue } from './handlers/intelligenceReports.js';

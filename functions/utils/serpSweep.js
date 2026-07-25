@@ -21,6 +21,21 @@ const POLL_BUDGET_MS = 420000; // 7 min — inside the function's 900s ceiling w
 
 const OUR_HOST_RE = /(^|\.)maadiveedu\.com$/i;
 
+// Default geo for the sweep. countryCode alone (gl=in) does NOT reliably pin the SERP — the actor's
+// proxy exit drifts, so identical input has returned UK-council / Belgian results on some runs and
+// India results on others (and often under-fetches, 4 results across 5 pages). A `locationUule` is
+// the deterministic geo signal Google honours regardless of proxy exit; with it the same query
+// returns a full, stably-India result set. Country-level "India" (not a single city) keeps the
+// shared batched run representative across all tracked localities.
+const DEFAULT_LOCATION = 'India';
+
+// Canonical "w+CAIQICI" UULE encoder for a place name (the role_id=2 variant Google accepts on the
+// `uule` query param). length char indexes into the 64-char alphabet below.
+function encodeUule(location) {
+  const key = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  return `w+CAIQICI${key[location.length % 64]}${Buffer.from(location, 'utf8').toString('base64')}`;
+}
+
 function hostOf(url) {
   try {
     return new URL(url).hostname.replace(/^www\./i, '');
@@ -44,7 +59,14 @@ async function apifyJson(url, init) {
  *     results: [{ rank, url, domain, title }] (top 10 for display),
  *     above: competitors ranked above us on page 1 (or the whole page 1 when we're deeper/absent) }
  */
-export async function serpSweep({ apifyToken, actorId, queries, countryCode = 'in', maxPages = 1 }) {
+export async function serpSweep({
+  apifyToken,
+  actorId,
+  queries,
+  countryCode = 'in',
+  location = DEFAULT_LOCATION,
+  maxPages = 1,
+}) {
   const out = new Map();
   const list = [...new Set((queries || []).map((q) => String(q || '').trim()).filter(Boolean))];
   if (!apifyToken || !actorId || !list.length) return out;
@@ -61,6 +83,9 @@ export async function serpSweep({ apifyToken, actorId, queries, countryCode = 'i
           maxPagesPerQuery: Math.max(1, Math.floor(maxPages)),
           resultsPerPage: 10,
           countryCode,
+          languageCode: 'en',
+          // Deterministic India geo — see DEFAULT_LOCATION note. Without this the SERP drifts country.
+          ...(location ? { locationUule: encodeUule(location) } : {}),
         }),
       },
     );
@@ -106,19 +131,26 @@ export async function serpSweep({ apifyToken, actorId, queries, countryCode = 'i
     byTerm.set(term, arr);
   }
 
-  const searchedDepth = Math.max(1, Math.floor(maxPages)) * 10;
+  const requestedDepth = Math.max(1, Math.floor(maxPages)) * 10;
   for (const [term, arr] of byTerm) {
     arr.sort((a, b) => a.rank - b.rank);
     const ours = arr.find((r) => OUR_HOST_RE.test(r.domain));
     const ourRank = ours?.rank ?? null;
     const page1 = arr.filter((r) => r.rank <= 10);
     const above = page1.filter((r) => !OUR_HOST_RE.test(r.domain) && (ourRank == null || r.rank < ourRank)).slice(0, 10);
+    // Honest depth: Google/Apify frequently under-fills a deep sweep (e.g. 4 results across 5 pages).
+    // A `null` ourRank only means "not in top N" if we actually SAW ~N results; otherwise the scrape
+    // was too thin to claim absence. Report the depth we truly covered, and expose the raw count so
+    // downstream can flag a low-confidence "absent" rather than asserting "not in top 50".
+    const fetchedResults = arr.length;
+    const searchedDepth = ourRank != null ? requestedDepth : Math.min(requestedDepth, Math.max(fetchedResults, page1.length));
     out.set(term, {
       query: term,
       ourRank,
       ourPage: ourRank ? Math.ceil(ourRank / 10) : null,
       ourUrl: ours?.url || null,
       searchedDepth,
+      fetchedResults,
       results: page1,
       above,
     });

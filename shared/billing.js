@@ -700,5 +700,7 @@ export const BLOG_CLASSIFY_PRICE_PAISE = 50;  // flat 50 paise/blog (operator-se
  * the org as `leadBriefAccrualPaise`; idempotencyKey = leadId, so re-opening a cached brief is a
  * charged:0 no-op and only a REGENERATE (force) bills again.
  */
-export const LEAD_BRIEF_COST_PAISE = 25;   // measured Gemini Flash cost per brief (GST-incl.), richer than a classify
-export const LEAD_BRIEF_PRICE_PAISE = 75;  // 3× cost (operator-set 2026-07-20)
+// Measured: ~300 output + ~600 input tokens on Gemini 2.5 Flash ≈ ₹0.10, GST-incl. + context
+// variance ≈ 15 paise. Priced at EXACTLY 3× that (operator directive 2026-07-20 "average cost × 3x").
+export const LEAD_BRIEF_COST_PAISE = 15;   // measured avg Gemini Flash cost per brief (GST-incl.)
+export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
