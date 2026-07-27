@@ -226,6 +226,29 @@ export const adminRunFix = onCall(
 );
 
 // Operator: list an org's fix sessions (tasks), newest first.
+// Compact per-round view of a task for the operator's Sessions list: what the owner asked for in
+// that round, what the agent did, what it added to the bill, and its share of the task's COGS.
+// See the `rounds` field below for why the totals alone are misleading.
+function roundBreakdown(t) {
+  const rounds = Array.isArray(t.rounds) ? t.rounds : [];
+  if (rounds.length === 0) return [];
+  const totalUsd = rounds.reduce((a, r) => a + (Number(r.actualCostUsd) || 0), 0);
+  const totalInr = Number(t.actualCostInr) || 0;
+  return rounds.map((r, i) => {
+    const usd = Number(r.actualCostUsd) || 0;
+    return {
+      n: i + 1,
+      kind: r.kind ?? null,            // 'initial' | 'unresolved' (free re-fix) | 'new_scope'
+      prompt: String(r.prompt || ''),
+      summary: String(r.summary || ''),
+      addedInr: Number(r.addedInr) || 0, // what this round added to what the owner owes
+      costInr: totalUsd > 0 ? (totalInr * usd) / totalUsd : 0,
+      charged: r.charged === true,
+      at: Number(r.at) || null,
+    };
+  });
+}
+
 export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) => {
   requireAdmin(request);
   const orgId = String(request.data?.orgId ?? '').trim();
@@ -269,6 +292,14 @@ export const adminListTasks = onCall({ region: 'asia-south1' }, async (request) 
         platformUrl: platformSessionUrl(t.sessionId),
         finalCharge: t.finalCharge ?? null,
         actualCostInr: t.actualCostInr ?? null,
+        // Per-round breakdown. finalCharge/actualCostInr are LIFETIME totals across every round
+        // of the task, while `prompt` is round 1's ask and `resultSummary` is the LAST round's —
+        // so a card showing only those reads as "one small change cost ₹1,953" when the money
+        // actually bought eight. Each round carries what was asked, what it cost, and what it
+        // added to the bill. Round COGS is prorated from the task total by the round's share of
+        // USD rather than re-converted here, so the parts always sum to the whole regardless of
+        // FX drift between when the rounds ran and now.
+        rounds: roundBreakdown(t),
         prUrl: t.prUrl ?? null,
         previewUrl: t.previewUrl ?? null,
         resultSummary: t.resultSummary ?? null,

@@ -2,13 +2,15 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { randomUUID } from 'node:crypto';
 import { loadShared } from '../utils/sharing.js';
-import { continueFixSession, startFixSession, firebaseSAsFromSecret } from '../utils/claudeAgent.js';
+import { continueFixSession, startFixSession, firebaseSAsFromSecret, isSessionWarm } from '../utils/claudeAgent.js';
+import { buildResumePrompt } from '../utils/agentResult.js';
+import { getPrHeadRef } from '../utils/github.js';
 import { designContextFromText } from '../utils/figma.js';
 import { resolveModel, agentIdForModel } from '../utils/routeModel.js';
 import { MAX_FREE_REVISIONS, REVISION_REASONS, isFreeRevision } from '../utils/billing.js';
 import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
-import { chargeApprovedFix } from '../utils/finalize.js';
+import { chargeApprovedFix, logBillingEvent } from '../utils/finalize.js';
 import { sessionView } from '../utils/sessionView.js';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
@@ -154,20 +156,72 @@ export const reviseSession = onCall(
     // (exact spec + rendered image), so design tweaks land pixel-perfect too. Null on any problem.
     const orgSnap = await db.collection('organisations').doc(task.orgId).get();
     const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();
+    const orgData = orgSnap.exists ? orgSnap.data() : null;
+    const secretData = secretSnap.exists ? secretSnap.data() : {};
     const figmaDesign = await designContextFromText({
-      org: orgSnap.exists ? orgSnap.data() : null,
-      secretData: secretSnap.exists ? secretSnap.data() : {},
+      org: orgData,
+      secretData,
       text: changes,
     });
 
+    // Resuming a COLD session is the single biggest avoidable line in our COGS: the lapsed prompt
+    // cache is re-written in full, then that whole context is replayed on every tool call — on a
+    // real 8-round session roughly a third of the total spend bought nothing, and cost-plus
+    // pricing marks that overhead up to the owner. So once the session is no longer warm we run
+    // the round in a FRESH session that checks out the same branch and updates the same PR:
+    // identical result, a fraction of the tokens, and the price stops depending on how long the
+    // owner took to reply. A fresh clone lands on the DEFAULT branch, so this is only safe when we
+    // can resolve the branch the earlier rounds pushed to — without it we'd silently branch from
+    // main and lose their work, so any doubt falls back to resuming.
+    let branch = null;
+    const gh = orgData?.github;
+    const prNum = String(task.prUrl || '').match(/\/pull\/(\d+)/);
+    if (!isSessionWarm(task) && prNum && gh?.repoFullName && gh?.vaultId && secretData.githubToken) {
+      try {
+        branch = await getPrHeadRef(gh.repoFullName, Number(prNum[1]), secretData.githubToken);
+      } catch (e) {
+        console.warn('reviseSession:branch', taskId, e?.message || e); // fall back to a resume
+      }
+    }
+
     // Dispatch first; only flip the task to 'running' once the agent has the instruction, so
     // a dispatch failure leaves the fix exactly as it was (still awaiting review, no charge).
+    let freshSession = null;
     try {
-      await continueFixSession({ sessionId: task.sessionId, changes, images, figmaDesign, documents });
+      if (branch) {
+        freshSession = await startFixSession({
+          prompt: changes,
+          images,
+          repoUrl: `https://github.com/${gh.repoFullName}`,
+          githubToken: secretData.githubToken,
+          vaultId: gh.vaultId,
+          agentId: agentIdForModel(task.model || 'sonnet'),
+          firebaseSAs: firebaseSAsFromSecret(secretData),
+          figmaDesign,
+          documents,
+          // The complete instruction: check out `branch`, recap of what earlier rounds already
+          // did, then this round's changes onto the SAME pull request.
+          instruction: buildResumePrompt({
+            changes,
+            imageCount: images.length,
+            figmaDesign,
+            branch,
+            prUrl: task.prUrl || null,
+            rounds: Array.isArray(task.rounds) ? task.rounds : [],
+          }),
+        });
+      } else {
+        await continueFixSession({ sessionId: task.sessionId, changes, images, figmaDesign, documents });
+      }
     } catch (e) {
       console.error('reviseSession:dispatch', taskId, e?.message || e);
       throw new HttpsError('internal', 'We could not start the changes. You were not charged.');
     }
+    logBillingEvent('revision_dispatched', {
+      taskId, orgId: task.orgId, kind: reason,
+      round: (Number(task.round) || 0) + 1,
+      session: freshSession ? 'fresh' : 'resumed',
+    });
 
     // Price is computed in markRoundReady from this round's actual COGS — `currentRoundCharge`
     // already holds any unapproved amount from the prior round, which markRoundReady adds to.
@@ -184,6 +238,23 @@ export const reviseSession = onCall(
       needsPreview: false,
       previewTries: 0,
       revisedAt: FieldValue.serverTimestamp(),
+      // Swapped onto a fresh session: point the poller at it AND reset the round-delta baselines.
+      // markRoundReady computes this round's COGS as (cumulative session usage − reviewedCostUsd),
+      // and a new session's usage restarts at zero — leaving the old session's total in place
+      // would make the subtraction underflow and bill the round as free. Same for reviewedSeconds,
+      // the baseline for the round's runtime cap. Prior rounds' costs are untouched: they live as
+      // per-round deltas in `rounds`, which is what actualCostUsd sums.
+      ...(freshSession
+        ? {
+          sessionId: freshSession.sessionId,
+          // Keep the sessions we've moved off, so a cost investigation can still walk every
+          // session a task ever ran in (the admin trace link only shows the current one).
+          priorSessionIds: FieldValue.arrayUnion(task.sessionId),
+          firebaseFileIds: freshSession.firebaseFileIds || [],
+          reviewedCostUsd: 0,
+          reviewedSeconds: 0,
+        }
+        : {}),
     });
 
     return { ok: true, free };
