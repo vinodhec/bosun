@@ -284,28 +284,76 @@ export function buildFixPrompt(problem, imageCount = 0, firebaseMounts = [], fig
   );
 }
 
+// The closing contract every revision prompt ends with — the friendly summary plus the
+// RESULT_JSON line the poller parses. Shared by buildRevisePrompt (warm resume) and
+// buildResumePrompt (fresh session) so the two can never drift apart.
+const reviseResultContract = () =>
+  `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
+  `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
+  `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's change request was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the request only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
+  `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`;
+
+const screenshotNoteFor = (imageCount) =>
+  imageCount > 0
+    ? `They also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} — ` +
+      `look at the image${imageCount > 1 ? 's' : ''} to see exactly what they mean.\n\n`
+    : '';
+
 /**
  * Follow-up instruction for a REVISION on the same session. The agent keeps the existing
  * branch + pull request (updates them) so the work stays in one PR / one session.
  */
 export function buildRevisePrompt(changes, imageCount = 0, figmaDesign = null) {
-  const screenshotNote =
-    imageCount > 0
-      ? `They also attached ${imageCount} screenshot${imageCount > 1 ? 's' : ''} — ` +
-        `look at the image${imageCount > 1 ? 's' : ''} to see exactly what they mean.\n\n`
-      : '';
   return (
     `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
-    screenshotNote +
+    screenshotNoteFor(imageCount) +
     jamNote(changes) +
     figmaNote(figmaDesign) +
     `Continue in this SAME session. Apply the smallest safe change to the SAME branch and UPDATE the existing ` +
     `pull request — do NOT open a new one. ${BUILD_EFFICIENCY} ` +
     `As before, ignore generated/dependency folders and lock files.\n\n` +
-    `Then reply with a short, friendly, plain-English summary of what you changed this time. ` +
-    `On the VERY LAST line, append the machine-readable result (the user won't see it), reusing the same pull request url:\n` +
-    `RESULT_JSON: {"summary":"<one friendly sentence>","filesChanged":[{"fileName":"<file>","description":"<plain English>"}],"prUrl":"<same pull request url>","briefScore":<0-100 integer rating how clear and specific the owner's change request was: 80-100 if it named the page/section, gave a link, attached a screenshot, or stated expected-vs-actual; 40-70 if somewhat vague; 0-30 if just "it's broken". Score the request only — never the fix.>,"idealDescription":"<a ready-to-paste prompt the owner could send next time to get the full ask (initial + this revision) on the first try — written in the owner's own non-technical voice, no jargon. Be specific about WHERE (page name or visible heading the owner can see) and WHAT (the exact label/button/section text or visible state). Include a page URL, on-screen label, or step only if it's something the owner would naturally know — never invent file paths, module names, or technical terms. One or two short sentences.>","idealKeywords":[{"phrase":"<a short phrase that appears VERBATIM in idealDescription>","why":"<one short clause, plain English, why this detail saved time>"}]}\n` +
-    `Pick 2–4 idealKeywords — the smallest set that, if missing, would have made you guess. Each phrase MUST be a substring of idealDescription. Skip idealKeywords entirely if the description is already minimal.`
+    reviseResultContract()
+  );
+}
+
+/**
+ * Follow-up instruction for a REVISION that runs in a FRESH session (see isSessionWarm in
+ * claudeAgent.js for why we stop resuming a cold one). The output must be identical to a warm
+ * revision — same branch, same pull request — but this agent starts with no memory of the
+ * earlier rounds, so the prompt supplies the two things the session state used to carry:
+ *   1. the BRANCH to check out (a fresh clone lands on the default branch, which does NOT have
+ *      the earlier rounds' work), and
+ *   2. a short recap of what those rounds already did, so it doesn't redo or undo them.
+ * That recap costs a few hundred tokens against the 150k+ context a resume would have replayed.
+ */
+export function buildResumePrompt({ changes, imageCount = 0, figmaDesign = null, branch, prUrl = null, rounds = [] }) {
+  const done = (Array.isArray(rounds) ? rounds : [])
+    .map((r, i) => {
+      const asked = String(r?.prompt || '').replace(/\s+/g, ' ').slice(0, 300);
+      const did = String(r?.summary || '').replace(/\s+/g, ' ').slice(0, 300);
+      return `  ${i + 1}. They asked: "${asked}"${did ? `\n     You did: ${did}` : ''}`;
+    })
+    .join('\n');
+  const history = done
+    ? `Earlier rounds of this same job, already committed on that branch:\n${done}\n` +
+      `Do NOT redo or revert any of that — build on top of it.\n\n`
+    : '';
+  const prLine = prUrl ? ` (${prUrl})` : '';
+  return (
+    `The website owner reviewed your fix and wants these additional changes (non-technical wording):\n"${changes}"\n\n` +
+    screenshotNoteFor(imageCount) +
+    jamNote(changes) +
+    figmaNote(figmaDesign) +
+    `This continues an existing job with an OPEN pull request${prLine}. The repo at /workspace/repo is a ` +
+    `fresh clone sitting on the default branch, which does NOT contain the earlier work. Before anything ` +
+    `else, run ONE command to get onto the right branch:\n` +
+    `  cd /workspace/repo && git fetch origin ${branch} && git checkout ${branch}\n` +
+    `Everything from the earlier rounds is already committed there.\n\n` +
+    history +
+    `Apply the smallest safe change, then commit and push to that SAME branch (${branch}) — the existing ` +
+    `pull request updates itself, so do NOT open a new one. ${BUILD_EFFICIENCY} ` +
+    `As before, ignore generated/dependency folders and lock files.\n\n` +
+    reviseResultContract()
   );
 }
 

@@ -503,7 +503,9 @@ function MeteredLanes({ lanes, total, sessionPool, waived }) {
 // i.e. a failed/stopped run) vs what the run actually COST us (actualCostInr = raw COGS in
 // INR, no markup). Margin is shown as an absolute ₹ figure AND a %. A never-charged fix is a
 // pure loss: paid ₹0 → margin = −COGS and −100%. Renders nothing until the run has finished.
-function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
+// `rounds` is the number of rounds behind these figures — when it's more than one they are
+// LIFETIME totals for the whole thread, not the price of the change shown above them, so say so.
+function TaskPnL({ status, finalCharge, actualCostInr, rounds = 1, className = '' }) {
   if (status !== 'complete' && status !== 'failed') return null;
   const paid = Number(finalCharge) || 0;
   const cogs = Number(actualCostInr) || 0;
@@ -513,6 +515,7 @@ function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
   const good = margin >= 0;
   return (
     <div className={`flex flex-wrap items-center gap-x-2 text-xs text-ink-soft ${className}`}>
+      {rounds > 1 && <span className="font-medium text-ink">Total ({rounds} rounds)</span>}
       <span>paid <span className="font-semibold text-ink">{formatINR(paid)}</span></span>
       <span>·</span>
       <span>our cost <span className="font-semibold text-ink">{inrPrecise(cogs)}</span></span>
@@ -521,6 +524,33 @@ function TaskPnL({ status, finalCharge, actualCostInr, className = '' }) {
         margin <span className="font-semibold">{inrPrecise(margin)}</span> ({pct}%)
       </span>
     </div>
+  );
+}
+
+// The rounds behind a fix's total. A thread accumulates: round 1 is the owner's original ask and
+// every later round is a separate change they asked for after reviewing. Without this the card
+// pairs round 1's prompt with the last round's summary under one lifetime total, which reads as
+// though a two-line tweak cost the whole amount. Free re-fixes (our shortfall) are flagged.
+function TaskRounds({ rounds }) {
+  if (!Array.isArray(rounds) || rounds.length < 2) return null;
+  return (
+    <ol className="mt-2 space-y-1.5">
+      {rounds.map((r) => (
+        <li key={r.n} className="rounded-lg border border-line/70 p-2 text-xs">
+          <div className="flex items-start justify-between gap-2">
+            <span className="font-medium text-ink">{r.n}. {r.prompt || '(no description)'}</span>
+            {r.kind === 'unresolved' && (
+              <span className="shrink-0 rounded bg-amber-50 px-1 py-0.5 text-[10px] font-semibold text-amber-700">free re-fix</span>
+            )}
+            {r.kind === 'new_scope' && (
+              <span className="shrink-0 rounded bg-violet-50 px-1 py-0.5 text-[10px] font-semibold text-violet-700">new scope</span>
+            )}
+          </div>
+          <MarginLine paidInr={r.addedInr} costInr={r.costInr} className="mt-1" />
+          {r.summary && <p className="mt-0.5 text-ink-soft">{r.summary}</p>}
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -1790,9 +1820,18 @@ export default function Admin() {
             {fixSessions.map((t) => (
               <li key={t.id} className="rounded-lg border border-line p-3 text-sm">
                 <div className="flex items-start justify-between gap-3">
+                  {/* Round 1's ask. Later rounds are their own entries in TaskRounds below — never
+                      fold them into this line, or the card misattributes the whole bill to it. */}
                   <span className="font-medium text-ink">{t.prompt}</span>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${TONE[t.status] || 'bg-slate-100 text-slate-600'}`}>
-                    {t.status}
+                  <span className="flex shrink-0 items-center gap-1">
+                    {(t.rounds?.length || 0) > 1 && (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                        {t.rounds.length} rounds
+                      </span>
+                    )}
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${TONE[t.status] || 'bg-slate-100 text-slate-600'}`}>
+                      {t.status}
+                    </span>
                   </span>
                 </div>
                 <div className="mt-1 text-ink-soft">
@@ -1801,9 +1840,13 @@ export default function Admin() {
                   {t.userEmail ? ` · ${t.userEmail}` : ''}
                 </div>
                 {t.sessionId && <div className="mt-0.5 font-mono text-[10px] text-ink-soft/80">{t.sessionId}</div>}
-                <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr} className="mt-0.5" />
+                <TaskPnL status={t.status} finalCharge={t.finalCharge} actualCostInr={t.actualCostInr}
+                  rounds={t.rounds?.length || 1} className="mt-0.5" />
                 <RunProgress task={t} />
-                {t.resultSummary && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
+                {/* Single-round fixes keep the summary here; multi-round threads show one per
+                    round instead, so the last round's summary can't stand for the whole thread. */}
+                {t.resultSummary && (t.rounds?.length || 0) < 2 && <p className="mt-1 text-ink-soft">{t.resultSummary}</p>}
+                <TaskRounds rounds={t.rounds} />
                 {t.error && <p className="mt-1 text-bad">error: {t.error}</p>}
 
                 {/* Big job awaiting a quote — set a price + budget cap, sent to the customer. */}

@@ -86,8 +86,8 @@ All charge math goes through `shared/billing.js`. Key invariants:
   `pendingReview` and waits for `approveFix`; the DEFAULT (`false`) auto-charges the bracketed
   price the moment the agent finishes (`markRoundReady`). Either way `MAX_FREE_REVISIONS = 1`
   free `unresolved` re-fix (our shortfall, charged ₹0); `new_scope` is charged again. A revision
-  RESUMES the same managed-agent session (`reviseSession` → `continueFixSession`) and appends to
-  `task.rounds` — there is no child task / `parentTaskId`.
+  appends to `task.rounds` — there is no child task / `parentTaskId` — and runs EITHER by resuming
+  the managed-agent session or in a fresh one (see "Warm vs fresh revisions" below).
 - **Idempotent + atomic billing.** Billing runs inside Firestore transactions in `finalize.js`
   (called from `pollSessions` / `approveFix`) and gates on the round transition. Failed runs are
   never charged (`markRoundFailure`).
@@ -116,11 +116,37 @@ All charge math goes through `shared/billing.js`. Key invariants:
 4. `pollSessions` (scheduled) reads `session.usage` + runtime, terminates over-cap sessions,
    parses the final result via `utils/agentResult.js`, then `markRoundReady` either auto-charges
    (default) or flips the task to `pendingReview` (requireApproval orgs).
-5. `approveFix` (requireApproval orgs) debits the wallet; `reviseSession` resumes the SAME session
-   for another round (no child task). `customerDeployTesting` merges the PR into `main` (testing
+5. `approveFix` (requireApproval orgs) debits the wallet; `reviseSession` runs another round on the
+   same task (no child task). `customerDeployTesting` merges the PR into `main` (testing
    deploy); `customerDeployProd` tags `main` (go live).
 
 Task lifecycle: `queued → running → (pendingReview ↔ revising) → complete | failed | needs_quote`.
+
+### Warm vs fresh revisions (a COGS rule, not a UX one)
+
+A revision always produces the same thing — more commits on the SAME branch, updating the SAME PR
+— but `reviseSession` picks HOW based on `claudeAgent.js#isSessionWarm`:
+
+- **Warm** (last round closed < `SESSION_WARM_MINUTES` = 4 ago AND fewer than `MAX_WARM_ROUNDS` = 3
+  rounds so far) → `continueFixSession` resumes the session, as before.
+- **Cold** → `startFixSession` with `buildResumePrompt`: a NEW session that checks out the existing
+  branch, gets a short recap of the earlier rounds (~900 tokens), and updates the same PR.
+
+Why: a managed-agent session's prompt cache is ephemeral (~5 min) and its context grows every
+round, and every tool call replays that context. Resuming a cold session therefore pays a full
+cache re-write plus a growing replay before doing any work — on one real 8-round session that
+overhead was ~⅓ of the total COGS, marked up to the owner by the cost-plus price. Going fresh also
+makes the price independent of how long the owner took to reply.
+
+**Two invariants when changing this code:**
+- Fresh sessions are only safe when the branch is resolvable from `task.prUrl` (`getPrHeadRef`) —
+  a fresh clone lands on the DEFAULT branch, so with no branch we MUST fall back to a resume or
+  we'd silently drop the earlier rounds' work.
+- Swapping `task.sessionId` MUST reset `reviewedCostUsd` and `reviewedSeconds` to 0. `markRoundReady`
+  computes the round's COGS as `cumulative session usage − reviewedCostUsd`, and a new session's
+  usage restarts at zero — leaving the old baseline makes the subtraction underflow and the round
+  bills as free. Prior rounds keep their own deltas in `task.rounds` (which is what `actualCostUsd`
+  sums), and `priorSessionIds` retains the sessions the task has moved off for cost forensics.
 
 ## The feature pipeline ("Plan a feature")
 

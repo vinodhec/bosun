@@ -191,6 +191,36 @@ export async function startFixSession({ prompt, images = [], imageFileIds = [], 
   return { sessionId: session.id, firebaseFileIds };
 }
 
+// How long a resumed session stays CHEAP. Two costs decide it, both measured on real sessions:
+//   1. The prompt cache is ephemeral (~5 min TTL). Resume after it lapses and the FIRST request
+//      re-writes the entire context at the cache-write rate — on a 150k-token session that was
+//      ~$0.45, more than the round's actual work. Resume inside the window and it was $0.02.
+//   2. Context grows every round, and EVERY tool call replays all of it. By round 8 of one real
+//      session each request replayed ~180k tokens, so a two-line edit cost $0.96.
+// 4 minutes leaves a margin under the 5-minute TTL (the round's own dispatch latency eats into
+// it). MAX_WARM_ROUNDS caps the second cost — past a few rounds the replay alone outweighs the
+// re-clone a fresh session pays. Both are overridable so the numbers can be tuned without a deploy.
+const warmMinutes = () => Number(process.env.SESSION_WARM_MINUTES) || 4;
+const maxWarmRounds = () => Number(process.env.MAX_WARM_ROUNDS) || 3;
+
+/**
+ * Should a revision RESUME this task's session, or start a fresh one? Resuming is only cheaper
+ * while the session is still cache-warm AND its context is still short (see the constants above);
+ * otherwise the owner pays the bracketed markup on pure overhead. Callers must treat `false` as
+ * advisory — a fresh session can only replace a resume when the existing branch is resolvable
+ * (see reviseSession), since a fresh clone starts on the default branch.
+ */
+export function isSessionWarm(task, nowMs = Date.now()) {
+  const rounds = Array.isArray(task?.rounds) ? task.rounds.length : 0;
+  if (rounds >= maxWarmRounds()) return false;
+  // When the last round closed. completedAt is a Firestore Timestamp on a read doc; rounds carry
+  // their own `at` millis as a fallback. With neither we can't prove warmth — assume cold.
+  const lastMs = task?.completedAt?.toMillis?.()
+    ?? (rounds ? Number(task.rounds[rounds - 1]?.at) || 0 : 0);
+  if (!lastMs) return false;
+  return nowMs - lastMs < warmMinutes() * 60 * 1000;
+}
+
 /**
  * Resume an EXISTING session to apply more changes (a revision). The session keeps its
  * environment + GitHub auth, so the agent updates the SAME branch/PR. Usage accrues on
