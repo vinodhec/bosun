@@ -96,6 +96,7 @@ export { runSourcingJobs } from './handlers/runSourcingJobs.js';
 // the customer sends a property owner, in the owner's language. Billed ₹0.25 per compose, settled
 // in-request.
 export { sourcingCompose } from './handlers/sourcingCompose.js';
+export { waCompose } from './handlers/waCompose.js';
 
 // HTTP (customer→Bosun, same HMAC): usage-event meter. The customer's platform reports each
 // listing its sweep auto-published off a Bosun-sourced lead; priced here (₹0.50/auto_post,
