@@ -34,16 +34,26 @@ export const CATEGORY_ORDER = [
 ];
 
 // Why-lines are composed here (not by Gemini) so every card's justification is deterministic and
-// grounded — the briefing may summarise, but per-task copy never hallucinates.
+// grounded — the briefing may summarise, but per-task copy never hallucinates. A candidate with
+// waiting buyer demand (work-state's demandCount) leads with it — "2 buyers waiting" is the reason
+// this call ranks where it does, and the admin should hear it in the card, not just feel the order.
+const buyersWaiting = (c) => {
+  const n = Number(c.demandCount) || 0;
+  return n > 0 ? `${n} buyer${n > 1 ? 's' : ''} waiting` : '';
+};
+const withDemand = (c, base) => {
+  const d = buyersWaiting(c);
+  return d ? `${d} · ${base}` : base;
+};
 const WHY = {
   callback_due: (c) => {
     const at = c.callbackAtMs ? new Date(c.callbackAtMs + 5.5 * 3600 * 1000) : null;
     const hh = at ? `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}` : '';
-    return at ? `Callback promised · ${hh} IST` : 'Callback promised';
+    return withDemand(c, at ? `Callback promised · ${hh} IST` : 'Callback promised');
   },
   untouched_lead: (c) =>
-    c.freshnessTag === 'stale-fallback' ? 'Never called (older post — verify first)' : 'Fresh lead, never called',
-  rnr_retry: (c) => `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`,
+    withDemand(c, c.freshnessTag === 'stale-fallback' ? 'Never called (older post — verify first)' : 'Fresh lead, never called'),
+  rnr_retry: (c) => withDemand(c, `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`),
   buyer_followup: () => 'Buyer waiting — match inventory & reply',
   freshness_check: () => 'Published listing past its freshness window — confirm still available',
 };
@@ -68,6 +78,21 @@ export const TASK_SKILL = {
   freshness_check: 'freshness_check',
 };
 
+// Throughput-sized quota (the feedback loop). A plan padded far beyond what an admin actually
+// closes trains them to ignore it — so once yesterday's plan outcome exists (work-state's
+// planYesterday, total ≥ MEANINGFUL_PLAN), tonight's quota tracks demonstrated throughput
+// (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity]. No history
+// (new admin / no plan yesterday) → static capacity, exactly as before.
+const QUOTA_FLOOR = 10; // even a cold admin gets a real morning list, never a wall of noise
+const MEANINGFUL_PLAN = 5; // tiny plans (fresh rollout days) don't count as evidence
+export function quotaFor(admin, maxTasksPerAdmin) {
+  const base = Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
+  const py = admin.planYesterday;
+  if (!py || !(Number(py.total) >= MEANINGFUL_PLAN)) return base;
+  const worked = (Number(py.done) || 0) + (Number(py.autoDone) || 0);
+  return Math.max(Math.min(QUOTA_FLOOR, base), Math.min(base, Math.ceil(worked * 1.25)));
+}
+
 function eligible(admin, task) {
   if (admin.quota <= admin.assigned.length) return false;
   if (task.type === 'buyer_followup' && !admin.canAccessBuyerLeads) return false;
@@ -87,7 +112,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
     .filter((a) => a.role !== 'superadmin' && a.role !== 'super_admin')
     .map((a) => ({
       ...a,
-      quota: Math.max(1, Math.min(Number(a.capacity) || 40, maxTasksPerAdmin)),
+      quota: quotaFor(a, maxTasksPerAdmin),
       assigned: [],
     }))
     .sort((a, b) => a.uid.localeCompare(b.uid)); // fixed roster order → reproducible cursor math
@@ -111,6 +136,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
         language: c.language,
         attemptsAtPlan: Number(c.attempts) || 0,
         callbackAtMs: c.callbackAtMs || null,
+        demand: Number(c.demandCount) || 0, // waiting buyers — persisted to the plan card
         why: WHY[category](c),
       };
 
@@ -175,18 +201,33 @@ export function briefingPrompt(admin, tasks, workState) {
   const byType = {};
   for (const t of tasks) byType[t.type] = (byType[t.type] || 0) + 1;
   const top = tasks.slice(0, 3).map((t) => `- ${t.type}: ${t.why} (${t.locality || t.city})`);
-  return [
+  const demandTasks = tasks.filter((t) => (Number(t.demand) || 0) > 0);
+  const py = admin.planYesterday;
+  const lines = [
     `Write a 2-3 sentence morning briefing for a real-estate sourcing admin named ${admin.name}.`,
     `Today's plan (${workState.dateKey}): ${tasks.length} tasks — ` +
       Object.entries(byType)
         .map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`)
         .join(', ') +
       '.',
-    `Top priorities:\n${top.join('\n')}`,
+  ];
+  if (demandTasks.length) {
+    lines.push(
+      `${demandTasks.length} of these calls have buyers ALREADY waiting for that locality/type — they are ranked first; closing one feeds a live buyer, so lead with this.`,
+    );
+  }
+  lines.push(`Top priorities:\n${top.join('\n')}`);
+  if (py && py.total > 0) {
+    lines.push(
+      `Yesterday's plan: ${py.done + py.autoDone} of ${py.total} tasks completed${py.skipped ? ` (${py.skipped} skipped)` : ''} — today's list is sized to that pace.`,
+    );
+  }
+  lines.push(
     `Yesterday: ${admin.callsYesterday} calls, ${admin.converted7d} conversions in the last 7 days.`,
     'Tone: energetic, concrete, no fluff, no emojis, no invented numbers — use only the counts above.',
     'Return JSON: {"briefing": "<the briefing text>"}',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 export const BRIEFING_SCHEMA = {

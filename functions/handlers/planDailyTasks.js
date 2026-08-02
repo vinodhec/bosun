@@ -145,12 +145,19 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
     // 4) Deliver. Every roster admin gets a doc (even tasks:[]) so the platform's morning trigger
     // can treat "any doc exists" as planned. Sign the EXACT body bytes.
     const planRunId = `dp_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
+    const demandMatched = plans.reduce(
+      (s, p) => s + p.tasks.filter((t) => (Number(t.demand) || 0) > 0).length,
+      0,
+    );
     const body = JSON.stringify({
       orgId,
       planRunId,
       dateKey,
       generatedAtMs: Date.now(),
       trigger,
+      // Run-level stats → the platform's daily_plan_meta (team-scoreboard staffing flag). The
+      // dropped-work number leaving our side is the point: unassigned backlog must be VISIBLE.
+      stats: { unassigned: stats.unassigned, demandMatched },
       plans: plans.map((p) => ({
         adminUid: p.adminUid,
         adminName: p.adminName,
@@ -218,6 +225,7 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
           type: 'debit',
           kind: 'daily_plan',
           amount: debitInr,
+          count: 1, // one plan-day — adminMetrics sums `count` for the lane's Units column
           description: `Nightly admin work-queue plan (${dateKey}, ${taskCount} tasks, ${plans.length} admins)`,
           createdAt: FieldValue.serverTimestamp(),
         });
@@ -250,10 +258,22 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
         trigger,
         admins: plans.length,
         taskCount,
+        demandMatched, // tasks with a buyer already waiting — the value-proof series
+        openRequirements: Number(workState.demand?.openRequirements) || 0,
         tasksPerCategory: Object.fromEntries(
           Object.entries(workState.categories || {}).map(([k, v]) => [k, (v || []).length]),
         ),
         unassigned: stats.unassigned,
+        // Per-admin usage record — did yesterday's plan get worked, and what did tonight allocate?
+        // callsYesterday/converted7d were always in the snapshot; now they persist for the audit.
+        roster: (workState.admins || []).map((a) => ({
+          uid: a.uid,
+          name: a.name || '',
+          callsYesterday: Number(a.callsYesterday) || 0,
+          converted7d: Number(a.converted7d) || 0,
+          planYesterday: a.planYesterday || null,
+          assignedTonight: Number(stats.perAdmin?.[a.uid]) || 0,
+        })),
         briefingFailures,
         ack: { created: ack.created ?? null, duplicates: ack.duplicates ?? null },
         chargedInr: charged,
