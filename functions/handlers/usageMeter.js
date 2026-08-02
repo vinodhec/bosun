@@ -28,7 +28,6 @@ import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import {
   AUTOPOST_USAGE_PRICE_PAISE,
   WA_MESSAGE_DELIVERED_PRICE_PAISE,
-  WA_LEAD_ACCEPTED_PRICE_PAISE,
   DAILY_PLAN_PRICE_PAISE,
   SEO_REPORT_REPLAY_PRICE_PAISE,
   BLOG_CLASSIFY_PRICE_PAISE,
@@ -62,12 +61,6 @@ const SERVICE_DEFS = {
     accrualField: 'waAccrualPaise',
     kind: 'whatsapp_usage',
     label: 'WhatsApp outreach — delivered message',
-  },
-  wa_lead_accepted: {
-    pricePaise: WA_LEAD_ACCEPTED_PRICE_PAISE,
-    accrualField: 'waAccrualPaise',
-    kind: 'whatsapp_usage',
-    label: 'WhatsApp outreach — accepted posting',
   },
   daily_plan: {
     pricePaise: DAILY_PLAN_PRICE_PAISE,

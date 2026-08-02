@@ -564,13 +564,16 @@ export const AUTOPOST_USAGE_PRICE_PAISE = 50; // ₹0.50 per auto-posted listing
 
 /**
  * ── WhatsApp outreach (metered via usageMeter) ─────────────────────────────────────────────────
- * The customer's platform runs the outreach bot (Bosun owns the WABA + bears Meta delivery and
- * Gemini cost) and reports billable events to usageMeter, durable + idempotent on their side
- * (whatsapp_meter_log) and on ours (usage_meter_log). Confirmed model — see the platform's
- * docs/whatsapp-outreach-bot-feasibility.md §2b. Accrued on the org as `waAccrualPaise`.
+ * The customer's platform runs the outreach bot AND bears the channel's hard costs directly — the
+ * WABA sits on their Gupshup wallet (Meta delivery fees) and reply composition runs on their
+ * Vertex billing. Bosun's fee is therefore a FLAT per-message service charge, one price for every
+ * outbound message (first-contact template, bot replies, alerts alike). Repriced 2026-08-02 from
+ * the original ₹1.65/msg + ₹3/accepted model, which assumed Bosun would own the WABA and bear
+ * Meta's costs — it doesn't, so the accepted-posting success fee is gone and the per-message rate
+ * reflects pure service margin. Events reported via usageMeter, durable + idempotent on their side
+ * (whatsapp_meter_log) and on ours (usage_meter_log). Accrued on the org as `waAccrualPaise`.
  */
-export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 165; // ₹1.65 per delivered WhatsApp message
-export const WA_LEAD_ACCEPTED_PRICE_PAISE = 300; // ₹3 per accepted posting (base rate)
+export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound WhatsApp message
 
 /**
  * ── Nightly admin work-queue planner (daily_plan) ──────────────────────────────────────────────
@@ -595,7 +598,7 @@ export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day (TEMP dev rate
  * only the new lines (daily_plan, whatsapp_*, session/conversion) are waived.
  *
  * Shape: `organisations/{orgId}.billingPaused` = array of service kinds (e.g.
- * ['daily_plan','wa_message_delivered','wa_lead_accepted']). Absent/empty ⇒ nothing paused.
+ * ['daily_plan','wa_message_delivered']). Absent/empty ⇒ nothing paused.
  */
 export function isServicePaused(org, service) {
   const paused = org && org.billingPaused;

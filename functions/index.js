@@ -100,7 +100,7 @@ export { sourcingCompose } from './handlers/sourcingCompose.js';
 // HTTP (customer→Bosun, same HMAC): usage-event meter. The customer's platform reports each
 // listing its sweep auto-published off a Bosun-sourced lead; priced here (₹0.50/auto_post,
 // shared/billing.js) — the event carries no price on the wire. Idempotent per lead, replay-safe.
-// Also prices the WhatsApp outreach events (wa_message_delivered / wa_lead_accepted) and can
+// Also prices the WhatsApp outreach event (wa_message_delivered, flat per outbound message) and can
 // replay daily_plan events — see SERVICE_DEFS in the handler.
 export { usageMeter } from './handlers/usageMeter.js';
 
