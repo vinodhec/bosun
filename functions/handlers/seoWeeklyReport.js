@@ -15,8 +15,9 @@
  * report — deterministic fallback items ship instead) → POST to the platform's
  * /api/ingest/seo-report → settle billing on the 2xx ack.
  *
- * Billing: FLAT per report, drawn randomly in [SEO_REPORT_MIN, MAX] paise per run (the banded-flat
- * principle), settled in one transaction (accrual `seoReportAccrualPaise`, ledger kind
+ * Billing: FLAT per report — currently HELD at ₹50 (below COGS, until the owner starts working the
+ * action items; the dormant [MIN, MAX] band in shared/billing.js is the real price to restore to),
+ * settled in one transaction (accrual `seoReportAccrualPaise`, ledger kind
  * `seo_weekly_report`) — the daily_plan discipline. Idempotency: the settle writes
  * `usage_meter_log/{orgId}:seo_weekly_report:{periodKey}`; both entry points pre-check that doc, so
  * a scheduler retry or an on-demand call after a successful week are charged:0 no-ops. The

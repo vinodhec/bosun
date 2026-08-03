@@ -68,9 +68,9 @@ const SERVICE_DEFS = {
     kind: 'daily_plan',
     label: 'Nightly admin work-queue plan',
   },
-  // Normally settled in-process by seoWeeklyReport at a price drawn per run in the [MIN, MAX]
-  // band; this fixed midpoint only prices a ledger replay — after any successful run the shared
-  // log row makes such a replay a charged:0 no-op anyway.
+  // Normally settled in-process by seoWeeklyReport at the flat held price; this tracks the same
+  // constant so a ledger replay prices identically — after any successful run the shared log row
+  // makes such a replay a charged:0 no-op anyway.
   seo_weekly_report: {
     pricePaise: SEO_REPORT_REPLAY_PRICE_PAISE,
     accrualField: 'seoReportAccrualPaise',

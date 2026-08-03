@@ -635,19 +635,30 @@ export const CONVERSION_POPUP_MAX_PAISE = 35; // recentred 40–50 → 25–35, 
  * Accrued on the org as `seoReportAccrualPaise`. The REPLAY price exists only for usageMeter's
  * SERVICE_DEFS (a ledger replay after a successful run dedupes to a no-op anyway).
  */
-// Repriced 2026-07-19 (operator decision) when the live-SERP layers landed: 72-city deep rank
-// tracker (top 50, weekly) + 343-locality rotation (page 1, full sweep monthly) + action-item SERP
-// context. COGS ≈ ₹140/report (Apify-dominated); this band holds the service's ~72% margin.
-export const SEO_REPORT_MIN_PRICE_PAISE = 45000; // ₹450
-export const SEO_REPORT_MAX_PRICE_PAISE = 55000; // ₹550
-export const SEO_REPORT_REPLAY_PRICE_PAISE = 50000; // fixed midpoint — usageMeter replays only
+// HELD AT ₹50 (operator decision 2026-08-03): a flat token price per report, BELOW COGS, until the
+// operator says otherwise. The customer hasn't yet worked a report — the action items, the
+// accountability score and the rank tracker only pay for themselves once someone acts on them — so
+// the service earns its real price on adoption, not on delivery. Measured COGS on the week-of
+// 2026-07-20 run: Apify $1.4055 (three sweeps — 95 deep queries × 5 pages + 86 locality × 1 page,
+// ~$0.0025/page) ≈ ₹124, plus one Flash narrative + function runtime ≈ ₹2. So ≈ ₹126/report, i.e.
+// each report at ₹50 LOSES ~₹76. Restore trigger: the owner acting on action items week over week
+// (the accountability score in seoRuns going non-null with improved items). The dormant band below
+// is the real price to restore to — banded-flat, ~72% margin at the measured COGS.
+export const SEO_REPORT_HOLD_PRICE_PAISE = 5000; // ₹50 flat — the LIVE price (temp; see above)
+export const SEO_REPORT_MIN_PRICE_PAISE = 45000; // ₹450 — DORMANT restore band
+export const SEO_REPORT_MAX_PRICE_PAISE = 55000; // ₹550 — DORMANT restore band
+export const SEO_REPORT_REPLAY_PRICE_PAISE = SEO_REPORT_HOLD_PRICE_PAISE; // usageMeter replays price identically
 
-/** One report's price in paise, drawn uniformly in [MIN, MAX]. */
+/**
+ * One report's price in paise. Flat while the hold is on; restore the banded draw (uniform in
+ * [MIN, MAX]) by returning the commented-out expression below.
+ */
 export function randomSeoReportPricePaise(rng = Math.random) {
-  return (
-    SEO_REPORT_MIN_PRICE_PAISE +
-    Math.floor(rng() * (SEO_REPORT_MAX_PRICE_PAISE - SEO_REPORT_MIN_PRICE_PAISE + 1))
-  );
+  return SEO_REPORT_HOLD_PRICE_PAISE;
+  // return (
+  //   SEO_REPORT_MIN_PRICE_PAISE +
+  //   Math.floor(rng() * (SEO_REPORT_MAX_PRICE_PAISE - SEO_REPORT_MIN_PRICE_PAISE + 1))
+  // );
 }
 
 /** Total paise for N popups, each drawn uniformly in [MIN, MAX]. */
