@@ -78,12 +78,18 @@ export const TASK_SKILL = {
   freshness_check: 'freshness_check',
 };
 
-// Throughput-sized quota (the feedback loop). A plan padded far beyond what an admin actually
-// closes trains them to ignore it — so once yesterday's plan outcome exists (work-state's
+// Throughput-sized quota (the feedback loop). Once yesterday's plan outcome exists (work-state's
 // planYesterday, total ≥ MEANINGFUL_PLAN), tonight's quota tracks demonstrated throughput
 // (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity]. No history
 // (new admin / no plan yesterday) → static capacity, exactly as before.
-const QUOTA_FLOOR = 10; // even a cold admin gets a real morning list, never a wall of noise
+//
+// QUOTA_FLOOR is the owner's daily target, not a nudge: 40 tasks is the expected day
+// (operator decision 2026-08-03 — "minimum 40"; was 10 for one night, which mirrored measured
+// throughput but under-filled a 9-hour shift). With the default capacity also 40, the floor
+// makes every plan a full 40 — the stretch only bites past 40 when a superadmin raises an
+// admin's dailyTaskCapacity on the staffing page. A capacity set BELOW 40 still wins (the
+// floor never overrides an explicit per-admin cap).
+const QUOTA_FLOOR = 40;
 const MEANINGFUL_PLAN = 5; // tiny plans (fresh rollout days) don't count as evidence
 export function quotaFor(admin, maxTasksPerAdmin) {
   const base = Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
