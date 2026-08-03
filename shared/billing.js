@@ -583,10 +583,17 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
  * settled directly by planDailyTasks on the platform's ingest ack (registered in usageMeter too so
  * a ledger replay/backfill prices identically). Accrued on the org as `plannerAccrualPaise`.
  *
- * TEMPORARY (operator decision 2026-07-19): held at a token ₹10/plan-day while the planner is still
- * under development / being confirmed. Restore to 20000 (₹200) once development is completed.
+ * HELD AT ₹10 (operator decision 2026-08-03, superseding the 2026-07-19 dev-rate note): the
+ * feature set is complete (demand-first ranking, 40-task floor, inline call card, owner
+ * scoreboard) but the ADMINS aren'T working the plan page yet — every completion to date is
+ * auto-reconciled, zero manual ticks. The token price stays until the team demonstrably uses it;
+ * the adoption signal is manual done/skip ticks appearing in plannerRuns' roster records /
+ * admin_daily_plans counts. Then reprice — candidate model: ₹40/admin-day (per-seat scales with
+ * the customer's own roster and can't be gamed by us), which is ₹200/day at the current 5 seats.
+ * COGS ≈ ₹0.25–0.30/night (5 Flash briefings + function runtime; the heavy work-state/demand/
+ * reconcile compute runs on the customer's own infra).
  */
-export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day (TEMP dev rate; real rate ₹200 = 20000)
+export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day — held until admins adopt (see above)
 
 /**
  * ── Billing pause (testing / goodwill) ─────────────────────────────────────────────────────────
