@@ -111,6 +111,10 @@ export { usageMeter } from './handlers/usageMeter.js';
 // platform's 07:00 IST on-demand safety trigger (same HMAC as usageMeter).
 export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 
+// EOD WhatsApp team summary — 18:30 IST, asks the platform to aggregate + send the day's
+// scoreboard to the org's staff numbers. Flat ₹10/summary-day, charged only on sent > 0.
+export { eodSummary } from './handlers/eodSummary.js';
+
 // Nightly Session Intelligence (02:30 IST): classify yesterday's sessions into intent segments,
 // build the daily demand map, refresh the engagement message library (EN+TA, {count}-grounded),
 // flag anomalies, deliver the engagement-pack to the platform. Covered by the base fee up to the

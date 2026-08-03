@@ -31,6 +31,7 @@ import {
   DAILY_PLAN_PRICE_PAISE,
   SEO_REPORT_REPLAY_PRICE_PAISE,
   BLOG_CLASSIFY_PRICE_PAISE,
+  EOD_SUMMARY_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
 } from '../shared/billing.js';
@@ -85,6 +86,14 @@ const SERVICE_DEFS = {
     accrualField: 'blogClassifyAccrualPaise',
     kind: 'blog_classify',
     label: 'Blog audience classification',
+  },
+  // Normally settled in-process by eodSummary on the platform's ack (charged only on sent > 0);
+  // registered here so a ledger replay/backfill prices identically and dedupes on the same row.
+  eod_summary: {
+    pricePaise: EOD_SUMMARY_PRICE_PAISE,
+    accrualField: 'eodSummaryAccrualPaise',
+    kind: 'eod_summary',
+    label: 'EOD WhatsApp team summary',
   },
 };
 

@@ -596,6 +596,18 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
 export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day — held until admins adopt (see above)
 
 /**
+ * ── EOD WhatsApp team summary (eod_summary) ────────────────────────────────────────────────────
+ * FLAT per summary-day (operator decision 2026-08-03): every evening at 18:30 IST the eodSummary
+ * job asks the platform to WhatsApp the day's team scoreboard (calls done, deals, buyers-waiting,
+ * per-admin breakdown) to the configured staff numbers. One event per org per IST date,
+ * idempotencyKey = dateKey, settled in-process on the platform's ack — charged only when the
+ * platform reports sent > 0, so a day with no plans or a failed delivery is free. Accrued on the
+ * org as `eodSummaryAccrualPaise`. COGS ≈ the outbound WhatsApp messages themselves (platform's
+ * Gupshup wallet) + one function invocation; Bosun's fee is the aggregation + delivery service.
+ */
+export const EOD_SUMMARY_PRICE_PAISE = 1000; // ₹10 per summary-day, flat (operator repriced from ₹5 before launch, 2026-08-03)
+
+/**
  * ── Billing pause (testing / goodwill) ─────────────────────────────────────────────────────────
  * An org may pause specific metered service lines while a new capability is validated on a testing
  * environment. A paused settle still writes its idempotency log row (so re-runs stay no-ops) but
