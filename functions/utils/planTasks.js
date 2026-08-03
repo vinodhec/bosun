@@ -12,15 +12,14 @@
  * scope, capacity and light throughput stats.
  *
  * Allocation, per category in priority order (callbacks are promises; freshness is maintenance):
- *   1. OWNERSHIP — a lead already assigned to (or converted by) an admin belongs to them, period.
- *      Eligible owner → they get it. Owner at quota / out of scope / not on the roster → the lead
- *      is DEFERRED (stats.ownerDeferred), never given to anyone else: the platform's action gate
- *      blocks non-owners anyway, so planning an owned lead for a teammate only produces a dead
- *      card they can't work (jam.dev/c/61be7354 — one admin's 300-lead claimed backlog overflowed
- *      his quota and sprayed unactionable cards across four teammates' plans).
- *   2. ROUND-ROBIN — an UNOWNED lead goes to the least-loaded eligible admin (fill-ratio, then a
+ *   1. AFFINITY — a lead already assigned to (or converted by) an eligible admin goes to them:
+ *      continuity is preferred whenever the owner has room.
+ *   2. ROUND-ROBIN — otherwise the least-loaded eligible admin takes it (fill-ratio, then a
  *      deterministic per-day rotation cursor so the same admin doesn't always win ties, then uid as
- *      the total order that makes the sort reproducible).
+ *      the total order that makes the sort reproducible). This INCLUDES leads whose owner is at
+ *      quota: THE PLAN WINS (operator decision 2026-08-03, #571) — the platform's ingest reassigns
+ *      each planned lead to its plan admin on delivery, so allocating an over-claimed admin's
+ *      backlog to teammates redistributes it instead of producing dead cards.
  *   3. Nobody eligible (language mismatch / everyone at quota) → counted in stats.unassigned, never
  *      silently dropped — the superadmin team view surfaces these.
  *
@@ -127,7 +126,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
     }))
     .sort((a, b) => a.uid.localeCompare(b.uid)); // fixed roster order → reproducible cursor math
 
-  const stats = { unassigned: {}, ownerDeferred: {}, perAdmin: {} };
+  const stats = { unassigned: {}, perAdmin: {} };
   const n = roster.length;
 
   for (const category of CATEGORY_ORDER) {
@@ -150,15 +149,13 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
         why: WHY[category](c),
       };
 
-      // 1) Ownership: the platform's owner (assignee, or converter for freshness) keeps their lead —
-      // and NOBODY else may have it. An owned lead whose owner can't take it today (quota full,
-      // scope, off the roster) is deferred and counted, not round-robined: the platform's isLeadOwner
-      // gate means any other admin would just get a card they can't act on.
+      // 1) Affinity: the platform's owner (assignee, or converter for freshness) keeps their lead
+      // while they have room. Owner ineligible (quota/scope/off roster) → fall through: the plan
+      // wins, and the platform's ingest reassigns the lead to whoever it lands on below.
       const ownerUid = category === 'freshness_check' ? c.convertedBy : c.assignedTo;
-      if (ownerUid) {
-        const owner = roster.find((a) => a.uid === ownerUid);
-        if (owner && eligible(owner, task)) owner.assigned.push(task);
-        else stats.ownerDeferred[category] = (stats.ownerDeferred[category] || 0) + 1;
+      const owner = ownerUid ? roster.find((a) => a.uid === ownerUid) : null;
+      if (owner && eligible(owner, task)) {
+        owner.assigned.push(task);
         continue;
       }
 
