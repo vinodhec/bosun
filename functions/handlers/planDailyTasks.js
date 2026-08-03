@@ -156,8 +156,9 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
       generatedAtMs: Date.now(),
       trigger,
       // Run-level stats → the platform's daily_plan_meta (team-scoreboard staffing flag). The
-      // dropped-work number leaving our side is the point: unassigned backlog must be VISIBLE.
-      stats: { unassigned: stats.unassigned, demandMatched },
+      // dropped-work numbers leaving our side are the point: unassigned backlog and owned leads
+      // deferred past their owner's quota must be VISIBLE, never silently absorbed.
+      stats: { unassigned: stats.unassigned, ownerDeferred: stats.ownerDeferred, demandMatched },
       plans: plans.map((p) => ({
         adminUid: p.adminUid,
         adminName: p.adminName,
@@ -264,6 +265,7 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
           Object.entries(workState.categories || {}).map(([k, v]) => [k, (v || []).length]),
         ),
         unassigned: stats.unassigned,
+        ownerDeferred: stats.ownerDeferred, // owned leads held back because their owner was at quota/out of scope
         // Per-admin usage record — did yesterday's plan get worked, and what did tonight allocate?
         // callsYesterday/converted7d were always in the snapshot; now they persist for the audit.
         roster: (workState.admins || []).map((a) => ({
