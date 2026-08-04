@@ -11,7 +11,7 @@
  * the real vocabulary (query, classify, enrich, webhook), not plain phrasing.
  */
 import { useEffect, useState } from 'react';
-import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminRunSourcingNow, adminSourcingRelayLead } from '../firebase/functions.js';
+import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminRunSourcingNow, adminPlanNow, adminSourcingRelayLead } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 
 const btn = 'rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60';
@@ -474,6 +474,9 @@ export default function SourcingRuns({ orgs }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [running, setRunning] = useState('');
+  // Outcome of a manual "Plan today now". A skip or a wallet block is a SUCCESS response, not an
+  // error, so it needs its own line — the operator must see which of the three things happened.
+  const [planResult, setPlanResult] = useState(null);
   // Deep link from the platform's target console: /admin?run=<sourcingRunId> pins that run at the
   // top, already expanded — the "did this target really get sourced?" audit jump.
   const [pinnedRun, setPinnedRun] = useState(null);
@@ -506,9 +509,14 @@ export default function SourcingRuns({ orgs }) {
     if (!orgId) { setErr('Pick an organisation first.'); return; }
     setRunning(kind);
     setErr('');
+    setPlanResult(null);
     try {
       if (kind === 'top') await adminSourceTopTarget({ orgId, topN: 1 });
-      else await adminRunSourcingNow({ orgId });
+      else if (kind === 'plan') {
+        const { data: d } = await adminPlanNow({ orgId });
+        setPlanResult(d);
+        return; // planning writes no sourcing run — nothing on this panel to reload
+      } else await adminRunSourcingNow({ orgId });
       await load(orgId);
     } catch (e) {
       setErr(e?.message || 'Run failed.');
@@ -571,6 +579,37 @@ export default function SourcingRuns({ orgs }) {
             </button>
             <span className="text-[10px] text-ink-soft">Both spend real Apify credit and bill the org per lead.</span>
           </div>
+
+          {/* Plan today's work queue by hand. Its own row, away from the sourcing triggers: this
+              one costs no Apify credit but bills the flat plan-day price, and its main use is
+              recovering a day the wallet gate withheld — top up, then click. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className={btnGhost} onClick={() => fire('plan')} disabled={!!running || !orgId}>
+              {running === 'plan' ? 'Planning…' : "Plan today's tasks now"}
+            </button>
+            <span className="text-[10px] text-ink-soft">
+              Re-runs tonight&rsquo;s planner for today. Bills the plan-day price unless the day is already
+              planned or the balance is still negative.
+            </span>
+          </div>
+
+          {planResult && (
+            <p
+              className={`rounded-lg px-3 py-2 text-xs ${
+                planResult.status === 'blocked'
+                  ? 'bg-amber-50 text-amber-800'
+                  : planResult.status === 'ok'
+                    ? 'bg-green-50 text-green-800'
+                    : 'bg-canvas text-ink-soft'
+              }`}
+            >
+              {planResult.status === 'ok'
+                ? `Planned ${planResult.dateKey}: ${planResult.taskCount} tasks across ${planResult.adminCount} admin${planResult.adminCount === 1 ? '' : 's'}.`
+                : planResult.status === 'blocked'
+                  ? `Withheld — balance is ${formatINR(planResult.balance || 0)}. Top the org up, then click again.`
+                  : `Nothing to do: ${planResult.reason || 'skipped'}.`}
+            </p>
+          )}
 
           {r && (
             <div className="rounded-xl border border-line bg-canvas/40 p-3">

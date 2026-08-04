@@ -59,6 +59,7 @@ export {
   adminDisableSourcing,
   adminRunSourcingNow,
   adminSourceTopTarget,
+  adminPlanNow,
   adminSourcingRuns,
   adminSourcingRunDetail,
   adminSourcingLeadLedger,

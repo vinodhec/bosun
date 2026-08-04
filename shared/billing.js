@@ -583,17 +583,16 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
  * settled directly by planDailyTasks on the platform's ingest ack (registered in usageMeter too so
  * a ledger replay/backfill prices identically). Accrued on the org as `plannerAccrualPaise`.
  *
- * HELD AT ₹10 (operator decision 2026-08-03, superseding the 2026-07-19 dev-rate note): the
- * feature set is complete (demand-first ranking, 40-task floor, inline call card, owner
- * scoreboard) but the ADMINS aren'T working the plan page yet — every completion to date is
- * auto-reconciled, zero manual ticks. The token price stays until the team demonstrably uses it;
- * the adoption signal is manual done/skip ticks appearing in plannerRuns' roster records /
- * admin_daily_plans counts. Then reprice — candidate model: ₹40/admin-day (per-seat scales with
- * the customer's own roster and can't be gamed by us), which is ₹200/day at the current 5 seats.
- * COGS ≈ ₹0.25–0.30/night (5 Flash briefings + function runtime; the heavy work-state/demand/
- * reconcile compute runs on the customer's own infra).
+ * PRICED AT ₹200/plan-day (operator decision 2026-08-05, ending the ₹10 adoption hold set
+ * 2026-08-03): the feature set is complete (demand-first ranking, 40-task floor, inline call card,
+ * owner scoreboard), so the line is billed at its worth rather than at a token rate. ₹200/day is
+ * where the per-seat candidate model landed anyway — ₹40/admin-day × the customer's current 5
+ * seats — taken flat, because flat is what the whole line is priced on (see above) and a flat
+ * price doesn't move when the customer's roster churns. COGS ≈ ₹0.25–0.30/night (5 Flash briefings
+ * + function runtime; the heavy work-state/demand/reconcile compute runs on the customer's own
+ * infra), so this line is margin, not cost recovery.
  */
-export const DAILY_PLAN_PRICE_PAISE = 1000; // ₹10 per plan-day — held until admins adopt (see above)
+export const DAILY_PLAN_PRICE_PAISE = 20000; // ₹200 per plan-day, flat (repriced from ₹10, 2026-08-05)
 
 /**
  * ── EOD WhatsApp team summary (eod_summary) ────────────────────────────────────────────────────

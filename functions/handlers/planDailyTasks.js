@@ -18,6 +18,8 @@
  * pre-check that doc, so a scheduler retry, a double cron, or an on-demand call after a successful
  * night are all charged:0 no-ops. The platform's ingest is first-plan-wins on top.
  *
+ * Wallet gate: a NEGATIVE org balance withholds the day entirely — see LOW_BALANCE_MESSAGE below.
+ *
  * Config: organisations/{orgId}.sourcing.planner = { enabled, workStateUrl, planUrl,
  * maxTasksPerAdmin?, capPerCategory? }. Secret: orgSecrets/{orgId}.sourcing.secret (same vault as
  * the relay). Audit: plannerRuns/{orgId}/runs/{planRunId}.
@@ -40,6 +42,13 @@ const BRIEFING_CONCURRENCY = 4; // same Vertex-quota discipline as the classify 
 // cross-region hop (testing runs Vercel-US against an asia-south1 Firestore) makes a big roster
 // legitimately slow. The platform side is idempotent, so even a timeout here never double-writes.
 const PLAN_POST_TIMEOUT_MS = 60000;
+
+/**
+ * What the admins see on the plan page when the wallet is empty. Bosun owns this string (not the
+ * platform) because Bosun owns the wallet — the reason the plan is missing must come from the side
+ * that knows why. Deliberately in the customer's own words: it names the recharge, not the ledger.
+ */
+export const LOW_BALANCE_MESSAGE = 'Low balance — recharge to use AI agents to manage the tasks.';
 
 /** IST calendar date as yyyymmdd — must match the platform's istDateKey exactly. */
 export function istDateKey(nowMs = Date.now()) {
@@ -92,6 +101,76 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
     if (!secret) {
       summary.status = 'error';
       summary.reason = 'no-secret';
+      return summary;
+    }
+
+    // 0) Wallet gate. A negative balance stops the day being PRODUCED, not merely delivered: no
+    // work-state pull, no Flash briefings, no plan docs, no charge. The fix pipeline deliberately
+    // lets an org run negative (the operator reconciles later), but the planner is a recurring
+    // nightly service — running it on an empty wallet just deepens a debt the owner never agreed to.
+    // Instead we POST a BLOCKED notice so the admins' page can say why and ask for a top-up.
+    //
+    // The notice goes through the ingest's `blocked` branch, which writes daily_plan_meta ONLY and
+    // no plan docs. That is the whole point: plan-doc ingest is first-plan-wins, so a placeholder
+    // "plan" would occupy the day the owner is about to pay for. With nothing written and nothing
+    // billed, the day stays re-plannable — after a top-up the next trigger (the platform's 07:00
+    // fallback, or tomorrow's cron) plans it for real.
+    //
+    // A waived line (billingPaused) is free by operator choice, so its balance cannot be the reason
+    // to withhold it — testing and goodwill orgs keep planning at a negative balance.
+    const walletSnap = await db.collection('organisations').doc(orgId).get();
+    const wallet = walletSnap.data() || {};
+    const balance = Number(wallet.balance ?? 0);
+    if (balance < 0 && !isServicePaused(wallet, 'daily_plan')) {
+      summary.status = 'blocked';
+      summary.reason = 'low-balance';
+      summary.balance = balance;
+      summary.message = LOW_BALANCE_MESSAGE;
+      const noticeRunId = `dpb_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
+      const noticeBody = JSON.stringify({
+        orgId,
+        planRunId: noticeRunId,
+        dateKey,
+        generatedAtMs: Date.now(),
+        trigger,
+        blocked: { reason: 'low_balance', message: LOW_BALANCE_MESSAGE, balanceInr: balance },
+        plans: [],
+      });
+      // Best-effort: a notice that fails to land degrades to the page's ordinary "no plan yet"
+      // state. It must never turn into an error that masks WHY the day was withheld.
+      try {
+        const signedNotice = signPayload(secret, noticeBody);
+        const noticeResp = await fetch(planner.planUrl, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-bosun-signature': signedNotice.signature,
+            'x-bosun-timestamp': signedNotice.timestamp,
+          },
+          body: noticeBody,
+          signal: AbortSignal.timeout(30000),
+        });
+        summary.noticeDelivered = noticeResp.ok;
+        if (!noticeResp.ok) summary.noticeStatus = noticeResp.status;
+      } catch (e) {
+        summary.noticeDelivered = false;
+        summary.noticeError = e?.message || String(e);
+      }
+      await db
+        .collection('plannerRuns')
+        .doc(orgId)
+        .collection('runs')
+        .doc(noticeRunId)
+        .set({
+          dateKey,
+          trigger,
+          blocked: { reason: 'low_balance', balanceInr: balance, noticeDelivered: !!summary.noticeDelivered },
+          admins: 0,
+          taskCount: 0,
+          chargedInr: 0,
+          createdAt: FieldValue.serverTimestamp(),
+        })
+        .catch(() => {});
       return summary;
     }
 

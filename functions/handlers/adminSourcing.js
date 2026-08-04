@@ -2,6 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts } from '../utils/sourcing.js';
 import { runForOrg, sourceTopTargets, relayOne } from './runSourcingJobs.js';
+import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
@@ -456,6 +457,46 @@ export const adminSourcingRelayLead = onCall(
       imageCount: listing.images?.length || 0,
       postedAt: listing.postedAt || null,
     };
+  },
+);
+
+/**
+ * Plan TODAY for an org, by hand — the operator's copy of the nightly planner's trigger.
+ *
+ * It exists for one flow above all: the wallet gate. A negative balance withholds the day and posts
+ * the low-balance notice instead of a plan (see planDailyTasks.js), and nothing re-plans it until
+ * the platform's 07:00 IST fallback or tomorrow's 01:30 cron. So an owner who tops up at 10 a.m.
+ * would otherwise stare at the recharge message all day, having already paid. This button closes
+ * that gap: top up, click, the admins have their plan minutes later.
+ *
+ * It is the SAME `runPlanForOrg` the cron runs — every gate still applies, in the same order:
+ *   - already planned today  → 'skipped/already-planned', charged nothing (the meter-log pre-check)
+ *   - balance still negative → 'blocked/low-balance', re-posts the notice, charged nothing
+ *   - otherwise              → a real plan, delivered and BILLED at the flat plan-day price.
+ * That last line is why the UI labels the button with the money: this click can charge the org.
+ */
+export const adminPlanNow = onCall(
+  { region: 'asia-south1', timeoutSeconds: 300, memory: '512MiB' },
+  async (request) => {
+    const email = requireAdmin(request);
+    const orgId = String(request.data?.orgId ?? '').trim();
+    if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+    const db = getFirestore();
+    const orgSnap = await db.collection('organisations').doc(orgId).get();
+    if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const cfg = orgSnap.data().sourcing || {};
+    if (!cfg.planner?.enabled) {
+      throw new HttpsError('failed-precondition', 'The daily planner is not enabled for this org.');
+    }
+    // Trigger label 'admin' keeps Bosun's plannerRuns audit honest about a human having clicked.
+    // (The platform's ingest only distinguishes 'on-demand' from everything else, so its own meta
+    // records this as a cron run — Bosun's audit is the forensic one.)
+    const summary = await runPlanForOrg(db, orgId, cfg, 'admin');
+    console.log('adminPlanNow', orgId, email, JSON.stringify(summary));
+    if (summary.status === 'error') {
+      throw new HttpsError('internal', `Planning failed: ${summary.reason || 'unknown'}`);
+    }
+    return { ok: true, dateKey: istDateKey(), ...summary };
   },
 );
 

@@ -106,6 +106,8 @@ export const adminSourcingLeadLedger = httpsCallable(functions, 'adminSourcingLe
 export const adminSourcingRelayLead = httpsCallable(functions, 'adminSourcingRelayLead');
 export const adminSourceTopTarget = httpsCallable(functions, 'adminSourceTopTarget');
 export const adminRunSourcingNow = httpsCallable(functions, 'adminRunSourcingNow');
+// Plan today's admin work queue by hand — recovers a day the wallet gate withheld, after a top-up.
+export const adminPlanNow = httpsCallable(functions, 'adminPlanNow');
 
 // Customer-facing GST invoices.
 export const listMyInvoices = httpsCallable(functions, 'listMyInvoices');
