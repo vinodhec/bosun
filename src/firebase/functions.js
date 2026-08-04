@@ -92,6 +92,10 @@ export const adminListInvoices = httpsCallable(functions, 'adminListInvoices');
 export const adminInvoiceHtml = httpsCallable(functions, 'adminInvoiceHtml');
 export const adminSetUserInvoices = httpsCallable(functions, 'adminSetUserInvoices');
 export const adminGstReport = httpsCallable(functions, 'adminGstReport');
+// Operator-only: OUR vendor bills (Anthropic API credits) — the inward half of the GST reports.
+export const adminRecordPurchase = httpsCallable(functions, 'adminRecordPurchase');
+export const adminListPurchases = httpsCallable(functions, 'adminListPurchases');
+export const adminDeletePurchase = httpsCallable(functions, 'adminDeletePurchase');
 
 // Operator-only: the property-sourcing relay's audit trail — the per-run funnel (targets, queries,
 // relayed vs dropped and at which gate), the URL-level drill-down for one run, and the historical

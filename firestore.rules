@@ -103,6 +103,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // OUR vendor bills (Anthropic API credits) — the inward half of the GST reports. Operator
+    // data, not customer data: no client reads it at all, and only the Admin SDK writes it.
+    // Reached solely through the adminRecordPurchase / adminListPurchases callables.
+    match /purchases/{purchaseId} {
+      allow read:  if false;
+      allow write: if false;
+    }
+
     // Connected websites (GitHub repos). Doc id = owner uid in v1 (one site/user).
     // Read your own; the GitHub install callback writes it via the Admin SDK.
     match /sites/{userId} {

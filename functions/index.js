@@ -38,6 +38,9 @@ export {
   adminInvoiceHtml,
   adminSetUserInvoices,
   adminGstReport,
+  adminRecordPurchase,
+  adminListPurchases,
+  adminDeletePurchase,
 } from './handlers/admin.js';
 
 // Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML.

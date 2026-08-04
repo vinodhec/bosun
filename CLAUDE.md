@@ -103,6 +103,33 @@ All charge math goes through `shared/billing.js`. Key invariants:
   `actualCostInr` analytics field and a couple of scripts, but the customer charge is
   `priceFromCostUsd`, never `computeCharge` and never `priceForComplexity`.
 
+## GST reports (the software line's slice of a shared GSTIN)
+
+Bosun invoices under the proprietor's EXISTING trading-business GSTIN (`33ACJPT9393A1ZC`), on a
+separate `SW/` invoice series. So Bosun never files a return — it produces the software line's
+half, which the CA merges with the trading business. `utils/gstReport.js` builds all five reports
+the trading business's package produces (Sale, Purchase, GSTR-1, GSTR-2, GSTR-3B) as pure
+functions over rows; `adminGstReport({ kind, from, to })` fetches the rows and returns printable
+HTML. Sales come from `invoices`, purchases from `purchases`.
+
+**The purchase side is a treatment problem, not a data problem** (`utils/purchase.js`). The line
+buys one thing — Anthropic API credits — and how it is taxed turns on whether our GSTIN was on the
+Anthropic account when the bill was raised:
+
+- `rcm` — GSTIN on file, Anthropic charges 0% ("tax to be paid on reverse charge basis"). We owe
+  IGST @18% **in cash** and claim the same back as import-of-services ITC. Net ₹0. **The only
+  treatment that reaches GSTR-2 / GSTR-3B.**
+- `oidar_charged` — GSTIN absent, so Anthropic charged 18% under its OIDAR registration
+  (`9924USA29003OSI`). That tax never lands in our GSTR-2B and is **not claimable** — plain cost.
+  Recorded and shown on the Purchase Report, deliberately excluded from the return.
+- `domestic` / `refunded` — ordinary Indian supplier; and cancelled bills, kept so their absence
+  from the return is explained.
+
+`taxableInr` is the rupees **actually debited** on the statement, never a converted estimate — GST
+is a rupee tax and the statement is what reconciles. `config/fxRate` is for COGS analytics, not
+for tax. `purchases/{id}` follows the cardinal rule and is stricter than most: operator data, so
+`allow read: if false` too — reachable only via the admin callables.
+
 ## The fix pipeline (where state lives)
 
 1. `classifyTask` — Haiku call (`utils/classify.js`) returns `{ complexity, reason }`; drives the

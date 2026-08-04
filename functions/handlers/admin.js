@@ -5,7 +5,8 @@ import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
-import { buildGstr1, renderGstr1Html } from '../utils/gstReport.js';
+import { GST_REPORTS } from '../utils/gstReport.js';
+import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
 import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
@@ -82,31 +83,123 @@ export const adminListInvoices = onCall({ region: REGION }, async (request) => {
   return { invoices: snap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()) })) };
 });
 
-// Operator: GSTR-1 (outward supplies) for the SOFTWARE invoice line over a date range. `from`/`to`
-// are 'YYYY-MM-DD' (inclusive), anchored to IST so the day boundaries match Indian dates. Returns
-// printable HTML matching the operator's existing GSTR-1 layout; the CA merges it with the trading
+// Operator: one of the five GST reports for the SOFTWARE invoice line over a date range —
+// `kind` is a GST_REPORTS key (sale | purchase | gstr1 | gstr2 | gstr3b), defaulting to gstr1 for
+// callers predating the other four. `from`/`to` are 'YYYY-MM-DD' (inclusive), anchored to IST so
+// the day boundaries match Indian dates. Returns printable HTML; the CA merges it with the trading
 // business for the single-GSTIN filing.
+//
+// The purchase-side reports (purchase, gstr2, and the ITC half of gstr3b) render NIL: the software
+// line's only inward supplies are imports of services under reverse charge, and Bosun records no
+// vendor bills. See the header of utils/gstReport.js.
 export const adminGstReport = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
-  const from = String(request.data?.from ?? '').trim();
-  const to = String(request.data?.to ?? '').trim();
+  const kind = String(request.data?.kind ?? 'gstr1').trim();
+  const spec = GST_REPORTS[kind];
+  if (!spec) throw new HttpsError('invalid-argument', `kind must be one of ${Object.keys(GST_REPORTS).join(', ')}.`);
+  const { fromMs, toMs } = parseIstRange(request.data);
+
+  const db = getFirestore();
+  const [saleSnap, purchaseSnap] = await Promise.all([
+    db.collection('invoices')
+      .where('issuedAtMs', '>=', fromMs).where('issuedAtMs', '<=', toMs).orderBy('issuedAtMs').get(),
+    db.collection('purchases')
+      .where('dateMs', '>=', fromMs).where('dateMs', '<=', toMs).orderBy('dateMs').get(),
+  ]);
+  const invoices = saleSnap.docs.map((d) => d.data());
+  const allPurchases = purchaseSnap.docs.map((d) => d.data());
+  // The Purchase Report shows EVERY recorded bill (including the ones we cannot claim, so their
+  // absence from the return is visible); GSTR-2 and GSTR-3B see only the reportable ones.
+  const purchases = kind === 'purchase' ? allPurchases : reportablePurchases(allPurchases);
+  const report = spec.build({ invoices, purchases, fromMs, toMs });
+  // A summary the panel can show for ANY kind — the per-report `totals` shapes differ, so derive
+  // the headline figures from the invoices rather than from the report.
+  const taxable = invoices.reduce((a, i) => a + (i.taxableInr || 0), 0);
+  const tax = invoices.reduce((a, i) => a + (i.taxInr || 0), 0);
+  return {
+    html: spec.render(report),
+    kind,
+    label: spec.label,
+    count: invoices.length,
+    purchaseCount: purchases.length,
+    totals: { taxable: Math.round(taxable * 100) / 100, tax: Math.round(tax * 100) / 100 },
+  };
+});
+
+// 'YYYY-MM-DD' from/to (inclusive) → an [ms, ms] range anchored to IST, so day boundaries match
+// Indian dates rather than UTC. Shared by every date-ranged operator report.
+function parseIstRange(data) {
+  const from = String(data?.from ?? '').trim();
+  const to = String(data?.to ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
     throw new HttpsError('invalid-argument', 'from and to must be YYYY-MM-DD.');
   }
   const fromMs = Date.parse(`${from}T00:00:00+05:30`);
   const toMs = Date.parse(`${to}T23:59:59.999+05:30`);
   if (!(fromMs <= toMs)) throw new HttpsError('invalid-argument', 'from must be on or before to.');
+  return { fromMs, toMs };
+}
 
+// Operator: record a vendor bill for the software line (Anthropic API credits). Backend-only
+// write, like every other money-bearing collection — the browser never writes `purchases`.
+// `gstTreatment` decides whether the bill reaches GSTR-2/3B; see utils/purchase.js.
+export const adminRecordPurchase = onCall({ region: REGION }, async (request) => {
+  const by = requireAdmin(request);
+  const d = request.data || {};
+  const supplierName = String(d.supplierName ?? '').trim();
+  const date = String(d.date ?? '').trim();
+  if (!supplierName) throw new HttpsError('invalid-argument', 'supplierName required.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new HttpsError('invalid-argument', 'date must be YYYY-MM-DD.');
+  if (d.gstTreatment && !GST_TREATMENTS.includes(String(d.gstTreatment))) {
+    throw new HttpsError('invalid-argument', `gstTreatment must be one of ${GST_TREATMENTS.join(', ')}.`);
+  }
+  const taxableInr = Number(d.taxableInr);
+  if (!Number.isFinite(taxableInr) || taxableInr < 0) {
+    throw new HttpsError('invalid-argument', 'taxableInr must be a non-negative number (the rupees actually debited).');
+  }
+  const record = buildPurchaseRecord({
+    supplierName,
+    supplierTaxId: d.supplierTaxId,
+    country: d.country,
+    number: d.number,
+    dateMs: Date.parse(`${date}T12:00:00+05:30`),
+    currency: d.currency,
+    amountForeign: d.amountForeign,
+    taxableInr,
+    gstTreatment: d.gstTreatment,
+    gstRate: d.gstRate,
+    intraState: d.intraState !== false,
+    supplierTaxInr: d.supplierTaxInr,
+    notes: d.notes,
+    by,
+  });
+  const db = getFirestore();
+  const ref = await db.collection('purchases').add({ ...record, createdAt: FieldValue.serverTimestamp() });
+  return { id: ref.id, purchase: purchaseSummary(record) };
+});
+
+// Operator: list recorded vendor bills over a date range (newest first).
+export const adminListPurchases = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const { fromMs, toMs } = parseIstRange(request.data);
   const db = getFirestore();
   const snap = await db
-    .collection('invoices')
-    .where('issuedAtMs', '>=', fromMs)
-    .where('issuedAtMs', '<=', toMs)
-    .orderBy('issuedAtMs')
+    .collection('purchases')
+    .where('dateMs', '>=', fromMs)
+    .where('dateMs', '<=', toMs)
+    .orderBy('dateMs', 'desc')
     .get();
-  const invoices = snap.docs.map((d) => d.data());
-  const report = buildGstr1({ invoices, fromMs, toMs });
-  return { html: renderGstr1Html(report), count: invoices.length, totals: report.totals };
+  return { purchases: snap.docs.map((s) => ({ id: s.id, ...purchaseSummary(s.data()) })) };
+});
+
+// Operator: remove a mis-keyed vendor bill. Purchases carry no ledger side-effects (they never
+// touch a wallet), so a plain delete is safe — unlike transactions, which are append-only.
+export const adminDeletePurchase = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const id = String(request.data?.purchaseId ?? '').trim();
+  if (!id) throw new HttpsError('invalid-argument', 'purchaseId required.');
+  await getFirestore().collection('purchases').doc(id).delete();
+  return { ok: true };
 });
 
 // Operator: printable HTML for one invoice (Admin panel "download" / print).

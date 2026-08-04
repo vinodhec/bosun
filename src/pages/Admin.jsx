@@ -15,6 +15,9 @@ import {
   adminListInvoices,
   adminInvoiceHtml,
   adminGstReport,
+  adminRecordPurchase,
+  adminListPurchases,
+  adminDeletePurchase,
   adminQuoteTask,
   adminStopTask,
   adminSetGithubRepo,
@@ -870,37 +873,48 @@ function DeployAccess({ orgs }) {
   );
 }
 
-// GST Reports (software line only). Generates a GSTR-1 (outward supplies) for the SW/ invoices in a
-// date range — the CA merges it with the trading business for the single-GSTIN return. Purchases
-// (Anthropic credits, an RCM import of services) are handled separately by the CA.
+// GST Reports (software line only). The same five reports the trading business files — Sale,
+// Purchase, GSTR-1, GSTR-2, GSTR-3B — over a date range, for the SW/ invoices. The CA merges them
+// with the trading business for the single-GSTIN return. The purchase-side reports come out NIL:
+// the software line's only inward supplies are imports of services (Anthropic, Apify, Google
+// Cloud) taxable under reverse charge, and no vendor bills are recorded in Bosun.
+const GST_REPORT_KINDS = [
+  { kind: 'sale', label: 'Sale Report' },
+  { kind: 'purchase', label: 'Purchase Report' },
+  { kind: 'gstr1', label: 'GSTR-1' },
+  { kind: 'gstr2', label: 'GSTR-2' },
+  { kind: 'gstr3b', label: 'GSTR-3B' },
+];
+
 function GstReports() {
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const now = new Date();
   const [from, setFrom] = useState(iso(new Date(now.getFullYear(), now.getMonth(), 1)));
   const [to, setTo] = useState(iso(now));
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
 
-  const generate = async () => {
-    setBusy(true); setErr(''); setInfo('');
+  const generate = async (kind, label) => {
+    setBusy(kind); setErr(''); setInfo('');
     try {
-      const { data } = await adminGstReport({ from, to });
+      const { data } = await adminGstReport({ kind, from, to });
       const w = window.open('', '_blank');
       if (w) { w.document.write(data.html); w.document.close(); w.focus(); }
       const taxable = Number(data.totals?.taxable || 0).toLocaleString('en-IN');
-      setInfo(`${data.count} invoice(s) · taxable ₹${taxable}`);
+      const tax = Number(data.totals?.tax || 0).toLocaleString('en-IN');
+      setInfo(`${label}: ${data.count} invoice(s) · taxable ₹${taxable} · GST ₹${tax}`);
     } catch {
-      setErr('Could not generate the report.');
+      setErr(`Could not generate the ${label}.`);
     } finally {
-      setBusy(false);
+      setBusy('');
     }
   };
 
   return (
     <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
       <h2 className="font-semibold text-ink">GST Reports (software line)</h2>
-      <p className="text-xs text-ink-soft">GSTR-1 (outward sales) for the SW/ invoices in a date range — hand to the CA to merge with the trading business. Purchases (Anthropic, reverse-charge) are handled separately.</p>
+      <p className="text-xs text-ink-soft">The SW/ invoices for a date range, in the five layouts the trading business files — hand to the CA to merge into the single-GSTIN return. Each opens in a new tab; print to PDF from there.</p>
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-sm text-ink">From
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="mt-1 block rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500" />
@@ -908,9 +922,135 @@ function GstReports() {
         <label className="text-sm text-ink">To
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="mt-1 block rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500" />
         </label>
-        <button className={btn} disabled={busy} onClick={generate}>{busy ? 'Generating…' : 'Generate GSTR-1'}</button>
       </div>
+      <div className="flex flex-wrap gap-2">
+        {GST_REPORT_KINDS.map(({ kind, label }) => (
+          <button key={kind} className={btn} disabled={!!busy} onClick={() => generate(kind, label)}>
+            {busy === kind ? 'Generating…' : label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-ink-soft">
+        The purchase side comes from the vendor-bill ledger below. Bills marked &ldquo;OIDAR&rdquo; or
+        &ldquo;refunded&rdquo; show on the Purchase Report but stay out of GSTR-2 and GSTR-3B, so their absence
+        from the return is visible rather than silent.
+      </p>
       {info && <p className="text-sm text-green-700">{info}</p>}
+      {err && <p className="text-sm text-red-600">{err}</p>}
+    </section>
+  );
+}
+
+// Vendor bills for the software line — the inward half of the GST reports. In practice this is
+// Anthropic API credits, and the whole point of the form is the GST treatment: a bill raised
+// BEFORE our GSTIN was on the Anthropic account was charged 18% under Anthropic's OIDAR
+// registration, which never reaches our GSTR-2B and is not claimable; once the GSTIN is on file
+// Anthropic charges 0% and the reverse charge sits with us — payable in cash, claimed straight
+// back as import-of-services ITC, net ₹0. Only the latter belongs in GSTR-2/3B.
+const GST_TREATMENT_OPTIONS = [
+  { value: 'rcm', label: 'Reverse charge (our GSTIN on the bill, 0% charged)' },
+  { value: 'oidar_charged', label: 'OIDAR — supplier charged GST (not claimable)' },
+  { value: 'domestic', label: 'Domestic supplier (normal ITC)' },
+  { value: 'refunded', label: 'Cancelled / refunded' },
+];
+
+function PurchaseLedger() {
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const now = new Date();
+  const [from, setFrom] = useState(iso(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [to, setTo] = useState(iso(now));
+  const [rows, setRows] = useState([]);
+  const [form, setForm] = useState({
+    supplierName: 'Anthropic, PBC', supplierTaxId: '9924USA29003OSI', country: 'United States',
+    number: '', date: iso(now), currency: 'USD', amountForeign: '', taxableInr: '',
+    gstTreatment: 'rcm', supplierTaxInr: '', notes: '',
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const load = async () => {
+    setErr('');
+    try {
+      const { data } = await adminListPurchases({ from, to });
+      setRows(data?.purchases || []);
+    } catch { setErr('Could not load the bills.'); }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const record = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminRecordPurchase({
+        ...form,
+        amountForeign: form.amountForeign === '' ? null : Number(form.amountForeign),
+        taxableInr: Number(form.taxableInr),
+        supplierTaxInr: form.supplierTaxInr === '' ? 0 : Number(form.supplierTaxInr),
+      });
+      setMsg(`Recorded ${form.number || 'bill'}.`);
+      setForm((f) => ({ ...f, number: '', amountForeign: '', taxableInr: '', supplierTaxInr: '', notes: '' }));
+      await load();
+    } catch (e) {
+      setErr(e?.message || 'Could not record that bill.');
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (id) => {
+    try { await adminDeletePurchase({ purchaseId: id }); await load(); }
+    catch { setErr('Could not remove that bill.'); }
+  };
+
+  const input = 'mt-1 block w-full rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-brand-500';
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">Vendor bills (software line)</h2>
+      <p className="text-xs text-ink-soft">
+        Our own purchase bills — Anthropic API credits. Enter <b>taxable value in rupees as actually debited</b> on
+        the card/bank statement, not a converted estimate: GST is a rupee tax and the statement is what the CA reconciles against.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="text-sm text-ink">Supplier<input value={form.supplierName} onChange={set('supplierName')} className={input} /></label>
+        <label className="text-sm text-ink">Supplier tax ID<input value={form.supplierTaxId} onChange={set('supplierTaxId')} className={input} /></label>
+        <label className="text-sm text-ink">Bill no.<input value={form.number} onChange={set('number')} placeholder="A58EKSLU-0009" className={input} /></label>
+        <label className="text-sm text-ink">Bill date<input type="date" value={form.date} onChange={set('date')} className={input} /></label>
+        <label className="text-sm text-ink">Currency<input value={form.currency} onChange={set('currency')} className={input} /></label>
+        <label className="text-sm text-ink">Foreign value<input type="number" step="0.01" value={form.amountForeign} onChange={set('amountForeign')} placeholder="5.00" className={input} /></label>
+        <label className="text-sm text-ink">Taxable value (₹, from statement)<input type="number" step="0.01" value={form.taxableInr} onChange={set('taxableInr')} className={input} /></label>
+        <label className="text-sm text-ink">GST treatment
+          <select value={form.gstTreatment} onChange={set('gstTreatment')} className={input}>
+            {GST_TREATMENT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label className="text-sm text-ink">Tax charged by supplier (₹)<input type="number" step="0.01" value={form.supplierTaxInr} onChange={set('supplierTaxInr')} placeholder="0" className={input} /></label>
+      </div>
+      <label className="block text-sm text-ink">Note<input value={form.notes} onChange={set('notes')} className={input} /></label>
+      <button className={btn} disabled={busy || !form.taxableInr} onClick={record}>{busy ? 'Recording…' : 'Record bill'}</button>
+
+      <div className="flex flex-wrap items-end gap-3 border-t border-line pt-3">
+        <label className="text-sm text-ink">From<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={input} /></label>
+        <label className="text-sm text-ink">To<input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={input} /></label>
+        <button className={btn} onClick={load}>Show bills</button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-ink-soft">No bills recorded in this range.</p>
+      ) : (
+        <ul className="divide-y divide-line text-sm">
+          {rows.map((p) => (
+            <li key={p.id} className="flex items-center justify-between gap-3 py-2">
+              <span>
+                <b>{p.number || '—'}</b> · {p.supplierName} · {new Date(p.dateMs).toLocaleDateString('en-IN')}
+                {p.amountForeign != null && p.currency !== 'INR' ? ` · ${p.currency} ${p.amountForeign}` : ''}
+                <span className="ml-2 text-xs text-ink-soft">
+                  {formatINR(p.taxableInr)} taxable · {p.gstTreatment === 'rcm' ? `RCM IGST ${formatINR(p.igstInr)}` : GST_TREATMENT_OPTIONS.find((o) => o.value === p.gstTreatment)?.label}
+                </span>
+              </span>
+              <button className="text-xs text-red-600 hover:underline" onClick={() => remove(p.id)}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {msg && <p className="text-sm text-green-700">{msg}</p>}
       {err && <p className="text-sm text-red-600">{err}</p>}
     </section>
   );
@@ -1690,6 +1830,7 @@ export default function Admin() {
         <DeployAccess orgs={orgs} />
 
         <GstReports />
+        <PurchaseLedger />
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Connect GitHub repo</h2>
