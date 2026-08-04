@@ -15,87 +15,22 @@
  * charged:0 no-op. This is what makes historical replay safe: a customer can re-send its whole
  * ledger after an outage and only unbilled events settle.
  *
- * Billing: ₹0.50 per auto_post event, held in paise and accrued on the org
- * (`autopostAccrualPaise`) with whole rupees debited as the accrual crosses ₹1 — the same
- * "sum, then round once" discipline compose uses (see shared/billing.js).
+ * Billing: the service table, the prices and the settle transaction all live in utils/meter.js —
+ * amounts are held in paise, accrued on the org, and whole rupees debited as the accrual crosses
+ * ₹1 ("sum, then round once", see shared/billing.js). A price is never read from the request: the
+ * customer reports WHAT happened, Bosun alone decides what it costs, and an org carrying a
+ * `pricing[service]` override is billed that instead of the default.
  *
  * Request  { orgId, service:'auto_post', qty, idempotencyKey, leadId, refId, propertyId, displayId }
  *          headers: x-bosun-signature: sha256=…, x-bosun-timestamp: <ms>
  * Response { ok, charged, duplicate? }
  */
 import { onRequest } from 'firebase-functions/v2/https';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import {
-  AUTOPOST_USAGE_PRICE_PAISE,
-  WA_MESSAGE_DELIVERED_PRICE_PAISE,
-  DAILY_PLAN_PRICE_PAISE,
-  SEO_REPORT_REPLAY_PRICE_PAISE,
-  BLOG_CLASSIFY_PRICE_PAISE,
-  EOD_SUMMARY_PRICE_PAISE,
-  accrueComposeCharge,
-  isServicePaused,
-} from '../shared/billing.js';
+import { getFirestore } from 'firebase-admin/firestore';
+import { SERVICE_DEFS, settleMetered } from '../utils/meter.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
-const METER_LOG = 'usage_meter_log';
-
-/**
- * Per-service pricing + ledger identity. Unknown services are rejected, not defaulted — a typo must
- * not bill. Each service accrues on its OWN org field (paise) and writes its own transaction kind,
- * so the operator's ledger stays legible per service line.
- *
- * The WhatsApp pair arrives as service:'whatsapp_outreach' with the concrete event in `event`
- * (the platform's bosunMeter payload shape) — normalised below. `daily_plan` is normally settled
- * in-process by planDailyTasks; registering it here means a ledger replay/backfill through this
- * endpoint prices identically and dedupes on the same log row.
- */
-const SERVICE_DEFS = {
-  auto_post: {
-    pricePaise: AUTOPOST_USAGE_PRICE_PAISE,
-    accrualField: 'autopostAccrualPaise',
-    kind: 'autopost_usage',
-    label: 'Auto-posted listing service',
-  },
-  wa_message_delivered: {
-    pricePaise: WA_MESSAGE_DELIVERED_PRICE_PAISE,
-    accrualField: 'waAccrualPaise',
-    kind: 'whatsapp_usage',
-    label: 'WhatsApp outreach — delivered message',
-  },
-  daily_plan: {
-    pricePaise: DAILY_PLAN_PRICE_PAISE,
-    accrualField: 'plannerAccrualPaise',
-    kind: 'daily_plan',
-    label: 'Nightly admin work-queue plan',
-  },
-  // Normally settled in-process by seoWeeklyReport at the flat held price; this tracks the same
-  // constant so a ledger replay prices identically — after any successful run the shared log row
-  // makes such a replay a charged:0 no-op anyway.
-  seo_weekly_report: {
-    pricePaise: SEO_REPORT_REPLAY_PRICE_PAISE,
-    accrualField: 'seoReportAccrualPaise',
-    kind: 'seo_weekly_report',
-    label: 'Weekly SEO report',
-  },
-  // Normally settled in-process by blogIntelligence (amount = price × blogs classified that run,
-  // accrued via blogClassifyAccrualPaise). Registered here so a ledger replay/backfill of a single
-  // classified blog prices identically; the in-process log row makes a post-settle replay a no-op.
-  blog_classify: {
-    pricePaise: BLOG_CLASSIFY_PRICE_PAISE,
-    accrualField: 'blogClassifyAccrualPaise',
-    kind: 'blog_classify',
-    label: 'Blog audience classification',
-  },
-  // Normally settled in-process by eodSummary on the platform's ack (charged only on sent > 0);
-  // registered here so a ledger replay/backfill prices identically and dedupes on the same row.
-  eod_summary: {
-    pricePaise: EOD_SUMMARY_PRICE_PAISE,
-    accrualField: 'eodSummaryAccrualPaise',
-    kind: 'eod_summary',
-    label: 'EOD WhatsApp team summary',
-  },
-};
 
 export const usageMeter = onRequest({ region: REGION, cors: false }, async (req, res) => {
   if (req.method !== 'POST') {
@@ -132,9 +67,11 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
     res.status(400).json({ error: 'orgId, service and idempotencyKey are required' });
     return;
   }
+  // The service must be KNOWN here, but its price can only be resolved once we have the org doc —
+  // an org may override any line (priceForService). So this gate checks existence only; the live
+  // unit price is read inside the settle transaction, from the same org snapshot the debit uses.
   const def = SERVICE_DEFS[service];
-  const unitPaise = def?.pricePaise;
-  if (!unitPaise) {
+  if (!def) {
     logReject('usageMeter', {
       orgId,
       status: 400,
@@ -164,82 +101,24 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
     return;
   }
 
-  // Idempotency: the customer keys events by lead id, and their own claim transaction guarantees a
-  // lead publishes once — so an already-logged key is a redelivery, acknowledged and unbilled.
-  const logRef = db.collection(METER_LOG).doc(`${orgId}:${service}:${idempotencyKey}`);
-  const existing = await logRef.get();
-  if (existing.exists) {
-    // Not an error — this is the idempotency guarantee doing its job, and during a historical
-    // ledger replay it's the signal that the already-billed events are being skipped correctly.
-    console.log('usageMeter:duplicate', orgId, JSON.stringify({ service, idempotencyKey }));
-    res.status(200).json({ ok: true, duplicate: true, charged: 0 });
-    return;
-  }
-
-  // Settle: accrue the paise, debit whole rupees when they cross ₹1, and write the log row — all in
-  // ONE transaction, so the accrual carry can never drift from the money. The log row doubles as
-  // the idempotency key, exactly like the compose log.
-  let charged = 0;
+  // Settle: idempotency row + accrual + debit, atomically (utils/meter.js). The customer keys
+  // events by lead id and their own claim transaction guarantees one publish per lead, so an
+  // already-logged key is a redelivery — acknowledged, unbilled, and the reason a full historical
+  // ledger replay after an outage settles only what was never billed.
+  let result;
   try {
-    charged = await db.runTransaction(async (tx) => {
-      const orgRef = db.collection('organisations').doc(orgId);
-      const orgSnap = await tx.get(orgRef);
-      if (!orgSnap.exists) return 0;
-      const dupe = await tx.get(logRef);
-      if (dupe.exists) return 0; // raced with a concurrent identical event
-
-      const org = orgSnap.data();
-
-      // Waived line (testing / goodwill): record it for idempotency + reconciliation, charge nothing.
-      if (isServicePaused(org, service)) {
-        tx.set(logRef, {
-          orgId,
-          service,
-          idempotencyKey,
-          qty,
-          leadId: String(body.leadId || ''),
-          refId: String(body.refId || ''),
-          pricePaise: unitPaise,
-          debitInr: 0,
-          waived: true,
-          waivedPaise: unitPaise * qty,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-        return 0;
-      }
-
-      const { debitInr, accrualPaise } = accrueComposeCharge(org[def.accrualField], unitPaise * qty);
-
-      const update = { [def.accrualField]: accrualPaise };
-      if (debitInr > 0) {
-        // Org may go negative — same policy as the sourcing batch debit; the operator reconciles.
-        update.balance = Number(org.balance ?? 0) - debitInr;
-        tx.set(db.collection('transactions').doc(), {
-          orgId,
-          type: 'debit',
-          kind: def.kind,
-          amount: debitInr,
-          // Sub-₹1 unit prices settle several events per ledger row — record how many it covered.
-          count: Math.max(1, Math.round((debitInr * 100) / unitPaise)),
-          description: `${def.label} (₹${(unitPaise / 100).toFixed(2)} × ${Math.max(1, Math.round((debitInr * 100) / unitPaise))})`,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-      }
-      tx.update(orgRef, update);
-      tx.set(logRef, {
-        orgId,
-        service,
-        idempotencyKey,
-        qty,
+    result = await settleMetered({
+      db,
+      orgId,
+      service,
+      idempotencyKey,
+      qty,
+      extra: {
         leadId: String(body.leadId || ''),
         refId: String(body.refId || ''),
         propertyId: String(body.propertyId || ''),
         displayId: String(body.displayId || ''),
-        pricePaise: unitPaise,
-        debitInr,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-      return debitInr;
+      },
     });
   } catch (e) {
     // The event is the customer telling us work already happened — failing the request makes them
@@ -249,6 +128,15 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
     return;
   }
 
+  if (result.duplicate) {
+    // Not an error — this is the idempotency guarantee doing its job, and during a historical
+    // ledger replay it's the signal that the already-billed events are being skipped correctly.
+    console.log('usageMeter:duplicate', orgId, JSON.stringify({ service, idempotencyKey }));
+    res.status(200).json({ ok: true, duplicate: true, charged: 0 });
+    return;
+  }
+
+  const charged = result.charged;
   console.log('usageMeter:ok', orgId, service, JSON.stringify({ idempotencyKey, qty, charged }));
   res.status(200).json({ ok: true, charged });
 });

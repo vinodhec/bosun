@@ -736,3 +736,61 @@ export const BLOG_CLASSIFY_PRICE_PAISE = 50;  // flat 50 paise/blog (operator-se
 // variance ≈ 15 paise. Priced at EXACTLY 3× that (operator directive 2026-07-20 "average cost × 3x").
 export const LEAD_BRIEF_COST_PAISE = 15;   // measured avg Gemini Flash cost per brief (GST-incl.)
 export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
+
+/**
+ * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───
+ * The customer's own staff raise defects from THEIR admin console; Bosun files them into the org's
+ * GitHub repo, dedupes them, enriches them with evidence, and meters the lifecycle. A separate lane
+ * from the managed-agent fix pipeline (COMPLEXITY_TIERS): there the agent does the work and the
+ * price must cover token COGS, here the customer's OWN pipeline does the fixing and Bosun's marginal
+ * cost is one cheap classify call. That is why a per-org price exists at all — see priceForService.
+ *
+ * The four lines, and why each settles where it does:
+ *   defect_triage        — per report that PASSES the dedupe gate and gets a spec + evidence pack.
+ *                          A duplicate costs the customer NOTHING: the gate's whole value is that
+ *                          it stops work, so billing for it would invert the incentive.
+ *   defect_fix           — the headline line, settled on the REPORTER'S OWN confirmation that the
+ *                          thing that annoyed them stopped happening. Deliberately not "PR opened"
+ *                          (bills fixes that didn't work) and not "report filed" (prices the act of
+ *                          reporting a bug, which teaches staff to stay quiet). A bounced fix
+ *                          re-enters the queue free — the MAX_FREE_REVISIONS discipline.
+ *   defect_regression_test — opt-in per org: a merged Playwright test pinning the acceptance
+ *                          criteria, so the same defect cannot come back.
+ *   defect_sla_report    — the weekly accountability pack (time-to-fix, reopen rate, unconfirmed
+ *                          tickets), on the seo_weekly_report rails.
+ *
+ * All four are DEFAULTS. The live price for any org is whatever priceForService resolves — these
+ * constants are only the fallback for an org that has set no override.
+ */
+export const DEFECT_TRIAGE_PRICE_PAISE = 1000;           // ₹10 per non-duplicate report triaged
+export const DEFECT_FIX_PRICE_PAISE = 10000;             // ₹100 per reporter-confirmed fix
+export const DEFECT_REGRESSION_TEST_PRICE_PAISE = 4000;  // ₹40 per merged regression test
+export const DEFECT_SLA_REPORT_PRICE_PAISE = 5000;       // ₹50 per weekly defect SLA report
+
+/**
+ * ── Per-org price override ─────────────────────────────────────────────────────────────────────
+ * Resolve the live unit price (paise) for a metered service line on ONE org, falling back to the
+ * module constant when that org has set no override.
+ *
+ * Until now every price here was global: one constant, every customer. That held while the
+ * customer base was one platform, but a service whose COGS depends on WHOSE pipeline does the work
+ * cannot be priced globally — a defect fixed by the customer's own Claude Code pipeline costs Bosun
+ * a classify call, while the same defect routed to the managed agent costs real tokens. The
+ * override exists for that, and for genuine commercial terms (a pilot rate, a volume rate).
+ *
+ * Shape: `organisations/{orgId}.pricing` = { [service]: <paise, integer ≥ 0> }, e.g.
+ *   { defect_fix: 10000, defect_triage: 0 }
+ * A 0 is HONOURED (a deliberately free line, distinct from `billingPaused` which waives a priced
+ * line and records `waivedPaise` for later reconciliation). Anything not a non-negative integer —
+ * a string from a bad admin write, a float, a negative — is ignored in favour of the constant, so a
+ * malformed override can never make a line free or negative by accident.
+ *
+ * INVARIANT (shared with every meter line): the price is resolved on OUR side, from OUR data. It
+ * never travels on the wire and no customer surface displays one. The customer reports what
+ * happened; Bosun alone decides what it costs.
+ */
+export function priceForService(org, service, fallbackPaise) {
+  const override = org && org.pricing ? org.pricing[service] : undefined;
+  if (Number.isInteger(override) && override >= 0) return override;
+  return fallbackPaise;
+}
