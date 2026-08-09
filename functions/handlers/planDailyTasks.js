@@ -18,11 +18,13 @@
  * pre-check that doc, so a scheduler retry, a double cron, or an on-demand call after a successful
  * night are all charged:0 no-ops. The platform's ingest is first-plan-wins on top.
  *
- * Wallet gate: a NEGATIVE org balance withholds the day entirely — see LOW_BALANCE_MESSAGE below.
+ * Withheld days (`withholdDay`): a REST DAY (Sunday — the team's weekly holiday) or a NEGATIVE org
+ * balance withholds the day entirely — nothing produced, nothing billed, and a blocked notice tells
+ * the plan page which of the two it was. See HOLIDAY_MESSAGE / LOW_BALANCE_MESSAGE below.
  *
  * Config: organisations/{orgId}.sourcing.planner = { enabled, workStateUrl, planUrl,
- * maxTasksPerAdmin?, capPerCategory? }. Secret: orgSecrets/{orgId}.sourcing.secret (same vault as
- * the relay). Audit: plannerRuns/{orgId}/runs/{planRunId}.
+ * maxTasksPerAdmin?, capPerCategory?, restDays? }. Secret: orgSecrets/{orgId}.sourcing.secret (same
+ * vault as the relay). Audit: plannerRuns/{orgId}/runs/{planRunId}.
  */
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onRequest } from 'firebase-functions/v2/https';
@@ -50,6 +52,15 @@ const PLAN_POST_TIMEOUT_MS = 60000;
  */
 export const LOW_BALANCE_MESSAGE = 'Low balance — recharge to use AI agents to manage the tasks.';
 
+/** What the admins see on a rest day. Same ownership argument as LOW_BALANCE_MESSAGE. */
+export const HOLIDAY_MESSAGE = 'Weekly holiday — no tasks planned today.';
+
+/**
+ * Sunday is the team's weekly holiday: no work queue is planned for it, and the day is never billed.
+ * Per-org override: `sourcing.planner.restDays` — IST weekday numbers, `[]` to plan every day.
+ */
+const DEFAULT_REST_DAYS = [0];
+
 /** IST calendar date as yyyymmdd — must match the platform's istDateKey exactly. */
 export function istDateKey(nowMs = Date.now()) {
   const ist = new Date(nowMs + IST_OFFSET_MS);
@@ -57,6 +68,19 @@ export function istDateKey(nowMs = Date.now()) {
   const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
   const d = String(ist.getUTCDate()).padStart(2, '0');
   return `${y}${m}${d}`;
+}
+
+/** IST weekday of `nowMs` — 0 = Sunday … 6 = Saturday. */
+export function istWeekday(nowMs = Date.now()) {
+  return new Date(nowMs + IST_OFFSET_MS).getUTCDay();
+}
+
+/** True when the org does not work the IST day containing `nowMs`. */
+export function isRestDay(planner = {}, nowMs = Date.now()) {
+  const days = Array.isArray(planner.restDays)
+    ? planner.restDays.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)
+    : DEFAULT_REST_DAYS;
+  return days.includes(istWeekday(nowMs));
 }
 
 /** Tiny promise pool — run `fn` over `items` with at most `limit` in flight. */
@@ -72,6 +96,66 @@ async function mapLimit(items, limit, fn) {
     }),
   );
   return out;
+}
+
+/**
+ * Withhold the day and tell the platform WHY. Two reasons reach here — the weekly holiday (expected;
+ * nobody is working) and a negative wallet (a fault the owner must act on) — and both take the same
+ * shape: nothing produced, nothing billed, and a BLOCKED notice carrying the reason to the plan page.
+ *
+ * The notice goes through the ingest's `blocked` branch, which writes daily_plan_meta ONLY and no
+ * plan docs. That is the whole point: plan-doc ingest is first-plan-wins, so a placeholder "plan"
+ * would occupy a day that may still need planning for real. With nothing written and nothing billed
+ * the day stays re-plannable — the next trigger picks it up once the reason clears.
+ *
+ * Best-effort delivery: a notice that fails to land degrades to the page's ordinary "no plan yet"
+ * state. It must never turn into an error that masks why the day was withheld.
+ */
+async function withholdDay({ db, orgId, planner, secret, dateKey, trigger, summary, blocked }) {
+  const noticeRunId = `dpb_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
+  const noticeBody = JSON.stringify({
+    orgId,
+    planRunId: noticeRunId,
+    dateKey,
+    generatedAtMs: Date.now(),
+    trigger,
+    blocked,
+    plans: [],
+  });
+  try {
+    const signedNotice = signPayload(secret, noticeBody);
+    const noticeResp = await fetch(planner.planUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-bosun-signature': signedNotice.signature,
+        'x-bosun-timestamp': signedNotice.timestamp,
+      },
+      body: noticeBody,
+      signal: AbortSignal.timeout(30000),
+    });
+    summary.noticeDelivered = noticeResp.ok;
+    if (!noticeResp.ok) summary.noticeStatus = noticeResp.status;
+  } catch (e) {
+    summary.noticeDelivered = false;
+    summary.noticeError = e?.message || String(e);
+  }
+  await db
+    .collection('plannerRuns')
+    .doc(orgId)
+    .collection('runs')
+    .doc(noticeRunId)
+    .set({
+      dateKey,
+      trigger,
+      blocked: { ...blocked, noticeDelivered: !!summary.noticeDelivered },
+      admins: 0,
+      taskCount: 0,
+      chargedInr: 0,
+      createdAt: FieldValue.serverTimestamp(),
+    })
+    .catch(() => {});
+  return summary;
 }
 
 /**
@@ -104,17 +188,33 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
       return summary;
     }
 
-    // 0) Wallet gate. A negative balance stops the day being PRODUCED, not merely delivered: no
+    // 0a) Rest day. Sunday is the team's weekly holiday: nobody works it, so there is nothing to
+    // plan and nothing to bill. Checked here — inside the shared flow — so BOTH entry points honour
+    // it: the 01:30 cron AND the platform's 07:00 "no plan landed" fallback, which would otherwise
+    // read a deliberately empty Sunday as an outage and ask us to plan it. Ordered ahead of the
+    // wallet gate because a rest day is not about money: telling a team that isn't working to go
+    // top up would be the wrong answer to the right silence.
+    if (isRestDay(planner)) {
+      summary.status = 'blocked';
+      summary.reason = 'weekly-holiday';
+      summary.message = HOLIDAY_MESSAGE;
+      return await withholdDay({
+        db,
+        orgId,
+        planner,
+        secret,
+        dateKey,
+        trigger,
+        summary,
+        blocked: { reason: 'weekly_holiday', message: HOLIDAY_MESSAGE },
+      });
+    }
+
+    // 0b) Wallet gate. A negative balance stops the day being PRODUCED, not merely delivered: no
     // work-state pull, no Flash briefings, no plan docs, no charge. The fix pipeline deliberately
     // lets an org run negative (the operator reconciles later), but the planner is a recurring
     // nightly service — running it on an empty wallet just deepens a debt the owner never agreed to.
     // Instead we POST a BLOCKED notice so the admins' page can say why and ask for a top-up.
-    //
-    // The notice goes through the ingest's `blocked` branch, which writes daily_plan_meta ONLY and
-    // no plan docs. That is the whole point: plan-doc ingest is first-plan-wins, so a placeholder
-    // "plan" would occupy the day the owner is about to pay for. With nothing written and nothing
-    // billed, the day stays re-plannable — after a top-up the next trigger (the platform's 07:00
-    // fallback, or tomorrow's cron) plans it for real.
     //
     // A waived line (billingPaused) is free by operator choice, so its balance cannot be the reason
     // to withhold it — testing and goodwill orgs keep planning at a negative balance.
@@ -126,52 +226,16 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
       summary.reason = 'low-balance';
       summary.balance = balance;
       summary.message = LOW_BALANCE_MESSAGE;
-      const noticeRunId = `dpb_${dateKey}_${crypto.randomBytes(5).toString('hex')}`;
-      const noticeBody = JSON.stringify({
+      return await withholdDay({
+        db,
         orgId,
-        planRunId: noticeRunId,
+        planner,
+        secret,
         dateKey,
-        generatedAtMs: Date.now(),
         trigger,
+        summary,
         blocked: { reason: 'low_balance', message: LOW_BALANCE_MESSAGE, balanceInr: balance },
-        plans: [],
       });
-      // Best-effort: a notice that fails to land degrades to the page's ordinary "no plan yet"
-      // state. It must never turn into an error that masks WHY the day was withheld.
-      try {
-        const signedNotice = signPayload(secret, noticeBody);
-        const noticeResp = await fetch(planner.planUrl, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-bosun-signature': signedNotice.signature,
-            'x-bosun-timestamp': signedNotice.timestamp,
-          },
-          body: noticeBody,
-          signal: AbortSignal.timeout(30000),
-        });
-        summary.noticeDelivered = noticeResp.ok;
-        if (!noticeResp.ok) summary.noticeStatus = noticeResp.status;
-      } catch (e) {
-        summary.noticeDelivered = false;
-        summary.noticeError = e?.message || String(e);
-      }
-      await db
-        .collection('plannerRuns')
-        .doc(orgId)
-        .collection('runs')
-        .doc(noticeRunId)
-        .set({
-          dateKey,
-          trigger,
-          blocked: { reason: 'low_balance', balanceInr: balance, noticeDelivered: !!summary.noticeDelivered },
-          admins: 0,
-          taskCount: 0,
-          chargedInr: 0,
-          createdAt: FieldValue.serverTimestamp(),
-        })
-        .catch(() => {});
-      return summary;
     }
 
     // 1) Pull the work-state snapshot (constant-string HMAC, like query-matrix).

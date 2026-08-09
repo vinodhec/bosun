@@ -8,6 +8,9 @@
  * scheduling it, billed FLAT per summary-day (EOD_SUMMARY_PRICE_PAISE) and charged only when the
  * platform acks `sent > 0`. A day with no plans, or one where every send fails, is free.
  *
+ * Rest days: skipped on the team's weekly holiday (Sunday), off the PLANNER's `restDays` — the day
+ * has no plan to summarise, so a digest of zeros would be the only thing to send.
+ *
  * Org config (organisations/{orgId}.sourcing.eodSummary):
  *   { enabled: true, url: 'https://…/api/ingest/eod-summary', recipients: ['919443125052', …] }
  *
@@ -20,7 +23,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { signPayload } from '../utils/sourcing.js';
 import { EOD_SUMMARY_PRICE_PAISE, accrueComposeCharge, isServicePaused } from '../shared/billing.js';
-import { istDateKey } from './planDailyTasks.js';
+import { istDateKey, isRestDay } from './planDailyTasks.js';
 
 const REGION = 'asia-south1';
 const METER_LOG = 'usage_meter_log';
@@ -34,6 +37,15 @@ export async function runEodForOrg(db, orgId, cfg) {
     const eod = cfg.eodSummary || {};
     if (!eod.enabled || !eod.url) {
       summary.reason = !eod.enabled ? 'disabled' : 'no-url';
+      return summary;
+    }
+
+    // Rest day — nobody worked, and the planner withheld the day, so there is no scoreboard to
+    // summarise. Skipped outright rather than sending a digest of zeros to the staff's phones.
+    // Read from the PLANNER's config on purpose: ONE rest-day setting governs the whole day, so a
+    // plan and its evening summary can never disagree about whether the team was working.
+    if (isRestDay(cfg.planner || {})) {
+      summary.reason = 'weekly-holiday';
       return summary;
     }
 
