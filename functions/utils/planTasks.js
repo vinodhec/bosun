@@ -27,12 +27,14 @@
  * nothing), buyer tasks only for admins with the buyer-leads grant, and the per-admin quota.
  */
 
-// Category order IS the priority order. Keys match the platform's TASK_TYPES exactly.
+// Category order IS the priority order. Keys match the platform's TASK_TYPES exactly — LOCKSTEP
+// with web/src/lib/dailyTasks.ts TASK_TYPES in the platform repo: buyer_followup ranks ABOVE the
+// seller cold-call lanes (operator 2026-08-09: buyer demand is priority #1, leads are scarce).
 export const CATEGORY_ORDER = [
   'callback_due',
+  'buyer_followup',
   'untouched_lead',
   'rnr_retry',
-  'buyer_followup',
   'freshness_check',
 ];
 
