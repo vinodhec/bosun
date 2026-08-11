@@ -85,8 +85,16 @@ export const TASK_SKILL = {
 
 // Throughput-sized quota (the feedback loop). Once yesterday's plan outcome exists (work-state's
 // planYesterday, total ≥ MEANINGFUL_PLAN), tonight's quota tracks demonstrated throughput
-// (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity]. No history
-// (new admin / no plan yesterday) → static capacity, exactly as before.
+// (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity] — EXCEPT when the
+// plan was fully cleared, which is not evidence of a ceiling (see below). No history (new admin / no
+// plan yesterday) → static capacity, exactly as before.
+//
+// `capacity` is the platform's number, resolved on /admin/sourcing-languages (per-person override →
+// full-time / part-time target → org default) and delivered in the work-state. It is the operator's
+// setting and therefore the ONLY place plan size is decided; `maxTasksPerAdmin` below is a safety
+// rail against a garbage value, not a second policy knob, so keep it at the platform's own
+// CAPACITY_MAX (100 — also the ingest's MAX_TASKS_PER_PLAN) rather than a number that silently
+// overrides what a superadmin typed on the page.
 //
 // QUOTA_FLOOR is the owner's daily target, not a nudge: 40 tasks is the expected day
 // (operator decision 2026-08-03 — "minimum 40"; was 10 for one night, which mirrored measured
@@ -101,6 +109,13 @@ export function quotaFor(admin, maxTasksPerAdmin) {
   const py = admin.planYesterday;
   if (!py || !(Number(py.total) >= MEANINGFUL_PLAN)) return base;
   const worked = (Number(py.done) || 0) + (Number(py.autoDone) || 0);
+  // CLEARED THE WHOLE PLAN → yesterday measured the PLAN's size, not this person's ceiling, so
+  // `worked` is no evidence of a limit and stretching from it is circular: a 40-task plan worked
+  // 40/40 re-derives 40 forever, which is exactly what pinned three admins at 40 for a week after a
+  // superadmin raised full-time capacity to 80 on the staffing page (2026-08-08). When someone
+  // finishes everything we gave them, trust the operator's capacity — the throughput loop below
+  // still bites the moment they leave tasks unworked.
+  if (worked >= Number(py.total)) return base;
   return Math.max(Math.min(QUOTA_FLOOR, base), Math.min(base, Math.ceil(worked * 1.25)));
 }
 

@@ -192,3 +192,38 @@ console.log('planTasks: all 10 fixture tests passed ✓');
   assert.equal(planFor(r, 'a').tasks.length, 2);
 }
 console.log('planTasks: skills fixtures passed ✓');
+
+// ── quotaFor: the throughput loop must not punish a fully-cleared plan ─────────────────────────
+{
+  const { quotaFor } = await import('../functions/utils/planTasks.js');
+  const MAX = 100;
+
+  // Cleared 40/40 with capacity raised to 80 → trust the operator's capacity, not yesterday's plan.
+  assert.equal(
+    quotaFor({ capacity: 80, planYesterday: { total: 40, done: 0, autoDone: 40 } }, MAX),
+    80,
+    '100% cleared → stretch from capacity, not from worked',
+  );
+  // Left work on the table → the loop still bites (25% over what they actually worked).
+  assert.equal(
+    quotaFor({ capacity: 80, planYesterday: { total: 80, done: 0, autoDone: 48 } }, MAX),
+    60,
+    'partial completion → worked × 1.25',
+  );
+  // …but never below the floor.
+  assert.equal(
+    quotaFor({ capacity: 80, planYesterday: { total: 80, done: 0, autoDone: 8 } }, MAX),
+    40,
+    'a bad day still gets the 40-task floor',
+  );
+  // No history → static capacity, unchanged.
+  assert.equal(quotaFor({ capacity: 80, planYesterday: null }, MAX), 80, 'no history → capacity');
+  // The rail clamps a garbage capacity, and a capacity BELOW the floor still wins.
+  assert.equal(quotaFor({ capacity: 500, planYesterday: null }, MAX), MAX, 'rail clamps capacity');
+  assert.equal(
+    quotaFor({ capacity: 20, planYesterday: { total: 20, done: 0, autoDone: 2 } }, MAX),
+    20,
+    'explicit sub-floor capacity is never overridden by the floor',
+  );
+  console.log('planTasks: quota fixtures passed ✓');
+}
