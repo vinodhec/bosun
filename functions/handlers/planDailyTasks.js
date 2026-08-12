@@ -407,6 +407,10 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
           Object.entries(workState.categories || {}).map(([k, v]) => [k, (v || []).length]),
         ),
         unassigned: stats.unassigned,
+        // Seller/buyer grouping: `people` conversations covering `cards` listings, so `callsSaved` is
+        // the duplicate dialling the plan removed tonight (a card whose number already appears above
+        // it costs no extra call). The series is how we tell whether grouping keeps paying.
+        grouped: stats.grouped || null,
         // Per-admin usage record — did yesterday's plan get worked, and what did tonight allocate?
         // callsYesterday/converted7d were always in the snapshot; now they persist for the audit.
         roster: (workState.admins || []).map((a) => ({
