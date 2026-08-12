@@ -607,6 +607,27 @@ export const DAILY_PLAN_PRICE_PAISE = 20000; // ₹200 per plan-day, flat (repri
 export const EOD_SUMMARY_PRICE_PAISE = 1000; // ₹10 per summary-day, flat (operator repriced from ₹5 before launch, 2026-08-03)
 
 /**
+ * ── Phone-hunt DM composition (dm_compose) ─────────────────────────────────────────────────────
+ * FLAT per lead per IST day (operator decision 2026-08-12). The platform's phone-hunt lane works
+ * sourced leads that carry NO phone number — nobody can call them, so a human opens the original
+ * Facebook post and either finds the number or DMs the seller. This line composes that DM: the
+ * property in the seller's own language, and the ask (their number, or the complete-your-listing
+ * link the platform appends byte-exact afterwards).
+ *
+ * Settled IN-PROCESS on a successful compose, exactly like eod_summary — a degraded response
+ * (`composed: false`) charges nothing, because the platform then sends its own canned template and
+ * Bosun did no work worth billing. idempotencyKey = `${leadId}:${dateKey}`, so a hunter who
+ * re-copies the same message, or reloads the lane, is billed once for that lead that day.
+ *
+ * Deliberately NOT priced on the platform side: per the no-price rule the platform reports what
+ * happened and never what it costs. Here the fee is the composition service itself, unlike
+ * wa_message_delivered where composition rides free inside the per-message rate. COGS ≈ one Flash
+ * call (~₹0.02), so this is margin on a service that turns an uncallable lead into a conversation.
+ * Accrued on the org as `dmComposeAccrualPaise`.
+ */
+export const DM_COMPOSE_PRICE_PAISE = 100; // ₹1 per composed DM, flat, once per lead per IST day
+
+/**
  * ── Billing pause (testing / goodwill) ─────────────────────────────────────────────────────────
  * An org may pause specific metered service lines while a new capability is validated on a testing
  * environment. A paused settle still writes its idempotency log row (so re-runs stay no-ops) but

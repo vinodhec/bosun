@@ -23,6 +23,7 @@ import {
   SEO_REPORT_REPLAY_PRICE_PAISE,
   BLOG_CLASSIFY_PRICE_PAISE,
   EOD_SUMMARY_PRICE_PAISE,
+  DM_COMPOSE_PRICE_PAISE,
   DEFECT_TRIAGE_PRICE_PAISE,
   DEFECT_FIX_PRICE_PAISE,
   DEFECT_REGRESSION_TEST_PRICE_PAISE,
@@ -86,6 +87,14 @@ export const SERVICE_DEFS = {
     accrualField: 'eodSummaryAccrualPaise',
     kind: 'eod_summary',
     label: 'EOD WhatsApp team summary',
+  },
+  // Normally settled in-process by dmCompose on a successful composition (a degraded response is
+  // free); registered here so a ledger replay prices identically and dedupes on the same row.
+  dm_compose: {
+    pricePaise: DM_COMPOSE_PRICE_PAISE,
+    accrualField: 'dmComposeAccrualPaise',
+    kind: 'dm_compose',
+    label: 'Phone-hunt DM composed',
   },
   // ── Defect tracking ───────────────────────────────────────────────────────────────────────────
   // `defect_triage` is settled in-process by defectIntake, and ONLY when the dedupe gate passes — a
