@@ -90,53 +90,31 @@ export const TASK_SKILL = {
   freshness_check: 'freshness_check',
 };
 
-// Throughput-sized quota (the feedback loop). Once yesterday's plan outcome exists (work-state's
-// planYesterday, total ≥ MEANINGFUL_PLAN), tonight's quota tracks demonstrated throughput
-// (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity] — EXCEPT when the
-// plan was fully cleared, which is not evidence of a ceiling (see below). No history (new admin / no
-// plan yesterday) → static capacity, exactly as before.
-//
-// `capacity` is the platform's number, resolved on /admin/sourcing-languages (per-person override →
-// full-time / part-time target → org default) and delivered in the work-state. It is the operator's
-// setting and therefore the ONLY place plan size is decided; `maxTasksPerAdmin` below is a safety
-// rail against a garbage value, not a second policy knob, so keep it at the platform's own
-// CAPACITY_MAX (100 — also the ingest's MAX_TASKS_PER_PLAN) rather than a number that silently
+// The quota IS the operator's plan size — nothing else. `capacity` is the platform's number,
+// resolved on /admin/sourcing-languages (per-person override → full-time / part-time target → org
+// default) and delivered in the work-state, and it is the ONLY place plan size is decided.
+// `maxTasksPerAdmin` is a safety rail against a garbage config value, not a second policy knob, so
+// it stays at the platform's FULLTIME_CAPACITY_MAX (200) rather than a number that silently
 // overrides what a superadmin typed on the page.
 //
-// QUOTA_FLOOR is the owner's daily target, not a nudge: 40 tasks is the expected day
-// (operator decision 2026-08-03 — "minimum 40"; was 10 for one night, which mirrored measured
-// throughput but under-filled a 9-hour shift). With the default capacity also 40, the floor
-// makes every plan a full 40 — the stretch only bites past 40 when a superadmin raises an
-// admin's dailyTaskCapacity on the staffing page. A capacity set BELOW 40 still wins (the
-// floor never overrides an explicit per-admin cap).
-const QUOTA_FLOOR = 40;
-const MEANINGFUL_PLAN = 5; // tiny plans (fresh rollout days) don't count as evidence
+// A throughput feedback loop used to shrink this to `max(40, ceil(worked × 1.25))` whenever
+// yesterday's plan was left unfinished. It was removed on operator instruction (2026-08-13): on
+// 20260813 it pinned Sanjay and Arthi at 40 calls against full-time targets of 100 and 60, because
+// each had left the previous day's plan part-worked — the setting on the staffing page and the plan
+// people actually received had drifted apart with no way to see it from the page. Under-worked days
+// are now a management signal (the attention watch already flags exactly that pair of conditions),
+// not a silent quota cut.
 export function quotaFor(admin, maxTasksPerAdmin) {
-  const base = Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
-  const py = admin.planYesterday;
-  if (!py || !(Number(py.total) >= MEANINGFUL_PLAN)) return base;
-  // The quota is a CALL budget (see allocateTasks: a person's grouped listings cost one unit), so the
-  // evidence has to be calls too. The platform sends yesterday's day in both denominations;
-  // `*Units` is absent only on a pre-grouping snapshot, where cards and calls were the same thing.
-  const total = Number(py.totalUnits) || Number(py.total) || 0;
-  const worked =
-    py.workedUnits === undefined
-      ? (Number(py.done) || 0) + (Number(py.autoDone) || 0)
-      : Number(py.workedUnits) || 0;
-  // CLEARED THE WHOLE PLAN → yesterday measured the PLAN's size, not this person's ceiling, so
-  // `worked` is no evidence of a limit and stretching from it is circular: a 40-task plan worked
-  // 40/40 re-derives 40 forever, which is exactly what pinned three admins at 40 for a week after a
-  // superadmin raised full-time capacity to 80 on the staffing page (2026-08-08). When someone
-  // finishes everything we gave them, trust the operator's capacity — the throughput loop below
-  // still bites the moment they leave tasks unworked.
-  if (worked >= total) return base;
-  return Math.max(Math.min(QUOTA_FLOOR, base), Math.min(base, Math.ceil(worked * 1.25)));
+  return Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
 }
 
-// The ingest's MAX_TASKS_PER_PLAN. Quota is counted in CALLS, not cards (see allocateTasks), so a
-// roster of grouped sellers can hand one admin more cards than their quota — this is the hard rail
-// that keeps the delivery inside what the platform accepts.
-const MAX_CARDS_PER_PLAN = 100;
+// The ingest's MAX_TASKS_PER_PLAN (keep in lockstep with web/src/lib/dailyTasks.ts). Quota is
+// counted in CALLS, not cards (see allocateTasks), so a roster of grouped sellers hands one admin
+// more cards than their quota — this is the hard rail that keeps the delivery inside what the
+// platform accepts. It sits well above the 200-call ceiling because grouped siblings ride free: at
+// 100 it truncated Abi's 20260813 plan at 100 cards = 70 of her 100 calls, i.e. the rail was eating
+// the call budget it exists to protect.
+const MAX_CARDS_PER_PLAN = 400;
 
 /**
  * `ignoreQuota` is used for one case only: a task whose person is ALREADY on this admin's plan. That

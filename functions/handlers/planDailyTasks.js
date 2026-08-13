@@ -266,7 +266,10 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
     }
 
     // 2) Deterministic allocation.
-    const maxTasksPerAdmin = Math.max(1, Math.floor(Number(planner.maxTasksPerAdmin) || 40));
+    // Safety rail only — the plan size a superadmin typed on /admin/sourcing-languages wins, so the
+    // default is the platform's FULLTIME_CAPACITY_MAX (200). A lower value configured on the org
+    // silently caps every admin's target, which is exactly the drift we removed from quotaFor.
+    const maxTasksPerAdmin = Math.max(1, Math.floor(Number(planner.maxTasksPerAdmin) || 200));
     const { plans, stats } = allocateTasks(workState, { maxTasksPerAdmin });
 
     // 3) Briefings — Flash, capped concurrency, failure → '' (never block the plan on Gemini).
