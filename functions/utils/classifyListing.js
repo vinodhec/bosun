@@ -6,6 +6,19 @@ import { generateJson, geminiConfigured, GEMINI_FLASH } from './gemini.js';
 // sits on (an owner OFFERING a property vs a buyer/tenant SEEKING one — the caller's buyer-lead
 // harvest rides on this), and pulls out structured fields so the relayed lead lands pre-parsed.
 
+// ── The snippet is not always the post (13 Aug 2026) ────────────────────────────────────────────
+// The `side` verdict was landing sellers in the platform's buyer queue, and the cause is not the
+// model's judgement — it is the input. Google splices adjacent Facebook posts and comments into one
+// SERP snippet, so the text handed to this function routinely contains somebody ELSE's words:
+//   SP-005794  title "15 லட்சத்தில் வீடு" (a seller's video)
+//              snippet "… வீடு விவசாய நிலம் வேண்டும் …"        → classified 'seeking'
+//   SP-005866  title "⚠️இவளோ கம்மி பட்ஜெட்ல 2BHK வீடா" (a seller's ad)
+//              snippet "Looking for 2 cent plot in Tirunelveli · Srini … RAJ AVENUE …"
+//                      ↑ the " · " is Google joining two separate results  → classified 'seeking'
+// The prompt already told the model to prefer the title for LOCALITY; it now says the same for
+// `side`, with the failure spelled out. The platform carries an independent title-anchored guard
+// (web/src/lib/leadIntent.ts) because a prompt is a request, not a guarantee.
+
 // Cheap deterministic pre-filter — skip an LLM call on posts with no property signal at all.
 // `\d*\s*bhk`, not plain `bhk`: listings routinely write "2BHK" with no space, and \b never fires
 // between a digit and a letter — plain \bbhk\b silently missed every unspaced variant.
@@ -74,8 +87,13 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `(Tamil, Malayalam, Telugu, Kannada, Hindi, Bengali, Marathi, …) spellings/transliterations as the ` +
     `SAME place (e.g. "Ramnad" = "Ramanathapuram" = "ராமநாதபுரம").\n\n` +
     `Facebook post, as a Google search result (first line = result title, rest = snippet; on ` +
-    `Facebook group pages the snippet is sometimes lifted from an ADJACENT post, so when the title ` +
-    `and snippet name different localities, judge locality from the title):\n` +
+    `Facebook group pages the snippet is often lifted from an ADJACENT post or comment — sometimes ` +
+    `TWO of them joined by " · " — so the snippet may describe a completely different property, or ` +
+    `a different person, than the title. The TITLE is the post. Whenever the title and the snippet ` +
+    `disagree, judge from the TITLE: both the locality AND which side of the market the poster is ` +
+    `on. In particular, do NOT call the post 'seeking' because the SNIPPET says "looking for" / ` +
+    `"wanted" / "தேவை" / "வேண்டும்" while the TITLE advertises a property, and do not call it ` +
+    `'offering' because the snippet advertises one while the title asks):\n` +
     `"""${body.slice(0, 1500)}"""\n\n` +
     `Decide: isListing (a genuine post about ONE specific property need — either someone offering a ` +
     `property or someone looking for one; NOT a shop ad, service promo, or news), side ('offering' ` +
