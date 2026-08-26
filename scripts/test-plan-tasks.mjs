@@ -192,3 +192,54 @@ console.log('planTasks: all 10 fixture tests passed ✓');
   assert.equal(planFor(r, 'a').tasks.length, 2);
 }
 console.log('planTasks: skills fixtures passed ✓');
+
+// ── quotaFor: the operator's plan size is the quota, whatever yesterday looked like ────────────
+{
+  const { quotaFor } = await import('../functions/utils/planTasks.js');
+  const MAX = 200;
+
+  // Cleared the plan → capacity.
+  assert.equal(
+    quotaFor({ capacity: 80, planYesterday: { total: 40, done: 0, autoDone: 40 } }, MAX),
+    80,
+    'cleared plan → capacity',
+  );
+  // Left most of it on the table → STILL capacity. The throughput loop was removed 2026-08-13:
+  // a part-worked day is a management signal, not a reason to quietly hand someone a smaller plan
+  // than the number on the staffing page.
+  assert.equal(
+    quotaFor({ capacity: 80, planYesterday: { total: 80, done: 0, autoDone: 8 } }, MAX),
+    80,
+    'part-worked day → still the operator capacity',
+  );
+  // No history → capacity, unchanged.
+  assert.equal(quotaFor({ capacity: 80, planYesterday: null }, MAX), 80, 'no history → capacity');
+  // A capacity below the old 40 floor is honoured exactly — the floor is gone too.
+  assert.equal(
+    quotaFor({ capacity: 20, planYesterday: { total: 20, done: 0, autoDone: 2 } }, MAX),
+    20,
+    'a small capacity is honoured, never floored up',
+  );
+  // The rail clamps a garbage capacity; a missing one falls back to 40.
+  assert.equal(quotaFor({ capacity: 5000, planYesterday: null }, MAX), MAX, 'rail clamps capacity');
+  assert.equal(quotaFor({ planYesterday: null }, MAX), 40, 'missing capacity → 40');
+  console.log('planTasks: quota fixtures passed ✓');
+}
+
+// ── the card rail must not eat the call budget ─────────────────────────────────────────────────
+{
+  const { allocateTasks: alloc } = await import('../functions/utils/planTasks.js');
+  // One admin, 100 calls, every seller carrying two listings → 200 cards for 100 calls. The old
+  // 100-card rail cut this at 50 calls (Abi's 20260813 plan).
+  const cands = [];
+  for (let i = 0; i < 150; i++) {
+    cands.push(cand(`L${i}a`, { groupKey: `s:90000000${String(i).padStart(2, '0')}` }));
+    cands.push(cand(`L${i}b`, { groupKey: `s:90000000${String(i).padStart(2, '0')}` }));
+  }
+  const r = alloc(ws([admin('a', { capacity: 100 })], { untouched_lead: cands }), { maxTasksPerAdmin: 200 });
+  const tasks = planFor(r, 'a').tasks;
+  const calls = new Set(tasks.map((t) => t.groupKey)).size;
+  assert.equal(calls, 100, 'admin gets their full 100-call budget');
+  assert.equal(tasks.length, 200, 'and all 200 grouped cards ride along');
+  console.log('planTasks: card-rail fixture passed ✓');
+}

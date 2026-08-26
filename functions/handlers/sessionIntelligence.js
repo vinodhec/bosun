@@ -595,17 +595,23 @@ export async function runIntelligenceForOrg(db, orgId, cfg) {
     // not tuning suggestions. Journey deep-links point at the customer console (digest origin).
     const consoleOrigin = new URL(intel.digestUrl).origin;
     const errorProposals = buildErrorDevTaskProposals(errorClusters, { consoleOrigin, dateKey });
-    const devTasks = [...errorProposals, ...buildDevTaskProposals({ ...digest, anomalies }), ...staffing].slice(0, 4);
+    // Crash-class proposals (autoFile) skip the approval queue — a page death is filed the same
+    // night; only the recurring/lower-stakes ones wait for the superadmin.
+    const autoFileTasks = errorProposals.filter((p) => p.autoFile);
+    const queuedErrorProposals = errorProposals.filter((p) => !p.autoFile);
+    const devTasks = [...queuedErrorProposals, ...buildDevTaskProposals({ ...digest, anomalies }), ...staffing].slice(0, 4);
 
-    // 4d) File APPROVED proposals from previous nights as real GitHub issues — capped, deduped by
-    // fingerprint via the filedTasks ledger, token = the org's stored repo token.
+    // 4d) File real GitHub issues: same-night crash-class auto-file tasks + APPROVED proposals
+    // from previous nights — capped, deduped by fingerprint via the filedTasks ledger, token =
+    // the org's stored repo token.
     const filedDevTasks = [];
     const approved = (digest.approvedDevTasks || []).slice(0, 3);
-    if (approved.length) {
+    const toFile = [...autoFileTasks, ...approved].slice(0, 5);
+    if (toFile.length) {
       const orgDoc = await db.collection('organisations').doc(orgId).get();
       const repoFullName = orgDoc.data()?.github?.repoFullName || '';
       const ghToken = (await db.collection('orgSecrets').doc(orgId).get()).data()?.githubToken || '';
-      for (const task of approved) {
+      for (const task of toFile) {
         const filedRef = db.collection('filedDevTasks').doc(`${orgId}_${task.fingerprint}`);
         if ((await filedRef.get()).exists) continue; // already filed on a previous night
         const res = await createIssue(repoFullName, { title: task.title, body: task.body, labels: task.labels }, ghToken);

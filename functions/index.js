@@ -101,6 +101,7 @@ export { runSourcingJobs } from './handlers/runSourcingJobs.js';
 // in-request.
 export { sourcingCompose } from './handlers/sourcingCompose.js';
 export { waCompose } from './handlers/waCompose.js';
+export { dmCompose } from './handlers/dmCompose.js';
 
 // HTTP (customer→Bosun, same HMAC): usage-event meter. The customer's platform reports each
 // listing its sweep auto-published off a Bosun-sourced lead; priced here (₹0.50/auto_post,

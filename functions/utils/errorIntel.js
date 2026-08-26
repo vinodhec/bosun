@@ -76,11 +76,14 @@ export function clusterErrors(errorRows = []) {
     .sort((a, b) => b.sessions - a.sessions || b.count - a.count);
 }
 
-// Proposal floors: a ticket needs recurrence, not a one-off blip.
+// Proposal floors: a ticket needs recurrence, not a one-off blip — EXCEPT crash-class errors.
+// An error_boundary hit means the whole page died for a real visitor ("Try again" screen), so a
+// single session is already ticket-worthy and skips the human approval wait (autoFile below).
 const MIN_SESSIONS_FOR_TICKET = 2;
 const MIN_EVENTS_FOR_TICKET = 5;
 const HIGH_SEVERITY_SESSIONS = 5;
 const MAX_ERROR_PROPOSALS = 2;
+const CRASH_SOURCES = new Set(['error_boundary']);
 
 /**
  * Recurring clusters → dev-task proposals for the superadmin queue. `consoleOrigin` is the
@@ -90,10 +93,16 @@ const MAX_ERROR_PROPOSALS = 2;
  */
 export function buildErrorDevTaskProposals(clusters, { consoleOrigin = '', dateKey = '' } = {}) {
   const proposals = [];
-  for (const c of clusters) {
-    if (c.sessions < MIN_SESSIONS_FOR_TICKET && c.count < MIN_EVENTS_FOR_TICKET) continue;
+  // Crash-class clusters first so the proposal cap never squeezes out a page death behind
+  // lower-stakes recurring errors (clusters arrive sorted by session count, not severity).
+  const ordered = [...clusters].sort(
+    (a, b) => Number(CRASH_SOURCES.has(b.source)) - Number(CRASH_SOURCES.has(a.source))
+  );
+  for (const c of ordered) {
+    const crashClass = CRASH_SOURCES.has(c.source);
+    if (!crashClass && c.sessions < MIN_SESSIONS_FOR_TICKET && c.count < MIN_EVENTS_FOR_TICKET) continue;
     const authAdjacent = c.source === 'login';
-    const severity = c.sessions >= HIGH_SEVERITY_SESSIONS ? 'high' : 'info';
+    const severity = crashClass || c.sessions >= HIGH_SEVERITY_SESSIONS ? 'high' : 'info';
     const journeyLinks = c.sampleSids
       .map((sid) => `- ${consoleOrigin}/admin/session-timelines?session=${encodeURIComponent(sid)}`)
       .join('\n');
@@ -115,10 +124,14 @@ export function buildErrorDevTaskProposals(clusters, { consoleOrigin = '', dateK
         '- [ ] Root cause identified from the session journey + stack snippet on the timeline',
         '- [ ] Fix landed; the error no longer appears in new sessions',
         '## Notes',
-        'Auto-proposed by the Bosun nightly agent from real `app_error` session data; approved by the superadmin.',
+        crashClass && !authAdjacent
+          ? 'Auto-filed by the Bosun nightly agent: an error-boundary crash killed the whole page for a real visitor, so it skips the approval queue.'
+          : 'Auto-proposed by the Bosun nightly agent from real `app_error` session data; approved by the superadmin.',
       ].join('\n'),
       labels: authAdjacent ? ['web', 'need-human', 'bug'] : ['web', 'ready-for-dev', 'bug'],
       severity,
+      // Crash-class (non-auth) proposals are filed to GitHub the same night, no approval wait.
+      autoFile: crashClass && !authAdjacent,
       evidence: `${c.sessions} sessions / ${c.count} occurrences of "${c.message.slice(0, 80)}" at ${c.source}`,
     });
     if (proposals.length >= MAX_ERROR_PROPOSALS) break;

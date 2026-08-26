@@ -12,6 +12,13 @@
  * scope, capacity and light throughput stats.
  *
  * Allocation, per category in priority order (callbacks are promises; freshness is maintenance):
+ *   0. GROUPING — candidates carry a `groupKey` (the person: `s:<last10>` seller / `b:<last10>` buyer,
+ *      the same identity the sourcing queue's seller groups use). The FIRST card for a person decides
+ *      who owns them for the day; every later card — any category — follows, ignoring the quota,
+ *      because it is the same phone call. Two admins dialling one owner on the same morning is the
+ *      exact waste the queue already fixed with group-claim; the plan must not re-create it.
+ *      Consequence: the quota is a CALL budget (`admin.units`), not a card count, and a plan can hold
+ *      more cards than the quota — capped by MAX_CARDS_PER_PLAN, the ingest's own limit.
  *   1. AFFINITY — a lead already assigned to (or converted by) an eligible admin goes to them:
  *      continuity is preferred whenever the owner has room.
  *   2. ROUND-ROBIN — otherwise the least-loaded eligible admin takes it (fill-ratio, then a
@@ -83,29 +90,40 @@ export const TASK_SKILL = {
   freshness_check: 'freshness_check',
 };
 
-// Throughput-sized quota (the feedback loop). Once yesterday's plan outcome exists (work-state's
-// planYesterday, total ≥ MEANINGFUL_PLAN), tonight's quota tracks demonstrated throughput
-// (done + autoDone) with 25% stretch headroom, clamped to [QUOTA_FLOOR, capacity]. No history
-// (new admin / no plan yesterday) → static capacity, exactly as before.
+// The quota IS the operator's plan size — nothing else. `capacity` is the platform's number,
+// resolved on /admin/sourcing-languages (per-person override → full-time / part-time target → org
+// default) and delivered in the work-state, and it is the ONLY place plan size is decided.
+// `maxTasksPerAdmin` is a safety rail against a garbage config value, not a second policy knob, so
+// it stays at the platform's FULLTIME_CAPACITY_MAX (200) rather than a number that silently
+// overrides what a superadmin typed on the page.
 //
-// QUOTA_FLOOR is the owner's daily target, not a nudge: 40 tasks is the expected day
-// (operator decision 2026-08-03 — "minimum 40"; was 10 for one night, which mirrored measured
-// throughput but under-filled a 9-hour shift). With the default capacity also 40, the floor
-// makes every plan a full 40 — the stretch only bites past 40 when a superadmin raises an
-// admin's dailyTaskCapacity on the staffing page. A capacity set BELOW 40 still wins (the
-// floor never overrides an explicit per-admin cap).
-const QUOTA_FLOOR = 40;
-const MEANINGFUL_PLAN = 5; // tiny plans (fresh rollout days) don't count as evidence
+// A throughput feedback loop used to shrink this to `max(40, ceil(worked × 1.25))` whenever
+// yesterday's plan was left unfinished. It was removed on operator instruction (2026-08-13): on
+// 20260813 it pinned Sanjay and Arthi at 40 calls against full-time targets of 100 and 60, because
+// each had left the previous day's plan part-worked — the setting on the staffing page and the plan
+// people actually received had drifted apart with no way to see it from the page. Under-worked days
+// are now a management signal (the attention watch already flags exactly that pair of conditions),
+// not a silent quota cut.
 export function quotaFor(admin, maxTasksPerAdmin) {
-  const base = Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
-  const py = admin.planYesterday;
-  if (!py || !(Number(py.total) >= MEANINGFUL_PLAN)) return base;
-  const worked = (Number(py.done) || 0) + (Number(py.autoDone) || 0);
-  return Math.max(Math.min(QUOTA_FLOOR, base), Math.min(base, Math.ceil(worked * 1.25)));
+  return Math.max(1, Math.min(Number(admin.capacity) || 40, maxTasksPerAdmin));
 }
 
-function eligible(admin, task) {
-  if (admin.quota <= admin.assigned.length) return false;
+// The ingest's MAX_TASKS_PER_PLAN (keep in lockstep with web/src/lib/dailyTasks.ts). Quota is
+// counted in CALLS, not cards (see allocateTasks), so a roster of grouped sellers hands one admin
+// more cards than their quota — this is the hard rail that keeps the delivery inside what the
+// platform accepts. It sits well above the 200-call ceiling because grouped siblings ride free: at
+// 100 it truncated Abi's 20260813 plan at 100 cards = 70 of her 100 calls, i.e. the rail was eating
+// the call budget it exists to protect.
+const MAX_CARDS_PER_PLAN = 400;
+
+/**
+ * `ignoreQuota` is used for one case only: a task whose person is ALREADY on this admin's plan. That
+ * card costs no extra call, so the quota (a call budget) must not push the seller's third listing
+ * onto a second admin — the whole point of grouping. Scope and skill still apply.
+ */
+function eligible(admin, task, { ignoreQuota = false } = {}) {
+  if (admin.assigned.length >= MAX_CARDS_PER_PLAN) return false;
+  if (!ignoreQuota && admin.quota <= admin.units) return false;
   if (task.type === 'buyer_followup' && !admin.canAccessBuyerLeads) return false;
   // Skills/responsibilities: null = full-skill admin; an array must cover the task's skill.
   const skill = TASK_SKILL[task.type];
@@ -125,11 +143,31 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       ...a,
       quota: quotaFor(a, maxTasksPerAdmin),
       assigned: [],
+      // Calls, not cards: a person already on this admin's plan costs 0 further units, so `units` is
+      // what the quota and the load-balancing fill-ratio are measured against.
+      units: 0,
+      groups: new Set(),
     }))
     .sort((a, b) => a.uid.localeCompare(b.uid)); // fixed roster order → reproducible cursor math
 
   const stats = { unassigned: {}, perAdmin: {} };
   const n = roster.length;
+  // groupKey → the admin who owns that person TODAY. Filled the first time any of their tasks is
+  // allocated and consulted for every later one, across categories: a seller with a due callback, an
+  // untouched second listing and a freshness re-check is ONE conversation with ONE admin.
+  const groupOwner = new Map();
+  const place = (admin, task) => {
+    admin.assigned.push(task);
+    if (task.groupKey) {
+      if (!admin.groups.has(task.groupKey)) {
+        admin.groups.add(task.groupKey);
+        admin.units += 1;
+        groupOwner.set(task.groupKey, admin.uid);
+      }
+    } else {
+      admin.units += 1;
+    }
+  };
 
   for (const category of CATEGORY_ORDER) {
     const candidates = (workState.categories || {})[category] || [];
@@ -148,8 +186,25 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
         attemptsAtPlan: Number(c.attempts) || 0,
         callbackAtMs: c.callbackAtMs || null,
         demand: Number(c.demandCount) || 0, // waiting buyers — persisted to the plan card
+        groupKey: c.groupKey || '', // 's:'/'b:' + last 10 digits — the person, '' when unknown
+        groupSize: 1, // recomputed per plan below (what THIS admin's card should claim)
         why: WHY[category](c),
       };
+
+      // 0) GROUP AFFINITY — outranks everything else, including the owner's own assignment and the
+      // quota. If today's plan already sends someone to this number, every further task on it goes to
+      // the same person: two admins dialling one owner (or one buyer) on the same morning is the
+      // waste the sourcing queue's seller groups already eliminate, and a plan that splits them
+      // re-creates it in the one place both admins are told to work from.
+      if (task.groupKey && groupOwner.has(task.groupKey)) {
+        const holder = roster.find((a) => a.uid === groupOwner.get(task.groupKey));
+        if (holder && eligible(holder, task, { ignoreQuota: true })) {
+          place(holder, task);
+          continue;
+        }
+        // Holder can't take THIS card (skill/scope — e.g. a freshness re-check on a seller whose cold
+        // call belongs to a consent-only admin): fall through and place it normally.
+      }
 
       // 1) Affinity: the platform's owner (assignee, or converter for freshness) keeps their lead
       // while they have room. Owner ineligible (quota/scope/off roster) → fall through: the plan
@@ -157,7 +212,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       const ownerUid = category === 'freshness_check' ? c.convertedBy : c.assignedTo;
       const owner = ownerUid ? roster.find((a) => a.uid === ownerUid) : null;
       if (owner && eligible(owner, task)) {
-        owner.assigned.push(task);
+        place(owner, task);
         continue;
       }
 
@@ -167,7 +222,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       for (let i = 0; i < n; i++) {
         const a = roster[i];
         if (!eligible(a, task)) continue;
-        const key = [a.assigned.length / a.quota, (i - cursor + n) % n, a.uid];
+        const key = [a.units / a.quota, (i - cursor + n) % n, a.uid];
         if (
           !pick ||
           key[0] < pickKey[0] ||
@@ -177,13 +232,19 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
           pickKey = key;
         }
       }
-      if (pick) pick.assigned.push(task);
+      if (pick) place(pick, task);
       else stats.unassigned[category] = (stats.unassigned[category] || 0) + 1;
     }
   }
 
   // Final per-admin ordering: promised callbacks by time, then category order; Array.sort is stable
   // so within a band the platform's arrival order (already priority-sorted) is preserved.
+  //
+  // Then ONE more pass: a person's cards are pulled together behind their best-ranked card. Ordering
+  // is how a plan is worked top-down, so cards for the same number sitting at #3 and #27 are read as
+  // two calls no matter what the group label says — adjacency is what makes it one.
+  let groupedPeople = 0;
+  let groupedCards = 0;
   for (const a of roster) {
     a.assigned.sort((x, y) => {
       if (x.type === 'callback_due' && y.type === 'callback_due') {
@@ -191,13 +252,47 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       }
       return CATEGORY_ORDER.indexOf(x.type) - CATEGORY_ORDER.indexOf(y.type);
     });
+
+    const members = new Map();
+    for (const t of a.assigned) {
+      if (!t.groupKey) continue;
+      const arr = members.get(t.groupKey) || [];
+      arr.push(t);
+      members.set(t.groupKey, arr);
+    }
+    const emitted = new Set();
+    const ordered = [];
+    for (const t of a.assigned) {
+      if (!t.groupKey) {
+        ordered.push(t);
+        continue;
+      }
+      if (emitted.has(t.groupKey)) continue;
+      emitted.add(t.groupKey);
+      ordered.push(...members.get(t.groupKey));
+    }
+    a.assigned = ordered;
+
     a.assigned.forEach((t, i) => {
       t.priority = i + 1;
+      // What the CARD claims: how many of this person's cards are in THIS plan. The platform's
+      // snapshot count can be larger (a sibling the category caps left out), and a card promising a
+      // third listing the admin cannot see on the page is worse than no label.
+      t.groupSize = t.groupKey ? members.get(t.groupKey).length : 1;
       delete t.callbackAtMs;
       delete t.language;
     });
+    for (const [, list] of members) {
+      if (list.length > 1) {
+        groupedPeople += 1;
+        groupedCards += list.length;
+      }
+    }
     stats.perAdmin[a.uid] = a.assigned.length;
   }
+  // Proof the grouping is doing something: `people` conversations that cover `cards` listings, i.e.
+  // `cards - people` calls the team no longer has to place.
+  stats.grouped = { people: groupedPeople, cards: groupedCards, callsSaved: groupedCards - groupedPeople };
 
   return {
     plans: roster.map((a) => ({ adminUid: a.uid, adminName: a.name, tasks: a.assigned })),
@@ -215,6 +310,10 @@ export function briefingPrompt(admin, tasks, workState) {
   for (const t of tasks) byType[t.type] = (byType[t.type] || 0) + 1;
   const top = tasks.slice(0, 3).map((t) => `- ${t.type}: ${t.why} (${t.locality || t.city})`);
   const demandTasks = tasks.filter((t) => (Number(t.demand) || 0) > 0);
+  // Grouped cards are one call each — the briefing must say "38 calls, 45 listings", or a plan that
+  // grew in cards reads as a heavier day when it is in fact a lighter one.
+  const groupKeys = new Set(tasks.filter((t) => t.groupKey).map((t) => t.groupKey));
+  const callCount = groupKeys.size + tasks.filter((t) => !t.groupKey).length;
   const py = admin.planYesterday;
   const lines = [
     `Write a 2-3 sentence morning briefing for a real-estate sourcing admin named ${admin.name}.`,
@@ -224,6 +323,11 @@ export function briefingPrompt(admin, tasks, workState) {
         .join(', ') +
       '.',
   ];
+  if (callCount < tasks.length) {
+    lines.push(
+      `${tasks.length - callCount} of these cards belong to a person who already appears earlier in the list — the plan is ${callCount} phone calls, not ${tasks.length}. Same-person cards sit together; cover all of them in the one call.`,
+    );
+  }
   if (demandTasks.length) {
     lines.push(
       `${demandTasks.length} of these calls have buyers ALREADY waiting for that locality/type — they are ranked first; closing one feeds a live buyer, so lead with this.`,
