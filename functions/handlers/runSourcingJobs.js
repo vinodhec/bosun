@@ -434,10 +434,31 @@ export async function runForOrg(
       // signal, and the reason a lead can reach the webhook with only its SERP snippet.
       if (!enriched) {
         leg.bump('enrichMissed');
+        // The paid scrape returned nothing, so this lead relays with its SERP snippet standing in
+        // for the post body — text Google may well have lifted from a neighbouring post. Say so on
+        // the wire: the platform's own bleed guard (web/src/lib/snippetBleed.ts) can only GUESS
+        // whether a body belongs to its title, and this flag turns that guess into a fact it is
+        // told. Additive field; an older platform build ignores it harmlessly.
+        c.listing.snippetOnly = true;
         continue;
       }
       if (enriched.text) c.enrichedText = true; // the full-text pass (3c2) needs to know real text arrived
-      if (enriched.text && enriched.text.length > String(c.listing.snippet || '').length) {
+      // ALWAYS prefer the scraped post over the SERP snippet — never "only if it is longer".
+      //
+      // The two texts are not comparable in quality. `enriched.text` was fetched from THIS post's
+      // own URL and is definitionally the right body. The snippet came off a Google results page,
+      // where (as the classify step above already notes) Google routinely lifts the text from an
+      // ADJACENT post. Ranking them by length let a long wrong snippet beat a short right post.
+      //
+      // That is how MaadiVeedu published `SP-009676`: the real post is the one line "House for
+      // Sales salem junction", the snippet Google served was a long Saligramam commercial-land ad,
+      // the length test kept the ad and discarded the post, and the listing went live in Chennai
+      // with somebody else's property in its description. `SP-009532` is the same shape — a Madurai
+      // plot that published as Madhavaram, Chennai, 450km away. Reported 2026-08-26.
+      //
+      // A scrape that returns EMPTY text still falls through to the snippet below, which is the
+      // honest fail-open: we have nothing better. It is marked as such so the platform can distrust it.
+      if (enriched.text) {
         c.listing.snippet = enriched.text;
       }
       if (enriched.phone) c.listing.phone = enriched.phone;
