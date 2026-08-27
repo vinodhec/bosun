@@ -808,8 +808,8 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   try {
     const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
     const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, maxTargets: topN, dryRun, runId: run.id });
-    // Backpressure: the platform PAUSES sourcing once its pending-lead queue hits the cap (default
-    // 3000) — it serves no targets and stamps no cadence. Honour that here, BEFORE any Apify/SERP/
+    // Backpressure: the platform PAUSES sourcing once its pending-lead queue hits the cap (its
+    // SOURCING_PENDING_CAP, 500 since 2026-08-27) — it serves no targets and stamps no cadence. Honour that here, BEFORE any Apify/SERP/
     // classify spend, so a full queue costs nothing and leaves a clear "paused" note in the run panel.
     // (The platform also returns empty `targets` while paused, so the stop holds even without this
     // check; this just makes the reason explicit instead of looking like "no due targets".)
