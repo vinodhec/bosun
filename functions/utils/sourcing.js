@@ -231,6 +231,28 @@ export function ownerListingKey({ phone, priceText, bhk, propertyType } = {}) {
   return `owner_${crypto.createHash('sha256').update(sig).digest('hex')}`;
 }
 
+/**
+ * The BUYER lane's equivalent of ownerListingKey — and it cannot reuse it, because the identity a
+ * buyer post carries is different. A buyer's value is the request, not a callable number: the
+ * 2026-07-17 yield experiment measured 0/4 buyer posts with a phone (they say "DM me"), so
+ * ownerListingKey returns null for nearly every one and the cross-run repost guard never fires. A
+ * seeker who posts the SAME requirement into five neighbourhood groups would then relay — and bill —
+ * five times.
+ *
+ * So identity here is the PHONE when there is one, else the post's AUTHOR (name/id, best-effort from
+ * the scraper — see parseEnrichedItem), fingerprinted against the coarse shape of what they want.
+ * Returns `buyer_<sha256>` or null when we can identify neither — and null means "relay it", the
+ * pre-existing behaviour: an un-collapsed duplicate is a smaller failure than silently dropping two
+ * different people who happen to want the same flat.
+ */
+export function buyerRequestKey({ phone, author, bhk, propertyType, listingType, locality } = {}) {
+  const norm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const identity = normalizePhoneDigits(phone) || norm(author);
+  if (!identity) return null;
+  const sig = [identity, norm(bhk), norm(propertyType), norm(listingType), norm(locality)].join('|');
+  return `buyer_${crypto.createHash('sha256').update(sig).digest('hex')}`;
+}
+
 // Facebook path/query markers that identify an INDIVIDUAL post. Individual posts are the real
 // listings and enrich cleanly (full description + phone); group/page LANDING pages can't be enriched
 // and aren't listings anyway, so we drop them upstream.
@@ -366,7 +388,7 @@ export function extractPostImages(it, max = MAX_POST_IMAGES) {
  * ("…Read more"), so we scrape the post for the complete description + the owner phone. Video
  * captions come back on `previewDescription`, regular posts on `text`; we take the richest string.
  * Post photos are relayed too (see extractPostImages) — `images` is present only when found.
- * Priced into the sourcing cost baseline. Best-effort: returns { text, phone, postedAt, images? }
+ * Priced into the sourcing cost baseline. Best-effort: returns { text, phone, postedAt, author, images? }
  * or null on any miss, so the caller falls back to the SERP snippet.
  */
 /**
@@ -375,6 +397,26 @@ export function extractPostImages(it, max = MAX_POST_IMAGES) {
  * come back as a raw GraphQL video object — caption on `previewDescription`, date on `publish_time`
  * (epoch seconds) — while regular posts use `text` + `time` (ISO); probe all shapes defensively.
  */
+/**
+ * Best-effort poster identity from a facebook-posts-scraper item. The actor's shape varies by post
+ * type, so probe every plausible field and take the first non-empty one; a profile URL is preferred
+ * over a display name because names collide. Returns '' when the item carries no identity at all —
+ * which is a supported outcome, not an error (see buyerRequestKey: no identity simply means no
+ * buyer-side dedup for that post, exactly as today).
+ */
+export function extractAuthor(it) {
+  const cands = [
+    it?.user?.id, it?.user?.profileUrl, it?.user?.url, it?.user?.name,
+    it?.author?.id, it?.author?.profileUrl, it?.author?.url, it?.author?.name,
+    it?.profileUrl, it?.userUrl, it?.authorName, it?.userName, it?.pageName, it?.ownerName,
+  ];
+  for (const c of cands) {
+    const v = typeof c === 'string' || typeof c === 'number' ? String(c).trim() : '';
+    if (v) return v.slice(0, 120);
+  }
+  return '';
+}
+
 export function parseEnrichedItem(it) {
   if (!it) return null;
   const text = [it.previewDescription, it.text, it.message, it.postText]
@@ -397,8 +439,11 @@ export function parseEnrichedItem(it) {
   const postedAt = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   const images = extractPostImages(it);
   const withImages = images.length ? { images } : {}; // omit entirely when none — no empty arrays on the relay body
-  if (!text) return (postedAt || images.length) ? { text: '', phone: null, postedAt, ...withImages } : null;
-  return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, ...withImages };
+  // Poster identity: the buyer lane's only dedup handle when the post carries no phone (the usual
+  // case). '' when unknown — never a reason to discard an otherwise good enrichment.
+  const author = extractAuthor(it);
+  if (!text) return (postedAt || images.length) ? { text: '', phone: null, postedAt, author, ...withImages } : null;
+  return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, author, ...withImages };
 }
 
 export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) {

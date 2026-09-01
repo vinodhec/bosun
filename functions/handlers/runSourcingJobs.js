@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, ownerListingKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -75,6 +75,14 @@ const ENRICH_BATCH_CONCURRENCY = 3;
 const SERP_DATE_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 const GETALL_CHUNK = 300; // Firestore getAll batch size for the dedup lookup
 
+// ── The BUYER lane ──────────────────────────────────────────────────────────────────────────────
+// How many demand-ranked targets one buyer run sources (override per org via sourcing.buyerTopN).
+const BUYER_TOPN = 3;
+// How many topN-sized slates the buyer rotation walks before wrapping. A buyer run is always a DRY
+// matrix pull (it must not consume the supply lane's cadence), so the platform returns the same
+// demand-ranked head each time and the rotation is ours to do — this is how wide it spreads.
+const BUYER_ROTATION_WINDOW = 8;
+
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
@@ -126,6 +134,81 @@ export const runSourcingJobs = onSchedule(
   },
 );
 
+/**
+ * Split a lead list against PER-LANE budgets instead of one shared cap.
+ *
+ * `maxPerRun` was written when there was one lane, and it silently became a competition the moment
+ * salvage lanes arrived: a run capped at 25 spent all 25 on inventory and left the buyer leads on
+ * the floor, run after run. Supply and off-target still share the supply budget (off-target IS
+ * inventory, just somewhere else), while buyer draws on its own — 0 on either side means uncapped.
+ * Order within a lane is preserved, so the caller's lane ranking still decides who defers.
+ */
+function takeByLane(list, { supplyCap = 0, buyerCap = 0 } = {}) {
+  if (!supplyCap && !buyerCap) return { kept: list, deferred: [] };
+  const kept = [];
+  const deferred = [];
+  let supplyTaken = 0;
+  let buyerTaken = 0;
+  for (const c of list) {
+    const isBuyer = c.listing?.leadType === 'buyer';
+    const limit = isBuyer ? buyerCap : supplyCap;
+    const taken = isBuyer ? buyerTaken : supplyTaken;
+    if (limit && taken >= limit) {
+      deferred.push(c);
+      continue;
+    }
+    if (isBuyer) buyerTaken += 1; else supplyTaken += 1;
+    kept.push(c);
+  }
+  return { kept, deferred };
+}
+
+// Scheduled BUYER relay — the demand lane, deliberately a separate function from the supply cron
+// above rather than a flag inside it.
+//
+// WHY SEPARATE. The two lanes share every gate but agree on nothing else: different queries (the
+// words a seeker uses, not an owner), a different side verdict, a different freshness window, a
+// different budget, and a rotation that must NOT touch supply's. Folding demand into the supply
+// cron would have made every one of those a conditional inside a function that already runs the
+// money path — and would have made the buyer lane's spend invisible inside supply's runs.
+//
+// Opt-in per org via `sourcing.buyerLane`, and independent of `sourcing.buyerLeads` (which governs
+// only the by-product harvest inside a supply run). Runs on the half-hour BETWEEN the supply ticks
+// so the two never contend for the Apify account or the Vertex classify quota.
+export const runBuyerSourcingJobs = onSchedule(
+  {
+    region: 'asia-south1',
+    schedule: '15 */2 * * *', // every 2h at :15 — supply runs on :00/:30, so the lanes never collide
+    timeZone: 'Asia/Kolkata',
+    secrets: [APIFY_TOKEN],
+    timeoutSeconds: 1500,
+    memory: '512MiB',
+  },
+  async () => {
+    const db = getFirestore();
+    const apifyToken = process.env.APIFY_TOKEN;
+    // Single-field query (auto-indexed); `sourcing.enabled` is checked in code so the lane needs no
+    // composite index to ship.
+    const snap = await db.collection('organisations').where('sourcing.buyerLane', '==', true).get();
+    for (const orgDoc of snap.docs) {
+      try {
+        const cfg = orgDoc.data().sourcing || {};
+        if (!cfg.enabled || !cfg.matrixUrl) continue; // the demand ranking IS the buyer lane's input
+        await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
+          topN: Math.max(1, Math.floor(Number(cfg.buyerTopN) || BUYER_TOPN)),
+          // ALWAYS dry: stamping cadence here would make the supply cron skip the localities the
+          // buyer run just visited, quietly starving inventory to feed demand.
+          dryRun: true,
+          trigger: 'cron-buyer',
+          mode: 'buyer',
+        });
+      } catch (e) {
+        console.error('runBuyerSourcingJobs:org', orgDoc.id, e?.message || e);
+      }
+    }
+  },
+);
+
 // Exported for the emulator/E2E test harness (lets tests inject a stubbed serp fetcher + rng).
 // `queries`/`freshness` overrides let a caller source a SPECIFIC set of queries (e.g. the top target
 // pulled from the platform matrix) instead of the org's static cfg.queries — see adminSourceTopTarget.
@@ -134,8 +217,12 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG } = {},
+  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG, mode = 'supply' } = {},
 ) {
+  // SUPPLY (the default) sources inventory and treats a buyer post as salvage. BUYER inverts it:
+  // the queries asked for demand (queryGen.js), so a 'seeking' post IS the product and an 'offering'
+  // post is the by-catch. Same pipeline, same gates, same money — only the side gate flips.
+  const buyerMode = mode === 'buyer';
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
   if (!secret) {
@@ -149,7 +236,14 @@ export async function runForOrg(
   // the old stored `qdr:m3` was silently ignored by Google (only qdr:d/w/m/y exist), so any-age posts
   // leaked through. That SERP filter is best-effort; the AUTHORITATIVE gate is `cutoffMs`, applied to
   // each post's real FB timestamp after enrichment (see step 3b2).
-  const months = Math.min(60, Math.max(1, Math.floor(Number(cfg.freshnessMonths)) || DEFAULT_FRESHNESS_MONTHS));
+  // Demand has a shorter shelf life than inventory: a house still stands next month, but "need a
+  // 2BHK by April" is spent the moment they sign somewhere. `buyerFreshnessMonths` lets an org run
+  // the buyer lane on a tighter window than its supply window WITHOUT touching supply — and because
+  // the window also becomes Google's `tbs`, tightening it makes the SERP itself return fresher
+  // demand instead of the year-old group threads Google ranks on engagement. Defaults to the org
+  // window, so an org that sets nothing sees exactly today's behaviour.
+  const monthsRaw = buyerMode && cfg.buyerFreshnessMonths != null ? cfg.buyerFreshnessMonths : cfg.freshnessMonths;
+  const months = Math.min(60, Math.max(1, Math.floor(Number(monthsRaw)) || DEFAULT_FRESHNESS_MONTHS));
   const freshness = freshnessOverride ?? tbsForMonths(months);
   const cutoffMs = cutoffMsForMonths(months);
   if (!actorId || !webhookUrl || !queries.length) {
@@ -240,6 +334,11 @@ export async function runForOrg(
   // so we only ever scrape posts we actually intend to relay — plus a small OVERSAMPLE buffer to cover
   // the residual authoritative-date drop. Overflow isn't marked seen, so the next run picks it up.
   const cap = Math.max(0, Math.floor(Number(cfg.maxPerRun) || 0));
+  // The buyer lane carries its OWN budget and defaults to UNCAPPED. It is not competing with supply
+  // for anything — a demand lead does not consume an inventory slot — so letting `maxPerRun` throttle
+  // it only ever starved the lane that was already the thinnest. 0 = no cap; the real ceiling is how
+  // much demand the SERP actually returns for the locality, which is small.
+  const buyerCap = Math.max(0, Math.floor(Number(cfg.buyerMaxPerRun) || 0));
   const classifying = !!(target && target.locality);
   // Salvage lanes for what the classify gate used to throw away — both OPT-IN per org, because each
   // relays a lead the platform webhook must know how to route (`listing.leadType`). Flip them on only
@@ -251,8 +350,11 @@ export async function runForOrg(
   //   offTargetLeads  — a CONFIDENT genuine listing whose only failure is the locality relays as
   //                     leadType 'off-target' (its real place rides in extracted.locality) instead
   //                     of being buried dead. Real inventory is inventory wherever it sits.
-  const harvestBuyers = classifying && !!cfg.buyerLeads;
-  const salvageOffTarget = classifying && !!cfg.offTargetLeads;
+  // In buyer MODE the harvest is the point, so the org flag doesn't gate it — asking for a buyer run
+  // IS the opt-in. Off-target salvage is supply-only either way: a wrong-locality lead is inventory
+  // we can still sell, whereas a buyer looking somewhere else is nothing to us.
+  const harvestBuyers = classifying && (buyerMode || !!cfg.buyerLeads);
+  const salvageOffTarget = classifying && !buyerMode && !!cfg.offTargetLeads;
   // Only a CONFIDENT off-target reject is dead — never enrich it again. Four rejects are deliberately
   // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
   // 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
@@ -261,7 +363,10 @@ export async function runForOrg(
   // still live the day it turns sourcing.buyerLeads on (cheap to retry — it never reached enrichment) —
   // and 'locality-unresolved', a locality-unknown lead whose enrichment returned no text: the full-
   // text pass never got to judge it, so a scrape hiccup must not bury it.
-  const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal', 'buyer-post', 'locality-unresolved']);
+  // 'supply-post' joins them for the same reason 'buyer-post' is there, mirrored: a real listing that
+  // a BUYER run happened to surface is by-catch, not junk. The supply lane wants it, and it never
+  // reached enrichment here — burying it would let a buyer run permanently delete inventory.
+  const RETRYABLE_DROP = new Set(['degraded-no-india-signal', 'no-signal', 'buyer-post', 'supply-post', 'locality-unresolved']);
 
   // 3a) CHEAP SERP-date pre-filter (fail-open). Google's SERP already carries a coarse relative
   // "lastUpdated" (parsed to serpAgeMs = the youngest plausible instant for the phrase). Skip posts it
@@ -344,15 +449,23 @@ export async function runForOrg(
         }
         c.listing.leadType = 'off-target';
       }
-      if (!c.drop && side === 'seeking' && !verdict.degraded) {
-        // A genuine on-target "wanted" post. Without the org opt-in it's dropped as before — but
-        // RETRYABLY (see RETRYABLE_DROP below), so enabling the flag later still catches live posts.
-        if (!harvestBuyers) {
+      if (!c.drop && !verdict.degraded) {
+        if (side === 'seeking') {
+          // A genuine on-target "wanted" post. Without the org opt-in it's dropped as before — but
+          // RETRYABLY (see RETRYABLE_DROP below), so enabling the flag later still catches live posts.
+          if (!harvestBuyers) {
+            c.drop = true;
+            c.dropReason = 'buyer-post';
+            return;
+          }
+          c.listing.leadType = 'buyer';
+        } else if (buyerMode) {
+          // By-catch of a demand query: a real listing, but this run was asked for buyers. Dropped
+          // retryably so the supply lane can still find and sell it.
           c.drop = true;
-          c.dropReason = 'buyer-post';
+          c.dropReason = 'supply-post';
           return;
         }
-        c.listing.leadType = 'buyer';
       }
       // Degraded fail-open is SIGNAL-GATED: when the classifier is down we still relay plausible
       // Indian listings (Indian mobile / ₹-lakh-crore price / the target locality named in the text)
@@ -380,6 +493,7 @@ export async function runForOrg(
       if (c.dropReason === 'no-signal') leg.bump('noSignalDropped');
       else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
       else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
+      else if (c.dropReason === 'supply-post') leg.bump('supplyDropped');
       else leg.bump('offTargetDropped');
       leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify', dropReason: c.dropReason || 'off-target' });
     }
@@ -388,7 +502,12 @@ export async function runForOrg(
     // locality-unknown pendings (probably on-target, not yet proven), then buyer leads, then
     // off-target salvage — the uncertain/salvage lanes are bonus yield and must never displace
     // the inventory the target was actually sourced for. Stable sort keeps SERP order within a lane.
-    const laneRank = (c) => (c.listing.leadType === 'off-target' ? 3 : c.listing.leadType === 'buyer' ? 2 : c.localityPending ? 1 : 0);
+    // In BUYER mode the buyer lane IS the inventory, so it leads; in supply mode it stays behind the
+    // on-target listings it must never displace. (With the lane's own budget below this only orders
+    // the pool now — it no longer decides who gets squeezed out.)
+    const laneRank = (c) => (c.listing.leadType === 'off-target' ? 3
+      : c.listing.leadType === 'buyer' ? (buyerMode ? 0 : 2)
+      : c.localityPending ? 1 : 0);
     kept.sort((a, b) => laneRank(a) - laneRank(b));
     leg.count('localityPending', kept.filter((c) => c.localityPending).length);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({
@@ -408,12 +527,13 @@ export async function runForOrg(
 
   // 3c) Trim to the enrichment pool, THEN pay to enrich. Only vetted prospects reach the paid FB
   // scraper; a small OVERSAMPLE covers the residual authoritative-date drop below.
-  const poolSize = cap > 0 ? (classifying ? cap * CLASSIFY_OVERSAMPLE : cap) : prospects.length;
-  let candidates = poolSize > 0 ? prospects.slice(0, poolSize) : prospects;
+  const oversample = classifying ? CLASSIFY_OVERSAMPLE : 1;
+  const pooled = takeByLane(prospects, { supplyCap: cap * oversample, buyerCap: buyerCap * oversample });
+  let candidates = pooled.kept;
   // Vetted prospects we chose not to enrich this run. Recorded as 'deferred', NOT 'dropped' — they
   // aren't marked seen, so the next run re-fetches and relays them. Reading these as losses would
   // badly understate the pipeline.
-  for (const c of prospects.slice(candidates.length)) {
+  for (const c of pooled.deferred) {
     leg.bump('poolDeferred');
     leg.lead({ key: c.key, listing: c.listing, stage: 'deferred', dropStage: 'pool-cap', dropReason: 'over enrich pool for this run' });
   }
@@ -463,6 +583,9 @@ export async function runForOrg(
       }
       if (enriched.phone) c.listing.phone = enriched.phone;
       if (enriched.postedAt) c.listing.postedAt = enriched.postedAt;
+      // Poster identity — the buyer lane's dedup handle (3f). Kept off the relay body: the platform
+      // has the post URL, and a scraped display name is not ours to forward.
+      if (enriched.author) c.author = enriched.author;
       // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
       if (enriched.images?.length) c.listing.images = enriched.images;
     }
@@ -517,13 +640,19 @@ export async function runForOrg(
           }
           c.listing.leadType = 'off-target';
         }
-        if (!c.drop && side === 'seeking') {
-          if (!harvestBuyers) {
+        if (!c.drop) {
+          if (side === 'seeking') {
+            if (!harvestBuyers) {
+              c.drop = true;
+              c.dropReason = 'buyer-post';
+              return;
+            }
+            c.listing.leadType = 'buyer';
+          } else if (buyerMode) {
             c.drop = true;
-            c.dropReason = 'buyer-post';
+            c.dropReason = 'supply-post';
             return;
           }
-          c.listing.leadType = 'buyer';
         }
         c.listing.classifyStatus = 'verified';
         if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
@@ -538,6 +667,7 @@ export async function runForOrg(
         if (c.dropReason === 'locality-unresolved') leg.bump('localityUnresolved');
         else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
         else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
+        else if (c.dropReason === 'supply-post') leg.bump('supplyDropped');
         else leg.bump('fullTextDropped');
         leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify-full', dropReason: c.dropReason });
       }
@@ -611,7 +741,8 @@ export async function runForOrg(
         saleMonths: pol.saleMonths, rentMonths: pol.rentMonths, target: target.locality,
       }));
     }
-    candidates = cap > 0 ? gated.slice(0, cap) : gated;
+    const capped = takeByLane(gated, { supplyCap: cap, buyerCap });
+    candidates = capped.kept;
     leg.count('staleReadmitted', readmitted);
     // Intent-stale posts that survive neither the fresh cut nor the stale-fallback re-admit are dead
     // (recency-based, only get older). Anything still in the final relay set is spared.
@@ -628,7 +759,7 @@ export async function runForOrg(
     }
     // Fresh-and-vetted leads left on the floor purely by maxPerRun — not seen, so the next run
     // relays them. 'deferred', never a drop.
-    for (const c of gated.slice(candidates.length)) {
+    for (const c of capped.deferred) {
       leg.bump('capDeferred');
       leg.lead({ key: c.key, listing: c.listing, stage: 'deferred', dropStage: 'max-per-run', dropReason: 'over maxPerRun for this run' });
     }
@@ -649,15 +780,26 @@ export async function runForOrg(
   // A collapsed repost is PERMANENT (that URL will always be a dupe of an already-known property), so
   // its URL key is marked dead — it's never re-enriched next run.
   {
-    const withOwner = candidates.map((c) => ({
-      c,
-      owner: ownerListingKey({
+    // Two fingerprints, one machinery. A supply repost is the same OWNER re-listing the same property
+    // (phone + price/BHK); a buyer repost is the same SEEKER re-posting the same requirement into
+    // another group — usually with no phone at all, so it keys on the poster instead. Either can
+    // return null, which means "never deduped" and relays exactly as before.
+    const fingerprint = (c) => (c.listing.leadType === 'buyer'
+      ? buyerRequestKey({
+        phone: c.listing.phone,
+        author: c.author,
+        bhk: c.listing.extracted?.bhk,
+        propertyType: c.listing.extracted?.propertyType,
+        listingType: c.listing.extracted?.listingType,
+        locality: c.listing.extracted?.locality,
+      })
+      : ownerListingKey({
         phone: c.listing.phone,
         priceText: c.listing.extracted?.priceText,
         bhk: c.listing.extracted?.bhk,
         propertyType: c.listing.extracted?.propertyType,
-      }),
-    }));
+      }));
+    const withOwner = candidates.map((c) => ({ c, owner: fingerprint(c) }));
     // In-run: two reposts of one property caught in the same run — keep the first, drop the rest.
     const seenThisRun = new Set();
     const survived = [];
@@ -796,7 +938,8 @@ export async function runForOrg(
 // language chosen by Gemini per target) per target, and runs
 // the normal fetch → dedup → enrich → relevance-gate → signed relay for each. Wallet debits aggregate
 // across targets. Degrade-safe: a null matrix or a target with no queries is skipped, not fatal.
-export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true, trigger = 'admin-top-target' } = {}) {
+export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, dryRun = true, trigger = 'admin-top-target', mode = 'supply' } = {}) {
+  const buyerMode = mode === 'buyer';
   if (!cfg.matrixUrl) return { ok: true, relayed: 0, amountInr: 0, note: 'no matrixUrl' };
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
   const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
@@ -806,8 +949,19 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   // secret org is a config state, not a run, and would just litter the panel with empty rows.
   const run = startRun(db, orgId, trigger);
   try {
-    const limit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
-    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, maxTargets: topN, dryRun, runId: run.id });
+    // The matrix caps QUERIES, not targets, and emits ~2 per target — so an org tuned for a 3-target
+    // supply run (matrixLimit 6) hands a 6-target buyer run only 3 targets, silently halving it. Ask
+    // for headroom proportional to what this run actually intends to source; supply keeps the org's
+    // own number, since its topN is what that number was chosen for.
+    const baseLimit = Math.max(1, Math.floor(Number(cfg.matrixLimit) || DEFAULT_MATRIX_LIMIT));
+    const limit = buyerMode ? Math.max(baseLimit, topN * 3) : baseLimit;
+    // A buyer run pulls a WIDER slate than it will source, because it must rotate on its own. The
+    // platform stamps a target's cadence only on a non-dry pull, and a buyer run is always dry (see
+    // the caller): it must never consume the supply lane's rotation, or supply would skip the very
+    // localities the buyer run just visited. Dry means the platform hands back the same demand-ranked
+    // head every time, so we page through it ourselves with a cursor kept on the org.
+    const window = buyerMode ? Math.max(topN * BUYER_ROTATION_WINDOW, topN) : topN;
+    const matrix = await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit, maxTargets: window, dryRun, runId: run.id });
     // Backpressure: the platform PAUSES sourcing once its pending-lead queue hits the cap (its
     // SOURCING_PENDING_CAP, 500 since 2026-08-27) — it serves no targets and stamps no cadence. Honour that here, BEFORE any Apify/SERP/
     // classify spend, so a full queue costs nothing and leaves a clear "paused" note in the run panel.
@@ -826,11 +980,22 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
     // Per-intent freshness policy — the platform sends it alongside the targets (fetchQueryMatrix
     // already normalized it over DEFAULT_SOURCING_POLICY, so an older platform just yields defaults).
     const policy = matrix.policy;
-    const chosen = targets.slice(0, topN);
+    // Supply takes the head of the demand ranking (the platform already ordered it and will stamp
+    // what it served). Buyer walks a rotating window over the same ranking so consecutive runs visit
+    // different localities instead of re-searching the same three until dedup makes them barren.
+    let chosen = targets.slice(0, topN);
+    let cursor = 0;
+    if (buyerMode && targets.length) {
+      cursor = Math.max(0, Math.floor(Number(cfg.buyerCursor) || 0)) % targets.length;
+      chosen = [];
+      for (let i = 0; i < Math.min(topN, targets.length); i += 1) chosen.push(targets[(cursor + i) % targets.length]);
+    }
     run.matrix({
       limit,
       dryRun,
       topN,
+      mode: buyerMode ? 'buyer' : 'supply',
+      ...(buyerMode ? { cursor, rotationWindow: targets.length } : {}),
       targetsReturned: returned.length,
       // A junk target (an intent phrase like "For Sale" as a locality) means upstream data leakage —
       // worth showing rather than silently filtering, since it's a bug signal on the platform side.
@@ -862,17 +1027,17 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
         console.warn('runSourcingJobs:budget-stop', orgId, JSON.stringify({ done: perTarget.length, total: chosen.length }));
         break;
       }
-      const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape });
+      const smart = await buildSourcingQueries({ locality: t.locality, city: t.city, shape: t.dominantShape, mode });
       const queries = smart.queries.length ? smart.queries : (Array.isArray(t.queries) ? t.queries : []);
       // Log the generated queries + the regional language Gemini chose, for offline analysis of query
       // quality/recall per region.
       console.log('runSourcingJobs:queries', orgId, JSON.stringify({
-        locality: t.locality, city: t.city, category: smart.category,
+        locality: t.locality, city: t.city, category: smart.category, mode: smart.mode,
         englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName,
         queries,
       }));
       const target = { locality: t.locality, city: t.city, shape: shapeLabel(t) };
-      const leg = run.leg({ target, queries, meta: smart });
+      const leg = run.leg({ target, queries, meta: smart, mode });
       if (!queries.length) {
         leg.done({ note: 'query generation produced nothing' });
         perTarget.push({ locality: t.locality, city: t.city, relayed: 0, note: 'no queries' });
@@ -881,7 +1046,7 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
       // Deliberately ignore the target's per-target freshness (the platform stamps a tight qdr:d /
       // 24h window). The requirement is "posted in the last 3 months", so let runForOrg use the org's
       // freshness window (cfg.freshness = qdr:m3) uniformly across every target.
-      const r = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, policy, leg });
+      const r = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, policy, leg, mode });
       relayed += r.relayed || 0;
       amountInr += r.amountInr || 0;
       perTarget.push({
@@ -889,8 +1054,17 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
         englishName: smart.englishName, regionalLanguage: smart.regionalLanguage, regionalName: smart.regionalName, queries, ...r,
       });
     }
+    // Advance the rotation by what we ACTUALLY sourced (not by topN), so a budget-stopped run resumes
+    // where it left off instead of skipping the targets it never reached. Best-effort: a failed
+    // cursor write costs the next run a repeat, never a lead — it must not fail the run.
+    if (buyerMode && perTarget.length) {
+      const next = (cursor + perTarget.length) % Math.max(1, targets.length);
+      await db.collection('organisations').doc(orgId)
+        .update({ 'sourcing.buyerCursor': next })
+        .catch((e) => console.error('runSourcingJobs:buyer-cursor', orgId, e?.message || e));
+    }
     await run.finish({ status: budgetHit ? 'partial' : 'done' });
-    return { ok: true, runId: run.id, targeted: perTarget, relayed, amountInr, partial: budgetHit };
+    return { ok: true, runId: run.id, mode, targeted: perTarget, relayed, amountInr, partial: budgetHit };
   } catch (e) {
     // Record the failure, then rethrow — the cron's per-org catch still isolates it from other orgs.
     await run.finish({ status: 'error', error: e?.message || String(e) });

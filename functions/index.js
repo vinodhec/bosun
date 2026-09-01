@@ -59,6 +59,8 @@ export {
   adminDisableSourcing,
   adminRunSourcingNow,
   adminSourceTopTarget,
+  adminSourceBuyers,
+  adminSetSourcingLanes,
   adminPlanNow,
   adminSourcingRuns,
   adminSourcingRunDetail,
@@ -94,7 +96,7 @@ export {
 export { pollSessions, reconcileFailedCosts } from './handlers/pollSessions.js';
 
 // Scheduled: relay fresh sourced property listings to each org's webhook → bill per listing.
-export { runSourcingJobs } from './handlers/runSourcingJobs.js';
+export { runSourcingJobs, runBuyerSourcingJobs } from './handlers/runSourcingJobs.js';
 
 // HTTP (customer→Bosun, HMAC-signed with the org's own relay secret): compose the WhatsApp message
 // the customer sends a property owner, in the owner's language. Billed ₹0.25 per compose, settled

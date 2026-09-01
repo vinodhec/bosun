@@ -106,6 +106,10 @@ export const adminSourcingLeadLedger = httpsCallable(functions, 'adminSourcingLe
 export const adminSourcingRelayLead = httpsCallable(functions, 'adminSourcingRelayLead');
 export const adminSourceTopTarget = httpsCallable(functions, 'adminSourceTopTarget');
 export const adminRunSourcingNow = httpsCallable(functions, 'adminRunSourcingNow');
+// The BUYER lane: source demand posts ("wanted / looking for") on demand, and flip which lanes an
+// org harvests without rewriting its relay connection.
+export const adminSourceBuyers = httpsCallable(functions, 'adminSourceBuyers');
+export const adminSetSourcingLanes = httpsCallable(functions, 'adminSetSourcingLanes');
 // Plan today's admin work queue by hand — recovers a day the wallet gate withheld, after a top-up.
 export const adminPlanNow = httpsCallable(functions, 'adminPlanNow');
 

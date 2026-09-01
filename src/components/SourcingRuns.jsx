@@ -11,7 +11,7 @@
  * the real vocabulary (query, classify, enrich, webhook), not plain phrasing.
  */
 import { useEffect, useState } from 'react';
-import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminRunSourcingNow, adminPlanNow, adminSourcingRelayLead } from '../firebase/functions.js';
+import { adminSourcingRuns, adminSourcingRunDetail, adminSourcingLeadLedger, adminSourceTopTarget, adminSourceBuyers, adminRunSourcingNow, adminPlanNow, adminSourcingRelayLead } from '../firebase/functions.js';
 import { formatINR } from '@shared/currency.js';
 
 const btn = 'rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-60';
@@ -40,6 +40,7 @@ const FUNNEL_STEPS = [
   { key: 'noSignalDropped', label: 'Dropped: no signal', kind: 'drop', hint: 'Our cheap property-signal filter found nothing property-like in the snippet. Retryable.' },
   { key: 'offTargetDropped', label: 'Dropped: off-target', kind: 'drop', hint: 'Gemini confidently rejected it — wrong locality or not a listing. Permanent (never re-scraped). With sourcing.offTargetLeads on, confident wrong-locality LISTINGS relay tagged instead of landing here.' },
   { key: 'buyerDropped', label: 'Dropped: buyer post', kind: 'drop', hint: 'A genuine "wanted / looking for" post, but the org hasn’t opted into buyer leads (sourcing.buyerLeads). Retryable — flipping the flag catches posts still live.' },
+  { key: 'supplyDropped', label: 'Dropped: seller post', kind: 'drop', hint: 'By-catch of a BUYER run: a real listing surfaced by a demand query. Retryable — the supply lane can still find and sell it.' },
   { key: 'degradedDropped', label: 'Dropped: classifier down', kind: 'drop', hint: 'Classifier errored AND no India signal. A spike here is an incident, not a dry locality. Retryable.' },
   { key: 'localityPending', label: 'Locality unknown → full text', kind: 'stage', hint: 'A genuine listing whose SERP text named NO place (truncated title / adjacent-post snippet). Not judged yet — enriched and re-classified on the full post text.' },
   { key: 'poolDeferred', label: 'Deferred: enrich pool', kind: 'defer', hint: 'Vetted but over this run’s enrich pool. Not marked seen — the next run picks it up.' },
@@ -112,6 +113,9 @@ function TargetLeg({ t }) {
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-ink">
             {t.locality ? `${t.locality}${t.city ? `, ${t.city}` : ''}` : 'Static queries'}
+            {/* Which lane sourced this leg. Only the buyer lane is badged — supply is the norm, and
+                a badge on every row would just be noise. */}
+            {t.mode === 'buyer' && <span className="ml-2 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">buyers</span>}
             {t.shape && <span className="ml-2 text-[11px] font-normal text-ink-soft">{t.shape}</span>}
           </div>
           <div className="mt-0.5 text-[11px] text-ink-soft">
@@ -512,6 +516,7 @@ export default function SourcingRuns({ orgs }) {
     setPlanResult(null);
     try {
       if (kind === 'top') await adminSourceTopTarget({ orgId, topN: 1 });
+      else if (kind === 'buyers') await adminSourceBuyers({ orgId });
       else if (kind === 'plan') {
         const { data: d } = await adminPlanNow({ orgId });
         setPlanResult(d);
@@ -574,10 +579,13 @@ export default function SourcingRuns({ orgs }) {
             <button type="button" className={btn} onClick={() => fire('top')} disabled={!!running || !orgId}>
               {running === 'top' ? 'Sourcing…' : 'Source top target now'}
             </button>
+            <button type="button" className={btnGhost} onClick={() => fire('buyers')} disabled={!!running || !orgId}>
+              {running === 'buyers' ? 'Sourcing buyers…' : 'Source buyers now'}
+            </button>
             <button type="button" className={btnGhost} onClick={() => fire('now')} disabled={!!running || !orgId}>
               {running === 'now' ? 'Running…' : 'Run static queries now'}
             </button>
-            <span className="text-[10px] text-ink-soft">Both spend real Apify credit and bill the org per lead.</span>
+            <span className="text-[10px] text-ink-soft">All three spend real Apify credit and bill the org per lead.</span>
           </div>
 
           {/* Plan today's work queue by hand. Its own row, away from the sourcing triggers: this

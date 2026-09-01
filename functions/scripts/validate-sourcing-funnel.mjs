@@ -169,6 +169,9 @@ async function main() {
   await classifyLanesScenario();
   await localityUnknownScenario();
   await ownerDedupScenario();
+  await buyerLaneScenario();
+  await buyerDedupScenario();
+  await queryShapeScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -377,15 +380,27 @@ async function classifyLanesScenario() {
     assert.equal(txns[0].count, 3, 'all three relayed leads billed');
   }
 
-  // ── Lane priority under maxPerRun: salvage never displaces on-target inventory.
+  // ── maxPerRun is the SUPPLY lane's budget, not a shared one. Supply and off-target compete for it
+  // (off-target is inventory too, just elsewhere); the buyer lane draws on `buyerMaxPerRun`, which
+  // defaults to UNCAPPED. Before this split, a run capped at 25 spent all 25 on inventory and left
+  // the demand leads on the floor every single run — the lane could never fill.
   {
-    const { funnel: f, relayBodies } = await runOnce({ buyerLeads: true, offTargetLeads: true, maxPerRun: 2 });
-    assert.equal(f.relayed, 2, 'cap 2: two leads relay');
+    const { funnel: f, relayBodies } = await runOnce({ buyerLeads: true, offTargetLeads: true, maxPerRun: 1 });
     const relayedUrls = relayBodies.map((b) => b.listing.url);
-    assert.ok(relayedUrls.includes(P(201)), 'cap: the on-target listing always makes the cut');
-    assert.ok(relayedUrls.includes(P(202)), 'cap: the buyer lead outranks off-target salvage');
-    assert.ok(!relayedUrls.includes(P(203)), 'cap: off-target salvage is the first to defer');
+    assert.equal(f.relayed, 2, 'supply cap 1 + uncapped buyer lane: the listing and the buyer lead');
+    assert.ok(relayedUrls.includes(P(201)), 'cap: the on-target listing takes the supply budget');
+    assert.ok(!relayedUrls.includes(P(203)), 'cap: off-target salvage is the first to defer — it shares supply’s budget');
+    assert.ok(relayedUrls.includes(P(202)), 'cap: the buyer lead is NOT starved by the supply cap');
+    assert.equal(f.buyerRelayed, 1);
     assert.equal(f.offTargetRelayed, 0);
+    assert.equal(f.capDeferred, 1, 'the deferred off-target is recorded as deferred, not lost');
+  }
+
+  // ── …and the buyer lane can still be bounded on purpose, independently of supply.
+  {
+    const { funnel: f, relayBodies } = await runOnce({ buyerLeads: true, offTargetLeads: true, buyerMaxPerRun: 0, maxPerRun: 0 });
+    assert.equal(f.buyerRelayed, 1, 'buyerMaxPerRun 0 = uncapped (the default)');
+    assert.equal(relayBodies.length, 3, 'nothing capped: all three lanes relay');
   }
 
   console.log('\nclassify-lanes scenario: buyer + off-target salvage flags, tagging, retryability and lane priority ✓');
@@ -469,6 +484,173 @@ async function localityUnknownScenario() {
   const fullDrops = leads.filter((l) => l.dropStage === 'classify-full');
   assert.deepEqual(fullDrops.map((l) => l.dropReason).sort(), ['locality-unresolved', 'off-target'], 'full-text drops name their reasons');
   console.log('\nlocality-unknown scenario: truncated-snippet listings enrich, re-classify on full text, and only die on evidence ✓');
+}
+
+
+/**
+ * The dedicated BUYER lane (mode:'buyer'). Same pipeline, inverted side gate: a 'seeking' post is
+ * the product and an 'offering' post is by-catch. Pins the four things that make the lane safe to
+ * run alongside supply — every kept lead is tagged 'buyer' on the wire, the org's buyerLeads flag is
+ * NOT required (asking for a buyer run is the opt-in), the by-catch listing is dropped RETRYABLY so
+ * a buyer run can never delete inventory the supply lane wants, and off-target salvage stays off.
+ */
+async function buyerLaneScenario() {
+  const TARGET = { locality: 'Velachery', city: 'Chennai' };
+  const serp = () => [
+    { url: P(501), title: 'wanted 2bhk', snippet: 'looking for 2bhk flat velachery' },
+    { url: P(502), title: 'wanted plot', snippet: 'need plot velachery urgent' },
+    { url: P(503), title: 'seller listing', snippet: 'flat for sale velachery' },
+    { url: P(504), title: 'buyer elsewhere', snippet: 'looking for house tambaram' },
+  ];
+  const stub = async ({ text }) => {
+    if (text.includes('wanted')) return { keep: true, side: 'seeking', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Rent', locality: 'Velachery', bhk: '2' } };
+    if (text.includes('seller listing')) return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery' } };
+    return { keep: false, side: 'seeking', isListing: true, localityMatches: false, confidence: 0.9, reason: 'off-target', extracted: { listingType: 'Rent', locality: 'Tambaram' } };
+  };
+
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const relayBodies = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('apify')) {
+      const body = JSON.parse(opts.body);
+      // Distinct posters, so buyer dedup (exercised in its own scenario) never fires here.
+      const items = body.startUrls.map(({ url: u }) => ({ facebookUrl: u, text: `full ${u}`, time: new Date(FRESH).toISOString(), user: { id: `u${u.slice(-3)}` } }));
+      return { ok: true, status: 200, json: async () => items };
+    }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  // buyerLeads deliberately UNSET and offTargetLeads ON: the mode must not need the by-product flag,
+  // and must not pick up the off-target salvage lane either.
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: ['q1'], freshnessMonths: 3, maxPerRun: 0, offTargetLeads: true };
+  const run = startRun(db, ORG, 'test');
+  const leg = run.leg({ target: TARGET, queries: cfg.queries, mode: 'buyer' });
+  await runForOrg(db, 'tok', ORG, cfg, { fetchSerp: async () => serp(), classify: stub, target: TARGET, leg, mode: 'buyer' });
+  await run.finish();
+
+  const f = db.store.get(`sourcingRuns/${run.id}`).funnel;
+  assert.equal(f.relayed, 2, 'both on-target demand posts relay');
+  assert.equal(f.buyerRelayed, 2, 'every buyer-lane lead is counted in the buyer lane');
+  assert.equal(f.supplyDropped, 1, 'the seller post is by-catch, counted as such');
+  assert.equal(f.buyerDropped, 0, 'a buyer run never drops a buyer post for want of the org flag');
+  assert.equal(f.offTargetRelayed, 0, 'off-target salvage stays a SUPPLY lane — a buyer looking elsewhere is nothing to us');
+
+  const byUrl = new Map(relayBodies.map((b) => [b.listing.url, b.listing]));
+  assert.equal(relayBodies.length, 2);
+  assert.equal(byUrl.get(P(501)).leadType, 'buyer', 'tagged on the wire so the platform routes it to the buyer queue');
+  assert.equal(byUrl.get(P(502)).leadType, 'buyer');
+
+  const seen = db.under(`sourcingSeen/${ORG}/keys/`);
+  assert.equal(seen.find((d) => d.url === P(501))?.leadType, 'buyer', 'the seen doc records the lane');
+  assert.ok(!seen.some((d) => d.url === P(503)), 'the by-catch listing is NEVER buried — the supply lane must still be able to sell it');
+  assert.ok(seen.some((d) => d.url === P(504) && d.dropped), 'a confidently off-target demand post is dead, as in supply mode');
+
+  const leads = db.under(`sourcingRuns/${run.id}/leads/`);
+  assert.equal(leads.find((l) => l.url === P(503))?.dropReason, 'supply-post', 'the by-catch names its own reason, not a generic off-target');
+
+  const txns = db.under('transactions/');
+  assert.equal(txns[0].count, 2, 'the buyer lane bills like any other relayed lead');
+  console.log('\nbuyer-lane scenario: demand relays tagged, seller by-catch stays retryable, salvage stays supply-only ✓');
+}
+
+/**
+ * BUYER repost dedup. A seeker posting the SAME requirement into five neighbourhood groups gets a
+ * fresh URL each time and — unlike an owner — usually carries no phone, so ownerListingKey returns
+ * null and the cross-run guard never fires. Keyed on the POSTER instead. Pins: the same poster's
+ * repeat collapses, a DIFFERENT poster wanting the same thing is spared, and a post with no
+ * identifiable author at all still relays (never deduped) rather than being silently dropped.
+ */
+async function buyerDedupScenario() {
+  const TARGET = { locality: 'Velachery', city: 'Chennai' };
+  const stub = async () => ({ keep: true, side: 'seeking', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Rent', locality: 'Velachery', bhk: '2', propertyType: 'flat' } });
+  // Same requirement, three posts: two from one seeker (a repost), one from someone else. The
+  // fourth carries no author fields at all.
+  // P(605) is the SAME seeker again on a later run, with a brand-new post URL.
+  const AUTHOR = { [P(601)]: 'fb.com/seeker-a', [P(602)]: 'fb.com/seeker-a', [P(603)]: 'fb.com/seeker-b', [P(605)]: 'fb.com/seeker-a' };
+
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const relayBodies = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes('apify')) {
+      const body = JSON.parse(opts.body);
+      const items = body.startUrls.map(({ url: u }) => ({
+        facebookUrl: u, text: `need 2bhk flat velachery`, time: new Date(FRESH).toISOString(),
+        ...(AUTHOR[u] ? { user: { profileUrl: AUTHOR[u] } } : {}),
+      }));
+      return { ok: true, status: 200, json: async () => items };
+    }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: ['q1'], freshnessMonths: 3, maxPerRun: 0 };
+  const runOne = async (serp) => {
+    const run = startRun(db, ORG, 'test');
+    const leg = run.leg({ target: TARGET, queries: cfg.queries, mode: 'buyer' });
+    await runForOrg(db, 'tok', ORG, cfg, { fetchSerp: async () => serp, classify: stub, target: TARGET, leg, mode: 'buyer' });
+    await run.finish();
+    return db.store.get(`sourcingRuns/${run.id}`).funnel;
+  };
+
+  const f1 = await runOne([
+    { url: P(601), title: 'need 2bhk', snippet: 'need 2bhk flat velachery' },
+    { url: P(602), title: 'need 2bhk again', snippet: 'need 2bhk flat velachery' },
+    { url: P(603), title: 'need 2bhk too', snippet: 'need 2bhk flat velachery' },
+    { url: P(604), title: 'need 2bhk anon', snippet: 'need 2bhk flat velachery' },
+  ]);
+  assert.equal(f1.ownerDupInRun, 1, 'the same seeker’s in-run repost collapses');
+  assert.equal(f1.relayed, 3, 'one of the repost pair + the other seeker + the anonymous post');
+  const r1 = new Set(relayBodies.map((b) => b.listing.url));
+  assert.ok(r1.has(P(601)) && !r1.has(P(602)), 'the first of the pair wins');
+  assert.ok(r1.has(P(603)), 'a DIFFERENT person wanting the same flat is spared — two real leads, not a dupe');
+  assert.ok(r1.has(P(604)), 'no identifiable poster = no dedup, and it still relays');
+
+  // Cross-run: the same seeker posts the requirement again, new URL. URL dedup can't see it.
+  relayBodies.length = 0;
+  const f2 = await runOne([{ url: P(605), title: 'need 2bhk still', snippet: 'need 2bhk flat velachery' }]);
+  assert.equal(f2.ownerDupSeen, 1, 'the same seeker’s later-run repost is caught cross-run — the phone-less case ownerListingKey could never see');
+  assert.equal(f2.relayed, 0, 'the same requirement is never delivered (or billed) twice');
+  assert.equal(relayBodies.length, 0, 'the repost never reaches the webhook');
+  assert.ok(db.under(`sourcingSeen/${ORG}/keys/`).some((d) => d.url === P(605) && d.dropped), 'the cross-run repost is marked dead so it is never re-enriched');
+  console.log('\nbuyer-dedup scenario: same-seeker reposts collapse, distinct seekers and anonymous posts relay ✓');
+}
+
+
+/**
+ * The buyer query's SHAPE. Deterministic, no Gemini — it pins the two string transforms that decide
+ * what the lane actually searches for, both of which were written against a measured live failure.
+ */
+async function queryShapeScenario() {
+  const { dedupOrGroup, excludeClause, intentModeOf } = await import('../utils/queryGen.js');
+
+  // Translation is many-to-one: "house"/"home" both come back as வீடு, and the buyer group's
+  // "need"/"required"/"requirement" all collapse to தேவை. A group that is three copies of one word
+  // matches nothing extra and reads as a broken translation in the run panel.
+  assert.equal(dedupOrGroup('வீடு OR மனை OR வீடு'), 'வீடு OR மனை');
+  assert.equal(dedupOrGroup('தேவை OR தேவை OR தேவை'), 'தேவை');
+  assert.equal(dedupOrGroup('a OR "b c" OR A'), 'a OR "b c"', 'case-insensitive, first spelling wins, order kept');
+  assert.equal(dedupOrGroup(''), '', 'an empty group stays empty rather than becoming a stray operator');
+
+  // The recruitment exclusion. Measured 2026-09-01: without it a buyer run over a COMMERCIAL target
+  // returned 98 prospects and 0 leads, because `(office OR shop) AND (wanted OR required)` is how
+  // "staff wanted for shop" is written — nearly every survivor was a hiring ad.
+  const ex = excludeClause(['hiring', 'job', 'work from home', 'hiring', 'வேலை']);
+  assert.equal(ex, '-hiring -job -"work from home" -வேலை', 'dedups, quotes multi-word terms, keeps local-language terms');
+  assert.equal(excludeClause([]), '', 'no terms = no clause (never a dangling "-")');
+  assert.equal(excludeClause(['', '  ', null]), '', 'blank terms never become a bare "-"');
+
+  assert.equal(intentModeOf('buyer'), 'buyer');
+  assert.equal(intentModeOf('nonsense'), 'supply', 'an unknown mode degrades to supply, never to a broken query');
+  console.log('\nquery-shape scenario: OR-group dedup + recruitment exclusion ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });

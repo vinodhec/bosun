@@ -50,6 +50,7 @@ function blankFunnel() {
     noSignalDropped: 0,    // 3b — deterministic property-signal pre-filter
     offTargetDropped: 0,   // 3b — Gemini classify said off-target (confident reject → dead)
     buyerDropped: 0,       // 3b — genuine buyer post, org hasn't opted into buyerLeads (→ retries)
+    supplyDropped: 0,      // 3b — BUYER-mode run's by-catch: a real listing, wrong lane (→ retries)
     degradedDropped: 0,    // 3b — classifier down AND no India signal (transient → retries)
     localityPending: 0,    // 3b — genuine listing but the SERP text NAMED no place (truncated title /
                            //      adjacent-post snippet); deferred to the full-text pass (3c2)
@@ -113,7 +114,7 @@ export const NULL_LEG = {
  *
  * @param {FirebaseFirestore.Firestore} db
  * @param {string} orgId
- * @param {'cron'|'admin-top-target'|'admin-run-now'} trigger  what caused this run
+ * @param {'cron'|'cron-buyer'|'admin-top-target'|'admin-buyer'|'admin-run-now'} trigger  what caused this run
  */
 export function startRun(db, orgId, trigger) {
   const ref = db.collection('sourcingRuns').doc();
@@ -157,13 +158,16 @@ export function startRun(db, orgId, trigger) {
      * Open a leg — one target's pass through the pipeline. A static-config org (no matrix) has a
      * single leg with `target:null`, so the run shape is identical either way.
      */
-    leg({ target = null, queries = [], meta = null } = {}) {
+    leg({ target = null, queries = [], meta = null, mode = 'supply' } = {}) {
       const funnel = blankFunnel();
       const legRec = {
         locality: target?.locality || null,
         city: target?.city || null,
         shape: target?.shape || null,
         queries: (queries || []).map((q) => clip(q, 200)),
+        // Which lane sourced this target: 'supply' (inventory) or 'buyer' (demand). The two run the
+        // same pipeline over completely different queries, so a funnel is unreadable without it.
+        mode: mode === 'buyer' ? 'buyer' : 'supply',
         // Gemini's query-building provenance: which language/name it chose for this locality. This
         // is the only place it surfaces — the cron discards sourceTopTargets' return value.
         category: meta?.category || null,

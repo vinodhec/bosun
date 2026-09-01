@@ -20,9 +20,10 @@ const NAME_SCHEMA = {
     regionalCity: { type: 'string' },
     propTerms: { type: 'string' },
     intentTerms: { type: 'string' },
+    jobTerms: { type: 'string' },
   },
   required: ['englishName'],
-  propertyOrdering: ['englishName', 'regionalLanguage', 'regionalName', 'regionalCity', 'propTerms', 'intentTerms'],
+  propertyOrdering: ['englishName', 'regionalLanguage', 'regionalName', 'regionalCity', 'propTerms', 'intentTerms', 'jobTerms'],
 };
 
 /**
@@ -32,6 +33,29 @@ const NAME_SCHEMA = {
  * "இராமநாதபுரம், இராமநாதபுரம்" as two different places).
  */
 const normPlace = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * Collapse repeats inside a translated "A OR B OR C" group.
+ *
+ * Translation is many-to-one: English distinguishes words the local language does not. "house" and
+ * "home" both come back as வீடு; the buyer group's "need", "required" and "requirement" all collapse
+ * to தேவை. Left alone the query carries `(வீடு OR ... OR வீடு)` — the duplicate matches nothing extra
+ * and just spends query length, and a group that is three copies of one word looks like a broken
+ * translation to anyone reading the run panel. Case/space-insensitive, first spelling wins, order
+ * preserved.
+ */
+export function dedupOrGroup(group) {
+  const parts = String(group || '').split(/\s+OR\s+/i).map((t) => t.trim()).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const t of parts) {
+    const k = t.toLowerCase().replace(/^["']|["']$/g, '');
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out.join(' OR ');
+}
 
 /**
  * Is Gemini's expansion plausibly the SAME place we asked about?
@@ -85,7 +109,7 @@ function placeWithCity(name, city) {
  * in the dominant local script, plus the property + intent OR-groups translated into that language for
  * the given demand category. Returns null if Gemini is unavailable so the caller degrades to English.
  */
-async function localityInfo({ locality, city, category }) {
+async function localityInfo({ locality, city, category, intentEn = INTENT_EN, buyerIntent = false }) {
   if (!geminiConfigured()) return null;
   const enProp = PROP_GROUPS[category].en;
   const j = await generateJson({
@@ -111,7 +135,22 @@ async function localityInfo({ locality, city, category }) {
       (city ? `3b. regionalCity = "${city}" written in that language's script, so the regional query can be pinned to the city in-script too.\n` : '') +
       `4. propTerms = translate this property OR-group into that language, KEEPING the "A OR B OR C" ` +
       `format (translate each term, leave "OR" in English): ${enProp}\n` +
-      `5. intentTerms = translate "${INTENT_EN}" into that language, same "A OR B OR C" format.\n\n` +
+      `5. intentTerms = translate "${intentEn}" into that language, same "A OR B OR C" format.` +
+      (buyerIntent
+        // Without this the model returns the QUESTION form ("வேண்டுமா" = "do you want?"), which is
+        // how you ASK someone, not how a seeker writes their own requirement post — so the query
+        // misses the very posts the buyer lane exists to find.
+        ? ` These are the words someone writes when they are LOOKING FOR a property to buy or rent — ` +
+          `the plain "wanted / needed / looking for" forms a person uses in their own requirement ` +
+          `post, NOT the question form ("do you want…?") and NOT the words a seller uses. Give ` +
+          `DISTINCT terms — if several English words translate to the same word, return it once and ` +
+          `add another real phrasing people use instead.\n\n`
+        : `\n\n`) +
+      (buyerIntent
+        ? `6. jobTerms = the words for JOB, VACANCY and HIRING in that language, as "A OR B OR C". We ` +
+          `subtract these from the search: recruitment posts use the same "wanted / needed" words as ` +
+          `property seekers and would otherwise swamp the results.\n\n`
+        : '') +
       `If you are not confident of a regional value, return an empty string for it rather than guessing.`,
     schema: NAME_SCHEMA,
   });
@@ -121,8 +160,9 @@ async function localityInfo({ locality, city, category }) {
     regionalLanguage: String(j.regionalLanguage || '').trim(),
     regionalName: String(j.regionalName || '').trim(),
     regionalCity: String(j.regionalCity || '').trim(),
-    propTerms: String(j.propTerms || '').trim(),
-    intentTerms: String(j.intentTerms || '').trim(),
+    propTerms: dedupOrGroup(String(j.propTerms || '').trim()),
+    intentTerms: dedupOrGroup(String(j.intentTerms || '').trim()),
+    jobTerms: dedupOrGroup(String(j.jobTerms || '').trim()),
   };
 }
 
@@ -140,7 +180,55 @@ const PROP_GROUPS = {
   land: { en: 'plot OR land OR "vacant land" OR "farm land" OR "agricultural land" OR farmhouse OR acre OR cent' },
   pg: { en: '"paying guest" OR PG OR hostel OR "room for rent"' },
 };
-const INTENT_EN = 'sale OR rent OR lease';
+// Intent OR-groups (English) by RUN MODE. `supply` is the original lane — the words an owner uses
+// when they HAVE a property. `buyer` is the demand lane: the words someone uses when they WANT one.
+//
+// Why the buyer lane needs its own words at all: for a year the buyer leads we relayed were a
+// by-product of these supply queries, and the numbers say that can never be a lane. Over the 60 runs
+// to 2026-09-01 the pipeline relayed 420 leads, of which 9 were buyers — and of the 99 buyer posts it
+// found, 90 died on recency, 59 of them posted MORE THAN A YEAR ago. That is exactly what a supply
+// query does to demand: it surfaces the old "looking for a 2BHK?" group threads Google still ranks on
+// engagement, not the requirement somebody posted this week. Searching the demand words directly is
+// the only way to reach fresh demand.
+//
+// The terms are the ones the 2026-07-17 yield experiment measured (scripts/experiment-buyer-sourcing.mjs).
+const INTENT_GROUPS = {
+  supply: 'sale OR rent OR lease',
+  buyer: 'wanted OR "looking for" OR required OR need OR requirement',
+};
+
+// Buyer queries MUST exclude the recruitment universe, or they return almost nothing else.
+//
+// "wanted", "required", "need" and "vacancy" are the defining words of Indian Facebook job posts, and
+// against the commercial property group the collision is total: `(office OR shop OR warehouse) AND
+// (wanted OR required)` is literally how "staff wanted for shop" is written. Measured on the first
+// live buyer run (2026-09-01, Avaniyapuram/Madurai + Nasiyanur Road/Erode): 98 prospects, 0 relayed —
+// 83 killed by the property-signal filter as generic page noise, and essentially every survivor a
+// hiring ad ("We Are Hiring", "Your Dream Job is Just One Call Away"). The July yield experiment
+// never saw this because it only tested RESIDENTIAL localities, where "house OR flat" keeps job ads
+// out on its own; the demand ranking hands the live lane commercial and PG targets too.
+//
+// Negatives are cheap and precise here — a genuine property-requirement post has no reason to say
+// "salary" or "resume" — and they cost nothing on the supply side because supply never uses them.
+const BUYER_EXCLUDE_EN = ['hiring', 'job', 'jobs', 'vacancy', 'vacancies', 'salary', 'recruitment', 'candidates', 'resume', 'interview'];
+
+/** Render terms as Google negative operators: `-hiring -job …`. Multi-word terms get quoted. */
+export function excludeClause(terms) {
+  const seen = new Set();
+  const out = [];
+  for (const t of terms) {
+    const v = String(t || '').trim().replace(/^-+/, '');
+    const k = v.toLowerCase();
+    if (!v || seen.has(k)) continue;
+    seen.add(k);
+    out.push(/\s/.test(v) ? `-"${v}"` : `-${v}`);
+  }
+  return out.join(' ');
+}
+const INTENT_EN = INTENT_GROUPS.supply; // back-compat for callers that never pass a mode
+
+/** Normalize a caller's mode to a key of INTENT_GROUPS (anything unknown degrades to supply). */
+export const intentModeOf = (mode) => (mode === 'buyer' ? 'buyer' : 'supply');
 
 /**
  * Map a target's dominant property type → a query category. A dominant shape can be a comma-joined
@@ -157,19 +245,25 @@ export function categoryForShape(shape) {
   return 'residential';
 }
 
-const enQuery = (name, cat) => `site:facebook.com ${name} (${PROP_GROUPS[cat].en}) (${INTENT_EN})`;
-const regionalQuery = (name, propTerms, intentTerms) => `site:facebook.com ${name} (${propTerms}) (${intentTerms})`;
+const enQuery = (name, cat, intentEn, exclude = '') => `site:facebook.com ${name} (${PROP_GROUPS[cat].en}) (${intentEn})${exclude ? ` ${exclude}` : ''}`;
+const regionalQuery = (name, propTerms, intentTerms, exclude = '') => `site:facebook.com ${name} (${propTerms}) (${intentTerms})${exclude ? ` ${exclude}` : ''}`;
 
 /**
- * Build the search queries for a target: an English query on the full name + a regional-language query
+ * Build the search queries for a target in the given MODE ('supply' = inventory someone HAS,
+ * 'buyer' = demand someone WANTS): an English query on the full name + a regional-language query
  * (in the locality's own script) when Gemini could supply the translated name + terms, both keyed to
  * the demand CATEGORY (residential / commercial / land / pg) so we search for the kind of property
  * that's actually in demand. Always returns at least the English query (falls back to the raw locality
  * if Gemini is unavailable), so a name/LLM hiccup never leaves us with nothing to search.
  */
-export async function buildSourcingQueries({ locality, city, shape }) {
+export async function buildSourcingQueries({ locality, city, shape, mode = 'supply' }) {
   const category = categoryForShape(shape);
-  const info = await localityInfo({ locality, city, category });
+  // The property nouns stay the same in both modes — a buyer names the same kinds of property an
+  // owner does. Only the INTENT group flips (have vs want), which is the whole difference between
+  // sourcing inventory and sourcing demand.
+  const intentMode = intentModeOf(mode);
+  const intentEn = INTENT_GROUPS[intentMode];
+  const info = await localityInfo({ locality, city, category, intentEn, buyerIntent: intentMode === 'buyer' });
 
   // Trust the expansion only if it is still the place we asked about; otherwise search the locality
   // exactly as the target stores it. Losing an abbreviation expansion costs some recall for one run;
@@ -183,8 +277,15 @@ export async function buildSourcingQueries({ locality, city, shape }) {
 
   // The city comes from the TARGET, never from the model — a same-named locality in another city is
   // exactly the failure this guards (target trichy__thillai-nagar once searched Ponnammapet, Salem).
+  // Buyer queries carry the recruitment exclusion; supply queries carry none (they never collide
+  // with job ads, and every negative term is a chance to lose a real listing). The local-language
+  // job words ride along when Gemini could supply them, since a Tamil hiring post says வேலை, not "job".
+  const exclude = intentMode === 'buyer'
+    ? excludeClause([...BUYER_EXCLUDE_EN, ...String(info?.jobTerms || '').split(/\s+OR\s+/i)])
+    : '';
+
   const enPlace = placeWithCity(localityName, city);
-  const queries = [enQuery(enPlace, category)];
+  const queries = [enQuery(enPlace, category, intentEn, exclude)];
 
   // Only add the regional query when we have BOTH the script name AND the translated terms — a partial
   // translation would search the region's name against English property words (or vice versa), which
@@ -198,7 +299,7 @@ export async function buildSourcingQueries({ locality, city, shape }) {
     // Pin the regional query to the city in-script when we have it; fall back to the English city
     // (Indian regional posts routinely write the city in English) rather than dropping it entirely.
     const regPlace = placeWithCity(info.regionalName, info.regionalCity || city);
-    queries.push(regionalQuery(regPlace, info.propTerms, info.intentTerms));
+    queries.push(regionalQuery(regPlace, info.propTerms, info.intentTerms, exclude));
   }
   return {
     queries,
@@ -206,5 +307,6 @@ export async function buildSourcingQueries({ locality, city, shape }) {
     regionalLanguage: info?.regionalLanguage || '',
     regionalName: info?.regionalName || '',
     category,
+    mode: intentMode,
   };
 }

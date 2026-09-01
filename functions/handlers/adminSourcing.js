@@ -152,6 +152,79 @@ export const adminSourceTopTarget = onCall(
   },
 );
 
+// Source BUYERS (demand posts) for the top demand-ranked targets, once, on demand — the buyer lane's
+// equivalent of adminSourceTopTarget, and the button an operator presses when the team says "there
+// are no buyers in the list". Runs the same pipeline with the demand queries and the side gate
+// flipped; always a DRY matrix pull, so a manual buyer probe never consumes the supply lane's
+// rotation. Costs real Apify credit and bills the org per relayed lead, exactly like the supply probe.
+export const adminSourceBuyers = onCall(
+  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 540, memory: '512MiB' },
+  async (request) => {
+    requireAdmin(request);
+    const orgId = String(request.data?.orgId ?? '').trim();
+    if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+    const db = getFirestore();
+    const orgSnap = await db.collection('organisations').doc(orgId).get();
+    if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const cfg = orgSnap.data().sourcing || {};
+    if (!cfg.actorId || !cfg.webhookUrl || !cfg.matrixUrl) {
+      throw new HttpsError('failed-precondition', 'This org needs actorId, webhookUrl and matrixUrl — run adminConfigureSourcing first.');
+    }
+    const topN = Math.max(1, Math.min(10, Math.floor(Number(request.data?.topN) || Number(cfg.buyerTopN) || 3)));
+    const result = await sourceTopTargets(db, process.env.APIFY_TOKEN, orgId, cfg, {
+      topN, dryRun: true, trigger: 'admin-buyer', mode: 'buyer',
+    });
+    if (result?.note === 'no secret') throw new HttpsError('failed-precondition', 'No sourcing secret for this org.');
+    return result;
+  },
+);
+
+// Flip the sourcing LANES on an org without re-supplying its whole config. Separate from
+// adminConfigureSourcing on purpose: that callable requires actorId + webhookUrl + queries/matrix and
+// rewrites the connection, so using it to toggle a boolean risks clobbering a working relay. These
+// are all non-secret, non-money fields; every one is optional and an omitted field is left untouched.
+export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const ref = db.collection('organisations').doc(orgId);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
+
+  const patch = {};
+  // Booleans: the three lanes. `buyerLane` is the dedicated demand cron; `buyerLeads` /
+  // `offTargetLeads` are the by-product harvests inside a supply run.
+  for (const k of ['buyerLane', 'buyerLeads', 'offTargetLeads']) {
+    if (request.data?.[k] != null) patch[`sourcing.${k}`] = request.data[k] === true;
+  }
+  // Numbers. 0 is MEANINGFUL for buyerMaxPerRun (uncapped) so it must survive the parse.
+  const num = (v, min, max) => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : null;
+  };
+  const nums = { buyerTopN: [1, 10], buyerMaxPerRun: [0, 500], buyerFreshnessMonths: [1, 60] };
+  for (const [k, [min, max]] of Object.entries(nums)) {
+    if (request.data?.[k] == null) continue;
+    const n = num(request.data[k], min, max);
+    if (n == null) throw new HttpsError('invalid-argument', `${k} must be a number.`);
+    patch[`sourcing.${k}`] = n;
+  }
+  if (!Object.keys(patch).length) throw new HttpsError('invalid-argument', 'Nothing to update.');
+  await ref.update(patch);
+  const after = (await ref.get()).data()?.sourcing || {};
+  return {
+    ok: true,
+    lanes: {
+      buyerLane: after.buyerLane === true,
+      buyerLeads: after.buyerLeads === true,
+      offTargetLeads: after.offTargetLeads === true,
+      buyerTopN: after.buyerTopN ?? null,
+      buyerMaxPerRun: after.buyerMaxPerRun ?? null,
+      buyerFreshnessMonths: after.buyerFreshnessMonths ?? null,
+    },
+  };
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // Read side: the sourcing audit trail (see utils/sourcingRun.js).
 //

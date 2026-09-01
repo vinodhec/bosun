@@ -260,14 +260,34 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   sale/unknown-intent leads older than `saleMonths` are dropped (unknown `postedAt` is kept). A
   target left with ZERO fresh leads re-admits up to `fallbackMaxLeads` newest stale ones as
   `freshness:'stale-fallback'`; everything else relays as `'fresh'`.
+- **The buyer lane (`mode:'buyer'`)** — a SEPARATE cron (`runBuyerSourcingJobs`, every 2h at :15, so it
+  never collides with the supply ticks), opt-in per org via `sourcing.buyerLane`. Same pipeline, three
+  differences: `queryGen.js` swaps the intent OR-group to demand phrasing (`wanted OR "looking for" OR
+  required …`, translated per-locality), the side gate INVERTS (a `seeking` post is the product; an
+  `offering` post drops as `supply-post`, RETRYABLY, so a buyer run can never bury inventory), and the
+  lane carries its own budget (`buyerMaxPerRun`, default UNCAPPED) plus its own window
+  (`buyerFreshnessMonths`, default = the org window). It always pulls the matrix DRY and rotates
+  through the ranking with `sourcing.buyerCursor` — stamping cadence here would make the supply cron
+  skip the localities the buyer run just visited. Why it exists: over the 60 runs to 2026-09-01 the
+  by-product harvest relayed 9 buyers out of 420 leads, and 90 of the 99 buyer posts it found died on
+  recency (59 posted >12 months ago) — a supply query surfaces old high-engagement "looking for a
+  2BHK?" threads, not this week's requirement. Fired by hand from the Admin panel ("Source buyers
+  now" → `adminSourceBuyers`); lanes are toggled with `adminSetSourcingLanes`.
 - **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
   With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
   `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with
   `sourcing.offTargetLeads`, a confident genuine listing whose only failure is the locality relays
   as `leadType:'off-target'` carrying its real place in `extracted.locality`. Both flags default OFF
   — the platform webhook must route the tag first. Flag-off buyer posts drop RETRYABLY (never
-  buried); off-target rejects stay dead as before. Under the enrich-pool/maxPerRun caps the lanes
-  rank supply → buyer → off-target so salvage never displaces on-target inventory.
+  buried); off-target rejects stay dead as before. `maxPerRun` is the SUPPLY budget — supply and
+  off-target compete for it, buyer draws on `buyerMaxPerRun` (default uncapped) so a full supply cap
+  can no longer starve the demand lane. Within the supply budget the lanes still rank supply →
+  off-target so salvage never displaces on-target inventory.
+- **Repost dedup is per-lane** (`utils/sourcing.js`). Supply keys on `ownerListingKey` (phone + coarse
+  price/BHK/type). That returns null for nearly every buyer post — they carry no phone (0/4 in the
+  2026-07-17 measurement; buyers say "DM me") — so the buyer lane keys on `buyerRequestKey`: the phone
+  if there is one, else the POSTER (`extractAuthor`, best-effort off the scraper item), fingerprinted
+  against what they want. Null on either path means "relay it", never a silent drop.
 - **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
   it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
 - **Operator override** — `adminSourcingRelayLead` relays ONE recorded (dropped) lead by hand from
