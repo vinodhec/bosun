@@ -273,6 +273,19 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   recency (59 posted >12 months ago) — a supply query surfaces old high-engagement "looking for a
   2BHK?" threads, not this week's requirement. Fired by hand from the Admin panel ("Source buyers
   now" → `adminSourceBuyers`); lanes are toggled with `adminSetSourcingLanes`.
+- **The GROUP lane (`sourceBuyerGroups`) — the buyer lane's FRESH source.** The SERP buyer lane above
+  topped out at year-old posts, because Google's index of facebook group feeds is 300–700 days stale;
+  reading the feeds directly (`utils/sourcing.js#fetchGroupFeed`, actor
+  `apify~facebook-groups-scraper` — NOT the posts actor, which answers `no_items` for every feed)
+  returns same-day posts. Groups are configured as `sourcing.buyerGroups: [{url, city}]`
+  (`adminSetSourcingLanes`; the CITY is the classify target, since a metro group has no single
+  locality) and run twice a day on the buyer cron's 08:15/20:15 IST ticks, one leg per city, in
+  buyer mode through the ordinary pipeline. The one upstream difference: feed items arrive ALREADY
+  FULL (`origin:'group-feed'` — complete text, real date, phone, photos, author), so step 3c1 skips
+  the paid per-post enrichment and lifts `author` off the listing (dedup fuel, never forwarded).
+  First live pass (2026-09-01, 52 groups / 10 TN cities): 21 buyer leads relayed, 0–19 days old,
+  ~95% genuine — versus 9 in 28h from the by-product and 2/run from the SERP buyer lane. Manual
+  trigger: "Scan buyer groups now" (`adminSourceBuyers {source:'groups'}`).
 - **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
   With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
   `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with

@@ -336,6 +336,67 @@ export async function fetchQueryMatrix({ matrixUrl, secret, limit, maxTargets, d
 
 const FB_POSTS_ACTOR = 'apify~facebook-posts-scraper';
 
+// The GROUP-FEED actor — a different actor from FB_POSTS_ACTOR on purpose. Verified 2026-09-01:
+// facebook-posts-scraper answers `no_items` ("Empty or private data") for every group FEED url (it
+// reads pages and individual public posts only), while facebook-groups-scraper returned same-hour
+// posts from the same groups, no login needed. This is what makes the buyer lane's fresh-demand
+// source possible at all — Google's index of these feeds is 300–700 days stale.
+const GROUP_FEED_ACTOR = 'apify~facebook-groups-scraper';
+
+/**
+ * Read a Facebook GROUP's newest posts, normalized to the pipeline's listing shape — the buyer
+ * lane's fresh-demand source (see runSourcingJobs.js#sourceBuyerGroups). Unlike a SERP item these
+ * arrive ALREADY FULL: complete text, authoritative post date, phone, photos, author. They are
+ * marked `origin:'group-feed'` so the pipeline skips the paid per-post enrichment (a second scrape
+ * of data we just paid for), and `serpAgeMs` carries the real post date so the cheap pre-classify
+ * age gate works unchanged. `author` is the poster's identity for buyer dedup — the pipeline lifts
+ * it OFF the listing before relay (a scraped display name is not ours to forward).
+ * Best-effort: any failure returns [], a dud group costs one actor start and nothing else.
+ */
+export async function fetchGroupFeed({ apifyToken, groupUrl, limit = 20, actorId = GROUP_FEED_ACTOR }) {
+  if (!apifyToken || !groupUrl) return [];
+  const endpoint = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ startUrls: [{ url: groupUrl }], resultsLimit: Math.max(1, Math.floor(limit)) }),
+    });
+    if (!resp.ok) {
+      console.error('fetchGroupFeed:http', resp.status, groupUrl);
+      return [];
+    }
+    const items = await resp.json();
+    const out = [];
+    for (const it of (Array.isArray(items) ? items : [])) {
+      if (!it || it.error) continue; // {error:'no_items'} = private/dud group
+      const parsed = parseEnrichedItem(it);
+      if (!parsed?.text) continue; // a feed item with no text can't be classified or sold
+      // The POST's own permalink — never the group landing url, which would dedup the whole group
+      // as one listing. Field name varies by actor version; require a real individual-post shape.
+      const postUrl = [it.url, it.postUrl, it.topLevelUrl, it.facebookUrl]
+        .find((u) => typeof u === 'string' && isIndividualPost(u));
+      if (!postUrl) continue;
+      out.push({
+        url: postUrl,
+        title: parsed.text.split('\n').find((l) => l.trim())?.slice(0, 120) || '',
+        snippet: parsed.text,
+        serpAgeMs: parsed.postedAt || null,
+        postedAt: parsed.postedAt || null,
+        phone: parsed.phone || null,
+        ...(parsed.images?.length ? { images: parsed.images } : {}),
+        author: parsed.author || '',
+        origin: 'group-feed',
+        sourceQuery: `group:${groupUrl}`,
+      });
+    }
+    return out;
+  } catch (e) {
+    console.error('fetchGroupFeed:err', groupUrl, e?.message || e);
+    return [];
+  }
+}
+
 /** Extract + normalize an Indian mobile number from free text → `+91XXXXXXXXXX` or null. */
 export function extractPhone(text) {
   const m = String(text || '').replace(/[^\d+]/g, ' ').match(/(?:\+?91|0)?\s*([6-9]\d{9})(?!\d)/);

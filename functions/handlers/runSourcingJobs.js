@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -48,6 +48,11 @@ const CLASSIFY_OVERSAMPLE = 2;
 // metered lane — it never touches the managed-agent pipeline or finalize.js.
 
 const RELAY_CONCURRENCY = 10;
+// Upstream fetch fan-out (SERP queries / group-feed pulls per runForOrg call). Serial was fine at
+// 2 SERP queries per target, but a group-lane city runs SIX ~15-20s feed pulls — serial, the first
+// 52-group statewide pass blew the 20-min budget and dropped Thanjavur (2026-09-01). 3 keeps the
+// Apify account well under its concurrent-run ceiling with the enrich batches that share it.
+const FETCH_CONCURRENCY = 3;
 // Separate, LOWER fan-out for the Gemini classify gate. The webhook relay (RELAY_CONCURRENCY) is our
 // own endpoint and tolerates 10 in flight, but the classify pool hammers Vertex — 10 concurrent
 // flash-lite calls per target, bursting across every target, is what trips the per-minute quota and
@@ -78,6 +83,10 @@ const GETALL_CHUNK = 300; // Firestore getAll batch size for the dedup lookup
 // ── The BUYER lane ──────────────────────────────────────────────────────────────────────────────
 // How many demand-ranked targets one buyer run sources (override per org via sourcing.buyerTopN).
 const BUYER_TOPN = 3;
+// How many of a group's newest posts one visit pulls. Feeds move ~20-50 posts/day and the lane
+// visits twice a day, so 20 catches nearly everything; the per-result actor fee makes this the whole
+// cost knob of the group lane. Override per org via sourcing.buyerGroupPostsPerVisit.
+const GROUP_POSTS_PER_VISIT = 20;
 // How many topN-sized slates the buyer rotation walks before wrapping. A buyer run is always a DRY
 // matrix pull (it must not consume the supply lane's cadence), so the platform returns the same
 // demand-ranked head each time and the rotation is ours to do — this is how wide it spreads.
@@ -193,21 +202,95 @@ export const runBuyerSourcingJobs = onSchedule(
     for (const orgDoc of snap.docs) {
       try {
         const cfg = orgDoc.data().sourcing || {};
-        if (!cfg.enabled || !cfg.matrixUrl) continue; // the demand ranking IS the buyer lane's input
-        await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
-          topN: Math.max(1, Math.floor(Number(cfg.buyerTopN) || BUYER_TOPN)),
-          // ALWAYS dry: stamping cadence here would make the supply cron skip the localities the
-          // buyer run just visited, quietly starving inventory to feed demand.
-          dryRun: true,
-          trigger: 'cron-buyer',
-          mode: 'buyer',
-        });
+        if (!cfg.enabled) continue;
+        // No matrixUrl is fine now — the GROUP lane needs only sourcing.buyerGroups; only the
+        // demand-ranked SERP lane below needs the platform matrix.
+        // The GROUP lane rides this schedule but runs only TWICE a day (the 08:15 and 20:15 IST
+        // ticks): feeds move ~20-50 posts/day, so two visits catch nearly everything, and the
+        // per-result actor fee makes extra visits pure cost. It runs FIRST — it is the fresh
+        // source, and if the wall clock is going to cut anything it should cut the stale one.
+        const istHour = new Date(Date.now() + 5.5 * 3600 * 1000).getUTCHours();
+        if (istHour === 8 || istHour === 20) {
+          await sourceBuyerGroups(db, apifyToken, orgDoc.id, cfg, { trigger: 'cron-buyer-groups' });
+        }
+        if (cfg.matrixUrl) {
+          await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
+            topN: Math.max(1, Math.floor(Number(cfg.buyerTopN) || BUYER_TOPN)),
+            // ALWAYS dry: stamping cadence here would make the supply cron skip the localities the
+            // buyer run just visited, quietly starving inventory to feed demand.
+            dryRun: true,
+            trigger: 'cron-buyer',
+            mode: 'buyer',
+          });
+        }
       } catch (e) {
         console.error('runBuyerSourcingJobs:org', orgDoc.id, e?.message || e);
       }
     }
   },
 );
+
+// The GROUP lane — the buyer lane's FRESH source. Reads each configured Facebook group's newest
+// posts directly (fetchGroupFeed) instead of asking Google, because Google's index of those feeds is
+// what made the SERP buyer lane top out at year-old posts. Measured 2026-09-01 on 5 Chennai groups:
+// feeds are 0–2 days old at 22–50 posts/day, with a small real stream of same-day "looking for"
+// posts — the thing the SERP lane cannot see at all.
+//
+// Groups are configured per org as sourcing.buyerGroups: [{ url, city }] — the CITY is the classify
+// target ("in or immediately around Chennai"), since a metro group has no single locality; the
+// classifier still extracts the post's own locality for the platform. Groups sharing a city run as
+// one leg through the ordinary pipeline in buyer mode: same gates, same corroboration guard, same
+// dedup, same relay-on-2xx billing. The only difference is upstream — the fetch returns FULL posts,
+// so the paid per-post enrichment is skipped (see 3c1).
+export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 'cron-buyer-groups', postsPerVisit } = {}) {
+  const groups = (Array.isArray(cfg.buyerGroups) ? cfg.buyerGroups : [])
+    .map((g) => (typeof g === 'string' ? { url: g, city: '' } : g))
+    .filter((g) => g && typeof g.url === 'string' && g.url.includes('facebook.com/groups/'));
+  if (!groups.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no buyerGroups configured' };
+  const limit = Math.max(5, Math.floor(Number(postsPerVisit) || Number(cfg.buyerGroupPostsPerVisit) || GROUP_POSTS_PER_VISIT));
+
+  const run = startRun(db, orgId, trigger);
+  try {
+    // One leg per CITY, not per group — the city is the classify target, and 40 single-group legs
+    // would make the run panel unreadable while telling the operator nothing a per-lead `query`
+    // row (group:<url>) doesn't already say.
+    const byCity = new Map();
+    for (const g of groups) {
+      const city = String(g.city || '').trim() || 'Tamil Nadu';
+      if (!byCity.has(city)) byCity.set(city, []);
+      byCity.get(city).push(g.url);
+    }
+    let relayed = 0;
+    let amountInr = 0;
+    const startedMs = Date.now();
+    let budgetHit = false;
+    const perCity = [];
+    for (const [city, urls] of byCity) {
+      if (Date.now() - startedMs > RUN_BUDGET_MS) {
+        budgetHit = true;
+        run.note(`wall-clock budget reached after ${perCity.length}/${byCity.size} cities — the rest catch the next visit`);
+        break;
+      }
+      const target = { locality: city, city: '' };
+      const leg = run.leg({ target, queries: urls, mode: 'buyer' });
+      const r = await runForOrg(db, apifyToken, orgId, cfg, {
+        queries: urls,
+        fetchSerp: ({ query }) => fetchGroupFeed({ apifyToken, groupUrl: query, limit }),
+        target,
+        leg,
+        mode: 'buyer',
+      });
+      relayed += r.relayed || 0;
+      amountInr += r.amountInr || 0;
+      perCity.push({ city, groups: urls.length, ...r });
+    }
+    await run.finish({ status: budgetHit ? 'partial' : 'done' });
+    return { ok: true, runId: run.id, mode: 'buyer', source: 'groups', perCity, relayed, amountInr, partial: budgetHit };
+  } catch (e) {
+    await run.finish({ status: 'error', error: e?.message || String(e) });
+    throw e;
+  }
+}
 
 // Exported for the emulator/E2E test harness (lets tests inject a stubbed serp fetcher + rng).
 // `queries`/`freshness` overrides let a caller source a SPECIFIC set of queries (e.g. the top target
@@ -251,15 +334,18 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
-  // 1) Fetch every query, flatten the results. `maxPages` controls SERP depth per query (supply).
+  // 1) Fetch every query, flatten the results in QUERY ORDER (the dedup below is first-wins, so
+  // the order must stay deterministic even though the fetches run concurrently). `maxPages`
+  // controls SERP depth per query (supply).
   const maxPages = cfg.maxPagesPerQuery;
-  const all = [];
-  for (const query of queries) {
+  const perQuery = new Array(queries.length);
+  await mapLimit(queries.map((query, i) => ({ query, i })), FETCH_CONCURRENCY, async ({ query, i }) => {
     const items = await fetchSerp({ apifyToken, actorId, query, freshness, maxPages });
     // Query provenance — relayed with the listing so the receiver can audit WHY a lead was fetched.
     for (const it of items) if (it && !it.sourceQuery) it.sourceQuery = query;
-    all.push(...items);
-  }
+    perQuery[i] = items;
+  });
+  const all = perQuery.flat().filter(Boolean);
 
   // 2) Keep only individual posts (real listings that enrich); drop group/page landing pages. Then
   // dedup WITHIN this run by canonical listing key.
@@ -544,8 +630,19 @@ export async function runForOrg(
   // chunks of URLs per run instead of one run per post (~15% cheaper + far fewer HTTP round-trips).
   // Chunks stay small so each run-sync call finishes well inside its window. Best-effort — a post the
   // batch couldn't scrape just keeps its SERP snippet (same fail-open as the old single-run miss).
+  // Group-feed listings (origin:'group-feed') arrived ALREADY FULL — complete text, real post date,
+  // phone, photos — so scraping them again would pay twice for the same post. Settle them here the
+  // way enrichment would have, and lift the poster identity OFF the listing: it exists for buyer
+  // dedup (3f), and a scraped display name is not ours to forward to the webhook.
+  const preEnriched = candidates.filter((c) => c.listing.origin === 'group-feed');
+  for (const c of preEnriched) {
+    c.enrichedText = true; // fetchGroupFeed only emits items with text
+    c.author = c.listing.author || null;
+    delete c.listing.author;
+  }
+  const toEnrich = candidates.filter((c) => c.listing.origin !== 'group-feed');
   const chunks = [];
-  for (let i = 0; i < candidates.length; i += ENRICH_BATCH_SIZE) chunks.push(candidates.slice(i, i + ENRICH_BATCH_SIZE));
+  for (let i = 0; i < toEnrich.length; i += ENRICH_BATCH_SIZE) chunks.push(toEnrich.slice(i, i + ENRICH_BATCH_SIZE));
   await mapLimit(chunks, ENRICH_BATCH_CONCURRENCY, async (chunk) => {
     const enrichedByUrl = await enrichPosts({ apifyToken, urls: chunk.map((c) => c.listing.url) });
     for (const c of chunk) {
@@ -591,8 +688,8 @@ export async function runForOrg(
     }
   });
   const withImages = candidates.filter((c) => c.listing.images?.length).length;
-  console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, enriched: candidates.length }));
-  leg.count('enriched', candidates.length);
+  console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, paidScrapes: toEnrich.length, alreadyFull: preEnriched.length }));
+  leg.count('enriched', toEnrich.length); // paid scrapes only — group-feed listings cost nothing here
   leg.count('withImages', withImages);
   leg.count('withPhone', candidates.filter((c) => c.listing.phone).length);
 

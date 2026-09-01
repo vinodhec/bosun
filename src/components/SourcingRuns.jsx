@@ -517,6 +517,7 @@ export default function SourcingRuns({ orgs }) {
     try {
       if (kind === 'top') await adminSourceTopTarget({ orgId, topN: 1 });
       else if (kind === 'buyers') await adminSourceBuyers({ orgId });
+      else if (kind === 'buyerGroups') await adminSourceBuyers({ orgId, source: 'groups' });
       else if (kind === 'plan') {
         const { data: d } = await adminPlanNow({ orgId });
         setPlanResult(d);
@@ -581,6 +582,9 @@ export default function SourcingRuns({ orgs }) {
             </button>
             <button type="button" className={btnGhost} onClick={() => fire('buyers')} disabled={!!running || !orgId}>
               {running === 'buyers' ? 'Sourcing buyers…' : 'Source buyers now'}
+            </button>
+            <button type="button" className={btnGhost} onClick={() => fire('buyerGroups')} disabled={!!running || !orgId}>
+              {running === 'buyerGroups' ? 'Scanning groups…' : 'Scan buyer groups now'}
             </button>
             <button type="button" className={btnGhost} onClick={() => fire('now')} disabled={!!running || !orgId}>
               {running === 'now' ? 'Running…' : 'Run static queries now'}

@@ -172,6 +172,7 @@ async function main() {
   await buyerLaneScenario();
   await buyerDedupScenario();
   await queryShapeScenario();
+  await groupFeedScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -676,6 +677,92 @@ async function queryShapeScenario() {
   for (const t of genuineBuyers) assert.ok(looksLikeBuyerText(t), `a real buyer post must pass: ${t}`);
   for (const t of sellersTheModelCalledSeeking) assert.ok(!looksLikeBuyerText(t), `a seller post must be demoted: ${t}`);
   console.log('\nquery-shape scenario: OR-group dedup + recruitment exclusion + seeking corroboration ✓');
+}
+
+
+/**
+ * The GROUP-FEED lane (sourceBuyerGroups). Its listings arrive ALREADY FULL, so the pins are about
+ * what must NOT happen: the posts-scraper is never called (no double-paying for a post we just
+ * fetched), the poster identity never reaches the webhook (it exists only for dedup), and the real
+ * post date is honored (a stale group post dies at recency exactly like an enriched one). Plus the
+ * lane basics: relays tagged buyer, seller by-catch dropped retryably, billing untouched.
+ */
+async function groupFeedScenario() {
+  const FRESH_ISO = new Date(FRESH).toISOString();
+  const G = 'https://www.facebook.com/groups/123456/';
+  const FEED = [
+    { url: 'https://www.facebook.com/groups/123456/posts/9001/', text: 'Need 2bhk flat in Velachery, family of 3', time: FRESH_ISO, user: { profileUrl: 'fb.com/seeker-x' } },
+    { url: 'https://www.facebook.com/groups/123456/posts/9002/', text: 'Flat for sale Velachery 2bhk 55 lakh contact 9876543210', time: FRESH_ISO },
+    { url: 'https://www.facebook.com/groups/123456/posts/9003/', text: 'Wanted plot in Velachery around 1200 sqft', time: new Date(ANCIENT).toISOString() },
+    { error: 'no_items' }, // a dud/private group item must be skipped, not crash the parse
+  ];
+  const stub = async ({ text }) => {
+    if (text.includes('for sale')) return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery' } };
+    return { keep: true, side: 'seeking', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery', bhk: '2', propertyType: 'flat' } };
+  };
+
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const relayBodies = [];
+  let groupCalls = 0;
+  let postScrapeCalls = 0;
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('facebook-groups-scraper')) {
+      groupCalls += 1;
+      return { ok: true, status: 200, json: async () => FEED };
+    }
+    if (u.includes('apify')) {
+      postScrapeCalls += 1;
+      return { ok: true, status: 200, json: async () => [] };
+    }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, queries: [], freshnessMonths: 3, maxPerRun: 0 };
+  // Drive runForOrg directly with sourceBuyerGroups' exact wiring (the real fetchGroupFeed served by
+  // the stubbed network, one city leg, mode:'buyer') rather than through sourceBuyerGroups itself —
+  // that wrapper offers no classify injection point, and with Gemini unconfigured in this process
+  // the real classifier fails OPEN (degraded), which never tags a lane and would test nothing.
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  const { fetchGroupFeed } = await import('../utils/sourcing.js');
+  const run = startRun(db, ORG, 'test');
+  const target = { locality: 'Chennai', city: '' };
+  const leg = run.leg({ target, queries: [G], mode: 'buyer' });
+  await runForOrg(db, 'tok', ORG, cfg, {
+    queries: [G],
+    fetchSerp: ({ query }) => fetchGroupFeed({ apifyToken: 'tok', groupUrl: query, limit: 20 }),
+    classify: stub, target, leg, mode: 'buyer',
+  });
+  await run.finish();
+
+  const f = db.store.get(`sourcingRuns/${run.id}`).funnel;
+  assert.equal(groupCalls, 1, 'one group-feed fetch for the one group');
+  assert.equal(postScrapeCalls, 0, 'the posts-scraper is NEVER called — group posts are already full');
+  assert.equal(f.enriched, 0, 'no paid enrichment recorded');
+  assert.equal(f.relayed, 1, 'the fresh buyer post relays');
+  assert.equal(f.buyerRelayed, 1);
+  assert.equal(f.supplyDropped, 1, 'the seller post is by-catch, dropped retryably');
+  // The year-old post dies at the CHEAP pre-classify age gate (3a): a group-feed item's serpAgeMs
+  // IS the authoritative post date, so the coarse skip fires before any Gemini spend. Retryable by
+  // design, and free to re-skip — the feed pull is the only cost and it was already paid.
+  assert.equal(f.serpStaleSkipped, 1, 'the year-old group post dies on its real date BEFORE classify');
+  assert.equal(f.recencyDropped, 0, 'nothing survives to the late recency gate wrongly');
+
+  assert.equal(relayBodies.length, 1);
+  const wire = relayBodies[0].listing;
+  assert.equal(wire.leadType, 'buyer');
+  assert.equal(wire.origin, 'group-feed', 'provenance rides to the platform');
+  assert.equal(wire.author, undefined, 'the poster identity NEVER reaches the webhook');
+  assert.ok(wire.snippet.includes('Need 2bhk'), 'the full post text is the snippet');
+  assert.equal(wire.sourceQuery, `group:${G}`, 'the originating group is the lead\u2019s query provenance');
+
+  const seen = db.under(`sourcingSeen/${ORG}/keys/`);
+  assert.ok(seen.some((d) => d.owner === true), 'the buyer fingerprint (from the feed author) is recorded for cross-run dedup');
+  console.log('\ngroup-feed scenario: full posts skip enrichment, author stays off the wire, real dates gate ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });

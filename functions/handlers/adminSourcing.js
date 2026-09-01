@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts } from '../utils/sourcing.js';
-import { runForOrg, sourceTopTargets, relayOne } from './runSourcingJobs.js';
+import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayOne } from './runSourcingJobs.js';
 import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -167,6 +167,14 @@ export const adminSourceBuyers = onCall(
     const orgSnap = await db.collection('organisations').doc(orgId).get();
     if (!orgSnap.exists) throw new HttpsError('not-found', 'Organisation not found.');
     const cfg = orgSnap.data().sourcing || {};
+    // source:'groups' runs the GROUP lane (fresh demand read straight from the configured Facebook
+    // groups); the default runs the demand-ranked SERP lane. Same pipeline behind both.
+    if (request.data?.source === 'groups') {
+      if (!cfg.webhookUrl || !(cfg.buyerGroups || []).length) {
+        throw new HttpsError('failed-precondition', 'This org has no sourcing.buyerGroups — add groups via adminSetSourcingLanes first.');
+      }
+      return await sourceBuyerGroups(db, process.env.APIFY_TOKEN, orgId, cfg, { trigger: 'admin-buyer-groups' });
+    }
     if (!cfg.actorId || !cfg.webhookUrl || !cfg.matrixUrl) {
       throw new HttpsError('failed-precondition', 'This org needs actorId, webhookUrl and matrixUrl — run adminConfigureSourcing first.');
     }
@@ -202,12 +210,27 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
     const n = Math.floor(Number(v));
     return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : null;
   };
-  const nums = { buyerTopN: [1, 10], buyerMaxPerRun: [0, 500], buyerFreshnessMonths: [1, 60] };
+  const nums = { buyerTopN: [1, 10], buyerMaxPerRun: [0, 500], buyerFreshnessMonths: [1, 60], buyerGroupPostsPerVisit: [5, 100] };
   for (const [k, [min, max]] of Object.entries(nums)) {
     if (request.data?.[k] == null) continue;
     const n = num(request.data[k], min, max);
     if (n == null) throw new HttpsError('invalid-argument', `${k} must be a number.`);
     patch[`sourcing.${k}`] = n;
+  }
+  // The GROUP lane's input: [{ url, city }]. Replaces the whole list (a merge API invites silent
+  // duplicates); capped so a runaway payload can't turn the cron into a scrape bill.
+  if (request.data?.buyerGroups != null) {
+    if (!Array.isArray(request.data.buyerGroups)) throw new HttpsError('invalid-argument', 'buyerGroups must be an array.');
+    const cleaned = [];
+    for (const g of request.data.buyerGroups.slice(0, 200)) {
+      const url = String((typeof g === 'string' ? g : g?.url) ?? '').trim();
+      const city = String((typeof g === 'string' ? '' : g?.city) ?? '').trim().slice(0, 60);
+      if (!/^https:\/\/(www\.)?facebook\.com\/groups\/[^/]+\/?$/i.test(url)) {
+        throw new HttpsError('invalid-argument', `Not a facebook group landing URL: ${url.slice(0, 120)}`);
+      }
+      cleaned.push({ url, city });
+    }
+    patch['sourcing.buyerGroups'] = cleaned;
   }
   if (!Object.keys(patch).length) throw new HttpsError('invalid-argument', 'Nothing to update.');
   await ref.update(patch);
@@ -221,6 +244,7 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
       buyerTopN: after.buyerTopN ?? null,
       buyerMaxPerRun: after.buyerMaxPerRun ?? null,
       buyerFreshnessMonths: after.buyerFreshnessMonths ?? null,
+      buyerGroups: (after.buyerGroups || []).length,
     },
   };
 });
