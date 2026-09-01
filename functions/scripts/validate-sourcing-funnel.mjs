@@ -650,7 +650,32 @@ async function queryShapeScenario() {
 
   assert.equal(intentModeOf('buyer'), 'buyer');
   assert.equal(intentModeOf('nonsense'), 'supply', 'an unknown mode degrades to supply, never to a broken query');
-  console.log('\nquery-shape scenario: OR-group dedup + recruitment exclusion ✓');
+
+  // The 'seeking' corroboration guard, pinned against the REAL relayed-lead corpus of 2026-09-01.
+  // The model called every one of these 'seeking'; the guard is what separates the genuine buyers
+  // from the two seller posts that got billed into the buyer queue.
+  const { looksLikeBuyerText } = await import('../utils/classifyListing.js');
+  const genuineBuyers = [
+    'CHENNAI 🔹 ECR Independent House Requirement',
+    'Required land in chennai',
+    'Chennai Location 3 Acres Land Wanted - Budget No constraint',
+    'Need a portion or flat for family near barkat market',
+    'Looking for resale land / land with individual house in Chromepet',
+    'Wanted for Rental* *Independent House only',
+    '1-2 BHK apartments for rent needed in Kotturpuram',
+    'வேளச்சேரியில் 2bhk வீடு வேண்டும்',
+    'மனை தேவை உடனடியாக',
+    '2bhk चाहिए किराए पर',
+  ];
+  const sellersTheModelCalledSeeking = [
+    "South Facing 23' Road DTCP & RERA Approved Plot",
+    'Have 2–10 Acres of Land in Kelambakkam and Thiruporur',
+    '📍 Ambattur Pudur 👀 What`s happening in your area?',
+    'Premium villa 3.5cr — dream home with pool and garden',
+  ];
+  for (const t of genuineBuyers) assert.ok(looksLikeBuyerText(t), `a real buyer post must pass: ${t}`);
+  for (const t of sellersTheModelCalledSeeking) assert.ok(!looksLikeBuyerText(t), `a seller post must be demoted: ${t}`);
+  console.log('\nquery-shape scenario: OR-group dedup + recruitment exclusion + seeking corroboration ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });

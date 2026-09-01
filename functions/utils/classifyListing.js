@@ -31,6 +31,41 @@ export function hasPropertySignal(text) {
   return KEYWORDS.test(t) || t.includes('₹') || PHONE.test(t);
 }
 
+// ── A 'seeking' verdict needs the text to actually ASK for something (2026-09-01) ───────────────
+// The buyer lane's first live day relayed "South Facing 23' Road DTCP & RERA Approved Plot" and
+// "Have 2–10 Acres of Land in Kelambakkam" as buyer leads — 2 of its 4 relays were sellers. The
+// failure is structural: a demand query drags in posts stuffed with "wanted/required", and a seller
+// ADVERTISING TO buyers ("Wanted: buyers for this plot", a broker listing stock) reads as 'seeking'
+// to a model judging a truncated snippet. The prompt below now spells the case out, but a prompt is
+// a request, not a guarantee (cf. the platform's leadIntent.ts guard) — so the verdict is also
+// corroborated deterministically: a post tagged 'seeking' whose text contains NO buyer phrasing in
+// any language we serve is demoted to 'offering'. Checked against every buyer lead ever relayed:
+// all the genuine ones ("…Requirement", "Land Wanted", "Need a portion or flat", "Looking for
+// resale land", "தேவை…") pass; both false positives fail. Demotion fails SAFE — a demoted post
+// becomes supply, which relays it as a listing instead of billing it into the buyer queue.
+const BUYER_PHRASES = new RegExp(
+  [
+    // English: wanted / needed / need / require(d) / requirement / looking for / searching for /
+    // "in need of". Deliberately NOT bare "want" (too common in seller copy: "want a dream home?").
+    String.raw`\bwanted\b`, String.raw`\bneed(?:ed)?\b`, String.raw`\brequire[ds]?\b`,
+    String.raw`\brequirement`, String.raw`\blooking\s+for\b`, String.raw`\bsearching\s+for\b`,
+    String.raw`\bin\s+need\s+of\b`, String.raw`\bany(?:one|body)\s+(?:selling|renting|have|has)\b`,
+    // Tamil: தேவை (needed), வேண்டும் (want), தேடுகிறேன்/தேடுகிறோம் (I/we are searching)
+    'தேவை', 'வேண்டும்', 'தேடுகி',
+    // Hindi: चाहिए (needed), तलाश (search), ढूंढ (looking)
+    'चाहिए', 'तलाश', 'ढूंढ',
+    // Malayalam / Telugu / Kannada "needed"
+    'ആവശ്യമുണ്ട്', 'కావాలి', 'ಬೇಕು',
+  ].join('|'),
+  'i',
+);
+
+/** Does the text contain the phrasing of someone ASKING for a property? Exported so the funnel
+ *  validator can pin it against the real relayed-lead corpus. */
+export function looksLikeBuyerText(text) {
+  return BUYER_PHRASES.test(String(text || ''));
+}
+
 // The confidence floor a verdict must clear to count as CONFIDENT — shared with the caller so the
 // off-target salvage lane applies the exact same bar as `keep` (a forked threshold would let a lead
 // be "not confident enough to relay on-target" yet "confident enough to salvage", which is absurd).
@@ -99,7 +134,11 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `property or someone looking for one; NOT a shop ad, service promo, or news), side ('offering' ` +
     `when the poster HAS a property to sell/rent — owner, builder or agent; 'seeking' when the poster ` +
     `is LOOKING FOR a property to buy/rent). Seller ads routinely open with rhetorical hooks like ` +
-    `"Looking for a spacious home?" before pitching a property for sale — those are 'offering'. ` +
+    `"Looking for a spacious home?" before pitching a property for sale — those are 'offering'. So ` +
+    `is anyone ADVERTISING TO buyers: "Wanted: buyers/clients for…", a broker listing the stock they ` +
+    `HAVE ("Have 2 acres in…"), or a post describing a specific property's features, approvals or ` +
+    `price — whoever describes a property they can hand over is 'offering', whatever demand words ` +
+    `appear around it. ` +
     `localityMatches (is the property, or the place the seeker wants, in or immediately around the ` +
     `TARGET locality?), localityNamed (does the TEXT itself actually name a place for the property? ` +
     `FALSE when the title is cut off before any place name — e.g. it ends "near ..." — or when no ` +
@@ -127,7 +166,9 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
   return {
     keep: isListing && localityMatches && confidence >= minConfidence,
     isListing,
-    side: j.side === 'seeking' ? 'seeking' : 'offering',
+    // 'seeking' only when the text corroborates it (see BUYER_PHRASES above) — the model's word
+    // alone has already billed seller posts into the buyer queue.
+    side: j.side === 'seeking' && looksLikeBuyerText(body) ? 'seeking' : 'offering',
     localityMatches,
     // Only an EXPLICIT false means "the text names no place" — absent/garbled degrades to true, so a
     // reject stays a reject (the caller's locality-unknown detour only fires on the explicit signal).
