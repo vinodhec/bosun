@@ -228,7 +228,9 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
       if (!/^https:\/\/(www\.)?facebook\.com\/groups\/[^/]+\/?$/i.test(url)) {
         throw new HttpsError('invalid-argument', `Not a facebook group landing URL: ${url.slice(0, 120)}`);
       }
-      cleaned.push({ url, city });
+      // Optional per-group pull size (5-100) — the cost throttle for one group; omitted = org default.
+      const posts = g?.posts == null ? null : Math.max(5, Math.min(100, Math.floor(Number(g.posts)) || 0));
+      cleaned.push({ url, city, ...(posts ? { posts } : {}) });
     }
     patch['sourcing.buyerGroups'] = cleaned;
   }

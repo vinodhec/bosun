@@ -247,7 +247,13 @@ export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 
     .map((g) => (typeof g === 'string' ? { url: g, city: '' } : g))
     .filter((g) => g && typeof g.url === 'string' && g.url.includes('facebook.com/groups/'));
   if (!groups.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no buyerGroups configured' };
-  const limit = Math.max(5, Math.floor(Number(postsPerVisit) || Number(cfg.buyerGroupPostsPerVisit) || GROUP_POSTS_PER_VISIT));
+  // Per-visit pull size — the lane's whole cost knob (the actor bills per result). Resolution:
+  // the group's own `posts` (a fast Chennai feed deserves 20, a quiet district group 10), else the
+  // caller's override, else the org default. The per-group number is how the operator throttles a
+  // city without dropping it — cutting a group entirely should wait for a week of yield data, but
+  // pulling half as much from a feed that produced nothing yesterday risks almost nothing.
+  const defaultLimit = Math.max(5, Math.floor(Number(postsPerVisit) || Number(cfg.buyerGroupPostsPerVisit) || GROUP_POSTS_PER_VISIT));
+  const limitByUrl = new Map(groups.map((g) => [g.url, Math.max(5, Math.floor(Number(g.posts) || defaultLimit))]));
 
   const run = startRun(db, orgId, trigger);
   try {
@@ -275,7 +281,7 @@ export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 
       const leg = run.leg({ target, queries: urls, mode: 'buyer' });
       const r = await runForOrg(db, apifyToken, orgId, cfg, {
         queries: urls,
-        fetchSerp: ({ query }) => fetchGroupFeed({ apifyToken, groupUrl: query, limit }),
+        fetchSerp: ({ query }) => fetchGroupFeed({ apifyToken, groupUrl: query, limit: limitByUrl.get(query) || defaultLimit }),
         target,
         leg,
         mode: 'buyer',
