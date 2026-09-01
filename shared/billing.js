@@ -502,15 +502,29 @@ export function randomSourcedUnitPrice(rng = Math.random) {
   return Math.round(v * 100) / 100;
 }
 
+// A BUYER lead's flat unit price — set by the owner on 2026-09-01, when the group lane made buyer
+// leads a real product. Priced apart from the seller band on purpose: a seller lead is one of ~360
+// a day and ₹2.64 covers it, but a buyer lead is scarce demand (~10/day) whose lane costs Bosun its
+// own Gemini classify spend — at the seller price the lane ran at break-even for Bosun. FLAT, no
+// jitter: the seller band's jitter exists to read as variable cost across hundreds of rows; a
+// deliberate premium price should look deliberate.
+export const SOURCED_BUYER_UNIT_INR = 5.2;
+
 /**
- * Charge (INR) for a batch of `uniqueCount` successfully-relayed listings: the sum of N independent
- * random draws, rounded UP to whole rupees (the wallet is whole-rupee; rounding up favours the
- * business). Returns `{ amountInr, unitPrices }` so the ledger can record the per-listing detail
- * (keeps the "variable cost" auditable, not just the total).
+ * Charge (INR) for a batch of successfully-relayed listings: `buyerCount` of them at the flat
+ * SOURCED_BUYER_UNIT_INR, the rest as independent random draws from the seller band; summed, then
+ * rounded UP ONCE to whole rupees (the wallet is whole-rupee; rounding up favours the business).
+ * Returns `{ amountInr, unitPrices }` so the ledger can record the per-listing detail (keeps the
+ * "variable cost" auditable, not just the total) — buyer units listed first, matching nothing but
+ * the count (the ledger stores no per-lead identity at this level).
  */
-export function priceForSourcedBatch(uniqueCount, { rng = Math.random } = {}) {
+export function priceForSourcedBatch(uniqueCount, { rng = Math.random, buyerCount = 0 } = {}) {
   const n = Math.max(0, Math.floor(Number(uniqueCount) || 0));
-  const unitPrices = Array.from({ length: n }, () => randomSourcedUnitPrice(rng));
+  const b = Math.min(n, Math.max(0, Math.floor(Number(buyerCount) || 0)));
+  const unitPrices = [
+    ...Array.from({ length: b }, () => SOURCED_BUYER_UNIT_INR),
+    ...Array.from({ length: n - b }, () => randomSourcedUnitPrice(rng)),
+  ];
   const amountInr = Math.ceil(unitPrices.reduce((a, p) => a + p, 0));
   return { amountInr, unitPrices };
 }

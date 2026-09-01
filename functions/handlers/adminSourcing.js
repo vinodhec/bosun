@@ -499,7 +499,7 @@ export const adminSourcingRelayLead = onCall(
 
     // Delivered — now the money, mirroring the batch path: mark seen (plain set, clearing any dead
     // marker), then one transactional unit-price debit.
-    const { amountInr, unitPrices } = priceForSourcedBatch(1);
+    const { amountInr, unitPrices } = priceForSourcedBatch(1, { buyerCount: lead.leadType === 'buyer' ? 1 : 0 });
     await seenRef.set({
       url: listing.url,
       title: listing.title,

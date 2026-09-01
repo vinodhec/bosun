@@ -302,7 +302,10 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   if there is one, else the POSTER (`extractAuthor`, best-effort off the scraper item), fingerprinted
   against what they want. Null on either path means "relay it", never a silent drop.
 - **Relay & billing** — each lead is HMAC-signed and POSTed to the org webhook; only a 2xx marks
-  it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run).
+  it seen and debits the org wallet (charge-on-delivery; non-2xx retries next run). Seller/supply
+  leads draw the jittered band (₹2.54–₹2.74); BUYER leads bill the flat `SOURCED_BUYER_UNIT_INR`
+  (₹5.20, owner-set 2026-09-01) — `priceForSourcedBatch(count, {buyerCount})`, one debit per batch,
+  the split recorded on the transaction (`buyerCount`) and in `unitPrices`.
 - **Operator override** — `adminSourcingRelayLead` relays ONE recorded (dropped) lead by hand from
   the run-detail panel ("Relay & bill"): enrich → same HMAC webhook → mark seen → debit the same
   one-lead unit price. The gates are advice, the human is the backstop — the money rules never bend

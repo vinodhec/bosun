@@ -955,6 +955,7 @@ export async function runForOrg(
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;
+  let buyerRelayed = 0;
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
@@ -980,7 +981,10 @@ export async function runForOrg(
       }
       if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
-      if (listing.leadType === 'buyer') leg.bump('buyerRelayed');
+      if (listing.leadType === 'buyer') {
+        buyerRelayed += 1; // priced at the flat buyer unit, not the seller band — see billing step 5
+        leg.bump('buyerRelayed');
+      }
       else if (listing.leadType === 'off-target') leg.bump('offTargetRelayed');
       leg.lead({ key, listing, stage: 'relayed' });
     } else {
@@ -1010,7 +1014,7 @@ export async function runForOrg(
   }
 
   // 5) One transactional debit for the whole batch (org may go negative — operator reconciles).
-  const { amountInr, unitPrices } = priceForSourcedBatch(relayed, rng ? { rng } : {});
+  const { amountInr, unitPrices } = priceForSourcedBatch(relayed, { ...(rng ? { rng } : {}), buyerCount: buyerRelayed });
   if (amountInr > 0) {
     await db.runTransaction(async (tx) => {
       const orgRef = db.collection('organisations').doc(orgId);
@@ -1024,6 +1028,7 @@ export async function runForOrg(
         kind: 'sourcing',
         amount: amountInr,
         count: relayed,
+        buyerCount: buyerRelayed, // of `count`, how many billed at the flat buyer unit price
         unitPrices,
         createdAt: FieldValue.serverTimestamp(),
       });

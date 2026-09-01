@@ -376,9 +376,16 @@ async function classifyLanesScenario() {
     assert.equal(byUrl.get(P(203)).extracted.locality, 'Tambaram', 'off-target lead carries its REAL locality');
     const seen = db.under(`sourcingSeen/${ORG}/keys/`);
     assert.equal(seen.find((d) => d.url === P(202))?.leadType, 'buyer', 'seen doc records the lane');
-    // Billing treats the lanes like any relayed lead (v1 — one unit price for all three).
+    // Mixed batch: the buyer lead bills at the flat buyer unit, the listing and the off-target
+    // salvage at the seller band — one debit, per-lane units visible in unitPrices.
     const txns = db.under('transactions/');
     assert.equal(txns[0].count, 3, 'all three relayed leads billed');
+    assert.equal(txns[0].buyerCount, 1, 'exactly the buyer lead billed at the buyer unit');
+    const { SOURCED_BUYER_UNIT_INR: BUYER_UNIT, SOURCED_UNIT_MIN_INR, SOURCED_UNIT_MAX_INR } = await import('../utils/billing.js');
+    assert.equal(txns[0].unitPrices.filter((u) => u === BUYER_UNIT).length, 1, 'one buyer unit in the ledger detail');
+    for (const u of txns[0].unitPrices.filter((x) => x !== BUYER_UNIT)) {
+      assert.ok(u >= SOURCED_UNIT_MIN_INR && u <= SOURCED_UNIT_MAX_INR, 'the other two stay in the seller band');
+    }
   }
 
   // ── maxPerRun is the SUPPLY lane's budget, not a shared one. Supply and off-target compete for it
@@ -555,8 +562,15 @@ async function buyerLaneScenario() {
   assert.equal(leads.find((l) => l.url === P(503))?.dropReason, 'supply-post', 'the by-catch names its own reason, not a generic off-target');
 
   const txns = db.under('transactions/');
-  assert.equal(txns[0].count, 2, 'the buyer lane bills like any other relayed lead');
-  console.log('\nbuyer-lane scenario: demand relays tagged, seller by-catch stays retryable, salvage stays supply-only ✓');
+  assert.equal(txns[0].count, 2, 'both relayed buyer leads billed');
+  // Buyer leads bill at the FLAT owner-set unit (₹5.20, 2026-09-01), not the seller band — the one
+  // batch debit must be ceil(2 × 5.2) = 11 with both unit prices recorded.
+  const { SOURCED_BUYER_UNIT_INR } = await import('../utils/billing.js');
+  assert.equal(SOURCED_BUYER_UNIT_INR, 5.2, 'the buyer unit price is the owner-set ₹5.20');
+  assert.equal(txns[0].buyerCount, 2, 'the ledger records how many billed at the buyer unit');
+  assert.equal(txns[0].amount, Math.ceil(2 * SOURCED_BUYER_UNIT_INR), 'buyer batch = ceil(n × buyer unit)');
+  assert.deepEqual(txns[0].unitPrices, [SOURCED_BUYER_UNIT_INR, SOURCED_BUYER_UNIT_INR]);
+  console.log('\nbuyer-lane scenario: demand relays tagged, seller by-catch stays retryable, salvage stays supply-only, billed at the buyer unit ✓');
 }
 
 /**
