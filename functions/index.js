@@ -112,6 +112,12 @@ export { dmCompose } from './handlers/dmCompose.js';
 // replay daily_plan events — see SERVICE_DEFS in the handler.
 export { usageMeter } from './handlers/usageMeter.js';
 
+// HTTP (customer→Bosun, same HMAC): "source THIS place now". The platform's buyer queue names a
+// locality + intent and one targeted supply leg runs immediately — same pipeline, audit trail and
+// charge-on-delivery as a cron leg; leads reach the org through the ordinary webhook while the
+// platform polls its own queue. 90s per-org cooldown; deliberately not gated on sourcing.enabled.
+export { sourceOnDemand } from './handlers/sourceOnDemand.js';
+
 // Nightly admin work-queue planner (daily_plan service line): 01:30 IST cron pulls the platform's
 // work-state, allocates per-admin task plans (utils/planTasks.js — the ONLY copy of the rules),
 // composes Flash briefings, POSTs the plan back, settles ₹/plan-day. sourcingPlanNow is the
