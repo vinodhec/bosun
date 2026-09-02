@@ -581,7 +581,9 @@ export default function SourcingRuns({ orgs }) {
               {running === 'top' ? 'Sourcing…' : 'Source top target now'}
             </button>
             <button type="button" className={btnGhost} onClick={() => fire('buyers')} disabled={!!running || !orgId}>
-              {running === 'buyers' ? 'Sourcing buyers…' : 'Source buyers now'}
+              {/* The SERP demand leg — retired from the cron 2026-09-03 (≈4x the group lane's fetch
+                  spend per lead). Kept as a hand-fired probe for re-comparing the two sources. */}
+              {running === 'buyers' ? 'Sourcing buyers…' : 'Source buyers (SERP, retired)'}
             </button>
             <button type="button" className={btnGhost} onClick={() => fire('buyerGroups')} disabled={!!running || !orgId}>
               {running === 'buyerGroups' ? 'Scanning groups…' : 'Scan buyer groups now'}

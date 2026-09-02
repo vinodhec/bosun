@@ -271,8 +271,14 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   skip the localities the buyer run just visited. Why it exists: over the 60 runs to 2026-09-01 the
   by-product harvest relayed 9 buyers out of 420 leads, and 90 of the 99 buyer posts it found died on
   recency (59 posted >12 months ago) — a supply query surfaces old high-engagement "looking for a
-  2BHK?" threads, not this week's requirement. Fired by hand from the Admin panel ("Source buyers
-  now" → `adminSourceBuyers`); lanes are toggled with `adminSetSourcingLanes`.
+  2BHK?" threads, not this week's requirement. Lanes are toggled with `adminSetSourcingLanes`.
+  **The SERP leg of this cron is RETIRED (2026-09-03)** — it runs only for an org that opts back in
+  with `sourcing.buyerSerpLane`. Per relayed buyer lead over the 10 days to 2026-09-03 it cost 135
+  SERP results + 4.8 paid FB post scrapes + 32 classify calls, against the GROUP lane's 35 feed items,
+  ZERO paid scrapes and 25 classify calls, for the same ~1 lead per leg — ~4× the fetch spend, and the
+  only leg still paying the per-post enrichment fee, to buy the staler version of the same lead. The
+  hand-fired probe stays ("Source buyers (SERP, retired)" → `adminSourceBuyers` with no `source`) so
+  the two sources can be re-compared without paying for the comparison every two hours.
 - **The GROUP lane (`sourceBuyerGroups`) — the buyer lane's FRESH source.** The SERP buyer lane above
   topped out at year-old posts, because Google's index of facebook group feeds is 300–700 days stale;
   reading the feeds directly (`utils/sourcing.js#fetchGroupFeed`, actor
@@ -285,7 +291,9 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   the paid per-post enrichment and lifts `author` off the listing (dedup fuel, never forwarded).
   First live pass (2026-09-01, 52 groups / 10 TN cities): 21 buyer leads relayed, 0–19 days old,
   ~95% genuine — versus 9 in 28h from the by-product and 2/run from the SERP buyer lane. Manual
-  trigger: "Scan buyer groups now" (`adminSourceBuyers {source:'groups'}`).
+  trigger: "Scan buyer groups now" (`adminSourceBuyers {source:'groups'}`). **Since 2026-09-03 this
+  is the buyer cron's only scheduled leg**, so the demand lane's whole cost knob is
+  `buyerGroupPostsPerVisit` / the per-group `posts` override.
 - **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
   With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
   `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with

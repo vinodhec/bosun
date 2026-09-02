@@ -200,9 +200,11 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
   if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
 
   const patch = {};
-  // Booleans: the three lanes. `buyerLane` is the dedicated demand cron; `buyerLeads` /
+  // Booleans: the lanes. `buyerLane` is the dedicated demand cron (group lane); `buyerSerpLane`
+  // re-enables that cron's retired demand-ranked SERP leg (off by default since 2026-09-03 — it
+  // bought the same lead at ~4x the fetch spend, see runBuyerSourcingJobs); `buyerLeads` /
   // `offTargetLeads` are the by-product harvests inside a supply run.
-  for (const k of ['buyerLane', 'buyerLeads', 'offTargetLeads']) {
+  for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads']) {
     if (request.data?.[k] != null) patch[`sourcing.${k}`] = request.data[k] === true;
   }
   // Numbers. 0 is MEANINGFUL for buyerMaxPerRun (uncapped) so it must survive the parse.
@@ -241,6 +243,7 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
     ok: true,
     lanes: {
       buyerLane: after.buyerLane === true,
+      buyerSerpLane: after.buyerSerpLane === true,
       buyerLeads: after.buyerLeads === true,
       offTargetLeads: after.offTargetLeads === true,
       buyerTopN: after.buyerTopN ?? null,

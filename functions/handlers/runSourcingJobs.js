@@ -184,6 +184,11 @@ function takeByLane(list, { supplyCap = 0, buyerCap = 0 } = {}) {
 // Opt-in per org via `sourcing.buyerLane`, and independent of `sourcing.buyerLeads` (which governs
 // only the by-product harvest inside a supply run). Runs on the half-hour BETWEEN the supply ticks
 // so the two never contend for the Apify account or the Vertex classify quota.
+//
+// SINCE 2026-09-03 the only leg this cron runs by default is the GROUP lane, on two ticks a day —
+// the SERP leg below is now opt-in (`sourcing.buyerSerpLane`, see the comment there). The 2-hourly
+// schedule is kept rather than trimmed to 08/20, so re-enabling that leg restores its own cadence;
+// the other ten ticks are a per-org Firestore read and an immediate return.
 export const runBuyerSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
@@ -213,7 +218,16 @@ export const runBuyerSourcingJobs = onSchedule(
         if (istHour === 8 || istHour === 20) {
           await sourceBuyerGroups(db, apifyToken, orgDoc.id, cfg, { trigger: 'cron-buyer-groups' });
         }
-        if (cfg.matrixUrl) {
+        // The demand-ranked SERP leg is RETIRED from the cron (2026-09-03) and now runs only for an
+        // org that opts back in with `sourcing.buyerSerpLane`. It is not broken — it is simply the
+        // expensive way to buy the same lead. Measured over the 10 days to 2026-09-03, per relayed
+        // buyer lead: 135 SERP results + 4.8 paid FB post scrapes + 32 classify calls, versus the
+        // group lane's 35 feed items, ZERO paid scrapes and 25 classify calls — ~4x the fetch spend
+        // and the only leg still paying the per-post enrichment fee, for the same ~1 lead per leg
+        // (34 vs 39 relays over that window). It is also the leg whose staleness the group lane was
+        // built to fix. The hand-fired probe (adminSourceBuyers with no `source`) is deliberately
+        // left intact, so the comparison can be re-run on demand without paying for it every 2h.
+        if (cfg.buyerSerpLane === true && cfg.matrixUrl) {
           await sourceTopTargets(db, apifyToken, orgDoc.id, cfg, {
             topN: Math.max(1, Math.floor(Number(cfg.buyerTopN) || BUYER_TOPN)),
             // ALWAYS dry: stamping cadence here would make the supply cron skip the localities the
