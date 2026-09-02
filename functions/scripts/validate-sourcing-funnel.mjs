@@ -563,10 +563,12 @@ async function buyerLaneScenario() {
 
   const txns = db.under('transactions/');
   assert.equal(txns[0].count, 2, 'both relayed buyer leads billed');
-  // Buyer leads bill at the FLAT owner-set unit (₹5.20, 2026-09-01), not the seller band — the one
-  // batch debit must be ceil(2 × 5.2) = 11 with both unit prices recorded.
+  // Buyer leads bill at the FLAT owner-set unit (₹12.40 since 2026-09-03, priced off the group
+  // lane's measured COGS), not the seller band — the one batch debit must be ceil(2 × 12.4) = 25
+  // with both unit prices recorded. The literal is pinned deliberately: this constant IS the buyer
+  // lane's entire pricing model, so it should never move without a deliberate edit here too.
   const { SOURCED_BUYER_UNIT_INR } = await import('../utils/billing.js');
-  assert.equal(SOURCED_BUYER_UNIT_INR, 5.2, 'the buyer unit price is the owner-set ₹5.20');
+  assert.equal(SOURCED_BUYER_UNIT_INR, 12.4, 'the buyer unit price is the owner-set ₹12.40');
   assert.equal(txns[0].buyerCount, 2, 'the ledger records how many billed at the buyer unit');
   assert.equal(txns[0].amount, Math.ceil(2 * SOURCED_BUYER_UNIT_INR), 'buyer batch = ceil(n × buyer unit)');
   assert.deepEqual(txns[0].unitPrices, [SOURCED_BUYER_UNIT_INR, SOURCED_BUYER_UNIT_INR]);

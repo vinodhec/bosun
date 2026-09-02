@@ -508,7 +508,17 @@ export function randomSourcedUnitPrice(rng = Math.random) {
 // own Gemini classify spend — at the seller price the lane ran at break-even for Bosun. FLAT, no
 // jitter: the seller band's jitter exists to read as variable cost across hundreds of rows; a
 // deliberate premium price should look deliberate.
-export const SOURCED_BUYER_UNIT_INR = 5.2;
+//
+// RAISED to ₹12.40 on 2026-09-03, once the group lane had run long enough to price. Its measured
+// COGS per relayed buyer lead — the ONLY lane the demand cron now runs — is ₹10.53 over every group
+// run to date and ₹14.92 across the scheduled ticks alone: 35-50 feed posts at $2.60/1,000
+// (apify~facebook-groups-scraper, billed per post, ~84% of the total) plus ~25-34 Gemini classify
+// calls at ~7 paise, converted at the live config/fxRate (₹95/USD). ₹5.20 was set against the
+// by-product harvest, which rode a supply run that had already paid for the fetch; a lane that
+// reads group feeds on purpose pays for every post it looks at, so the old price billed roughly
+// half of cost. Unlike the fix pipeline this lane has no cost-plus machinery — the unit price IS
+// the whole pricing model — so a rate change is this constant, and only this constant.
+export const SOURCED_BUYER_UNIT_INR = 12.4;
 
 /**
  * Charge (INR) for a batch of successfully-relayed listings: `buyerCount` of them at the flat
