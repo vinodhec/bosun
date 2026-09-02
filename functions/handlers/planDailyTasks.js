@@ -2,8 +2,8 @@
  * The nightly admin work-queue planner — the "plan and split tomorrow's work" service line.
  *
  * Two entry points over ONE shared flow (`runPlanForOrg`):
- *   - `planDailyTasks`   — 01:30 IST nightly cron over every org with sourcing.planner.enabled.
- *   - `sourcingPlanNow`  — HTTPS on-demand trigger the PLATFORM calls at 07:00 IST if no plan doc
+ *   - `planDailyTasks`   — 08:30 IST cron over every org with sourcing.planner.enabled.
+ *   - `sourcingPlanNow`  — HTTPS on-demand trigger the PLATFORM calls at 09:15 IST if no plan doc
  *                          landed (our outage, failed POST). Same HMAC handshake as usageMeter.
  *
  * Flow per org: pull the platform's work-state snapshot (candidates + roster) → deterministic
@@ -444,11 +444,23 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
   }
 }
 
-// Nightly at 01:30 IST — inside the plan day, hours before admins start.
+// 08:30 IST — inside the plan day, half an hour before calling starts.
+//
+// Moved from 01:30 on 2026-09-03. The plan is only as good as the hour its snapshot is taken: the
+// platform's callable pool held ~287 untouched sellers at 01:30 that morning and 377 by 03:45, so
+// 106 leads arrived AFTER the plan for the day they belonged to had been drawn, and the roster
+// finished 107 calls under quota. Sourcing's arrivals cluster 00:00-04:00 and then produce almost
+// nothing until the workday (12 leads across 04:00-08:59 in the whole week to 2026-09-03), so 08:30
+// captures the entire overnight yield with no further waiting.
+//
+// The platform's safety trigger moved with it, to 09:15 (web/vercel.json). It has to stay LATER
+// than this cron: firing first it would find no plan, call sourcingPlanNow, and land the day's plan
+// at its own hour instead — which is not a billing problem (the settle below is idempotent per
+// dateKey) but would silently pin the plan back to the fallback's clock.
 export const planDailyTasks = onSchedule(
   {
     region: REGION,
-    schedule: '30 1 * * *',
+    schedule: '30 8 * * *',
     timeZone: 'Asia/Kolkata',
     timeoutSeconds: 540,
     memory: '512MiB',
@@ -466,7 +478,7 @@ export const planDailyTasks = onSchedule(
 );
 
 /**
- * POST /sourcingPlanNow — the platform's 07:00 IST safety trigger ("no plan landed — plan now").
+ * POST /sourcingPlanNow — the platform's 09:15 IST safety trigger ("no plan landed — plan now").
  * Body { orgId, dateKey } signed `${timestamp}.${rawBody}` with the org's relay secret. dateKey must
  * be today (IST) — this endpoint regenerates a missed morning, never a past day.
  */

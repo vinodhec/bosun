@@ -118,10 +118,11 @@ export { usageMeter } from './handlers/usageMeter.js';
 // platform polls its own queue. 90s per-org cooldown; deliberately not gated on sourcing.enabled.
 export { sourceOnDemand } from './handlers/sourceOnDemand.js';
 
-// Nightly admin work-queue planner (daily_plan service line): 01:30 IST cron pulls the platform's
+// Admin work-queue planner (daily_plan service line): 08:30 IST cron pulls the platform's
 // work-state, allocates per-admin task plans (utils/planTasks.js — the ONLY copy of the rules),
 // composes Flash briefings, POSTs the plan back, settles ₹/plan-day. sourcingPlanNow is the
-// platform's 07:00 IST on-demand safety trigger (same HMAC as usageMeter).
+// platform's 09:15 IST on-demand safety trigger (same HMAC as usageMeter). Both hours moved from
+// 01:30/07:00 on 2026-09-03 — see the schedule comment in handlers/planDailyTasks.js.
 export { planDailyTasks, sourcingPlanNow } from './handlers/planDailyTasks.js';
 
 // EOD WhatsApp team summary — 18:30 IST, asks the platform to aggregate + send the day's
