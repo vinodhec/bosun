@@ -509,15 +509,20 @@ export function randomSourcedUnitPrice(rng = Math.random) {
 // jitter: the seller band's jitter exists to read as variable cost across hundreds of rows; a
 // deliberate premium price should look deliberate.
 //
-// RAISED to ₹12.40 on 2026-09-03, once the group lane had run long enough to price. Its measured
-// COGS per relayed buyer lead — the ONLY lane the demand cron now runs — is ₹10.53 over every group
-// run to date and ₹14.92 across the scheduled ticks alone: 35-50 feed posts at $2.60/1,000
-// (apify~facebook-groups-scraper, billed per post, ~84% of the total) plus ~25-34 Gemini classify
-// calls at ~7 paise, converted at the live config/fxRate (₹95/USD). ₹5.20 was set against the
-// by-product harvest, which rode a supply run that had already paid for the fetch; a lane that
-// reads group feeds on purpose pays for every post it looks at, so the old price billed roughly
-// half of cost. Unlike the fix pipeline this lane has no cost-plus machinery — the unit price IS
-// the whole pricing model — so a rate change is this constant, and only this constant.
+// RAISED to ₹12.40 on 2026-09-03. This is a SCARCITY price, deliberately NOT cost-plus, and the
+// distinction matters because the obvious reading of the number is wrong. Bosun's own COGS on a
+// buyer lead is the Gemini classify and nothing else — ~25-34 calls at ~7 paise = ₹1.82-2.42 — so
+// ₹12.40 is ~5-7x cost against the house 3x rule (PRICING_BRACKETS). What justifies it is not cost
+// but supply: the demand cron relays ~12 buyer leads a day against ~360 seller listings, and one
+// owner actively looking to buy is worth many times another row of inventory to the org that gets
+// it. Priced by the owner, on that judgement.
+//
+// The lane's Apify spend (apify~facebook-groups-scraper at $2.60/1,000 posts, ~₹150/day, ~35-50
+// posts per relayed lead) is the CUSTOMER ORG's cost, not Bosun's — the Apify account is theirs.
+// It sets the org's own all-in economics (~₹21-25 per buyer lead once this charge is added) but it
+// is NOT Bosun COGS and must never be folded into this constant. Unlike the fix pipeline this lane
+// has no cost-plus machinery — the unit price IS the whole pricing model — so a rate change is
+// this constant, and only this constant.
 export const SOURCED_BUYER_UNIT_INR = 12.4;
 
 /**

@@ -314,11 +314,13 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   leads draw the jittered band (₹2.54–₹2.74); BUYER leads bill the flat `SOURCED_BUYER_UNIT_INR`
   (**₹12.40 since 2026-09-03**, owner-set; was ₹5.20 from 2026-09-01) —
   `priceForSourcedBatch(count, {buyerCount})`, one debit per batch, the split recorded on the
-  transaction (`buyerCount`) and in `unitPrices`. The buyer unit is a HAND-SET price, not cost-plus:
-  it was raised because the group lane — now the demand cron's only leg — costs a measured ₹10.53
-  per relayed lead over every group run to date (₹14.92 across the scheduled ticks alone), ~84% of
-  it the group actor's $2.60/1,000 posts. Re-price by editing that one constant; nothing else in the
-  lane reads a rate.
+  transaction (`buyerCount`) and in `unitPrices`. The buyer unit is a HAND-SET **scarcity** price,
+  NOT cost-plus: Bosun's own COGS on a buyer lead is the Gemini classify alone (₹1.82–₹2.42), so
+  ₹12.40 is ~5–7× cost against the house 3× rule — what it is priced on is ~12 buyer leads/day
+  against ~360 seller listings. **Apify is the customer org's cost, not Bosun's** — the group actor's
+  $2.60/1,000 posts (~₹150/day, ~35–50 posts per relayed lead) sets the ORG's all-in economics
+  (~₹21–25 per buyer lead with this charge on top) and must never be folded into the unit price.
+  Re-price by editing that one constant; nothing else in the lane reads a rate.
 - **Operator override** — `adminSourcingRelayLead` relays ONE recorded (dropped) lead by hand from
   the run-detail panel ("Relay & bill"): enrich → same HMAC webhook → mark seen → debit the same
   one-lead unit price. The gates are advice, the human is the backstop — the money rules never bend
