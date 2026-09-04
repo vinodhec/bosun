@@ -14,6 +14,7 @@ import { chargeApprovedFix, logBillingEvent } from '../utils/finalize.js';
 import { sessionView } from '../utils/sessionView.js';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { assertCanStartWork } from '../utils/walletGate.js';
 
 // Customer-facing view of their fix sessions. Returns ONLY safe fields — never the PR
 // link, model, raw API cost, or margin. Internals stay backend-only.
@@ -157,6 +158,7 @@ export const reviseSession = onCall(
     const orgSnap = await db.collection('organisations').doc(task.orgId).get();
     const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();
     const orgData = orgSnap.exists ? orgSnap.data() : null;
+    assertCanStartWork(orgData); // wallet gate — a revision is another paid round
     const secretData = secretSnap.exists ? secretSnap.data() : {};
     const figmaDesign = await designContextFromText({
       org: orgData,
@@ -281,6 +283,7 @@ export const confirmQuote = onCall(
     if (task.status !== 'quoted') throw new HttpsError('failed-precondition', 'NOT_QUOTED');
 
     const orgSnap = await db.collection('organisations').doc(task.orgId).get();
+    assertCanStartWork(orgSnap.exists ? orgSnap.data() : null); // wallet gate — see utils/walletGate.js
     const gh = orgSnap.data()?.github;
     if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
     const secretSnap = await db.collection('orgSecrets').doc(task.orgId).get();

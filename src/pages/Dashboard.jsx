@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth.js';
 import { useOrgs } from '../hooks/useOrgs.js';
 import { createTask, listMySessions, reviseSession, approveFix, confirmQuote, declineQuote, customerDeployTesting, customerDeployProd, customerPreviewTesting, customerRevertTesting, planFeature, approveFeaturePlan, reviseFeaturePlan, editFeaturePlan, addFeatureChange, listMyFeatures, retryFeatureStep, planDesign, listMyDesigns, startComparison, listMyComparisons, startChat, listMyChats, setActiveOrg, shareSession, unshareSession, shareFeature, unshareFeature } from '../firebase/functions.js';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import Navbar from '../components/Navbar.jsx';
 import ShareControl from '../components/ShareControl.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
@@ -16,7 +16,7 @@ import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
 import { formatINR } from '@shared/currency.js';
-import { FEATURE_BUILD_CAP_INR } from '@shared/billing.js';
+import { FEATURE_BUILD_CAP_INR, blocksNewWork, NEGATIVE_BALANCE_MESSAGE } from '@shared/billing.js';
 import { clarityStars } from '@shared/gamification.js';
 import { MAX_IMAGES } from '../utils/images.js';
 
@@ -49,6 +49,7 @@ function friendlyError(e) {
   const m = String(e?.message || '');
   if (m.includes('NO_REPO_CONNECTED')) return 'Your website isn’t connected yet.';
   if (m.includes('NO_ORG')) return 'Your account isn’t set up yet — the Bosun team will sort it.';
+  if (m.includes('LOW_BALANCE')) return NEGATIVE_BALANCE_MESSAGE;
   if (m.includes('ALREADY_DEPLOYED')) return 'This fix is already live — start a new fix for further changes.';
   if (m.includes('NOT_READY')) return 'Please wait for the current change to finish.';
   if (m.includes('NOT_PENDING')) return 'This fix has already been confirmed.';
@@ -94,6 +95,9 @@ export default function Dashboard() {
 
   const balance = org === undefined ? null : org?.balance ?? null;
   const connected = !!org?.github?.repoFullName;
+  // A wallet in the red stops anything NEW being started (the same gate the backend enforces in
+  // utils/walletGate.js). Everything already under way — approving, testing, going live — stays open.
+  const inTheRed = balance != null && blocksNewWork(balance);
 
   // Lists are scoped to an org; callers may pass an explicit id (used when switching, so the
   // fetch doesn't race the state update).
@@ -338,6 +342,14 @@ export default function Dashboard() {
             </div>
           )}
 
+          {inTheRed && (
+            <Link to="/topup" className="alert-warn block transition hover:brightness-95">
+              <span className="font-semibold">{NEGATIVE_BALANCE_MESSAGE}</span>{' '}
+              Your fixes, chats, features and designs already under way are unaffected — you can still
+              review them, test them and put them live.
+            </Link>
+          )}
+
           <section className="card p-5 sm:p-6">
             <div className="mb-5 tab-group">
               <button type="button" onClick={() => { setMode('chat'); setErr(''); }} className={tabCls(mode === 'chat')}>
@@ -425,16 +437,18 @@ export default function Dashboard() {
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <button
                 onClick={onSubmit}
-                disabled={busy || !problem.trim() || !connected}
+                disabled={busy || !problem.trim() || !connected || inTheRed}
                 className="btn btn-primary w-full sm:w-auto"
               >
                 {busy
                   ? (mode === 'chat' ? 'Starting…' : mode === 'feature' ? 'Planning…' : mode === 'design' ? 'Designing…' : mode === 'compare' ? 'Comparing…' : 'Starting…')
                   : (mode === 'chat' ? 'Start Chat →' : mode === 'feature' ? 'Plan My Feature →' : mode === 'design' ? 'Design My Screen →' : mode === 'compare' ? 'Size Up Rivals →' : 'Fix My Website →')}
               </button>
-              {connected ? null : (
+              {!connected ? (
                 <span className="text-sm text-ink-soft">Connect a repository to start.</span>
-              )}
+              ) : inTheRed ? (
+                <span className="text-sm text-ink-soft">{NEGATIVE_BALANCE_MESSAGE}</span>
+              ) : null}
             </div>
             <p className="mt-3 text-sm text-ink-soft">
               {mode === 'chat'

@@ -4,6 +4,7 @@ import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
 import RichText from './RichText.jsx';
 import { formatINR } from '@shared/currency.js';
+import { NEGATIVE_BALANCE_MESSAGE } from '@shared/billing.js';
 
 // One "Size up the competition" card — the clarify chat, then a two-sided scorecard (where rivals beat
 // us / where we beat them) and scoped actions. Each action routes into Fix / Design / Plan a feature
@@ -246,6 +247,7 @@ export default function ComparisonCard({ comparison: c, onChanged, onRoute }) {
 
 function friendly(e) {
   const m = String(e?.message || '');
+  if (m.includes('LOW_BALANCE')) return NEGATIVE_BALANCE_MESSAGE;
   if (m.includes('NOT_AWAITING')) return 'This comparison has moved on — refresh to see the latest.';
   if (m.includes('NOT_REVIEWABLE')) return 'This comparison isn’t ready yet.';
   if (m.includes('TOO_MANY_REPLIES')) return 'Let’s go with what we have — act on a finding, or look again later.';

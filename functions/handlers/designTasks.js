@@ -9,6 +9,7 @@ import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { assertCanStartWork, assertOrgCanStartWork } from '../utils/walletGate.js';
 
 // "Design a screen" — a clarify-first flow that previews a NEW screen as a live HTML mock the owner
 // approves BEFORE any real build. The clarify chat + mock render run as a CODE-AWARE managed-agent
@@ -28,6 +29,8 @@ async function loadOrgCtx(db, orgId) {
   const orgSnap = await db.collection('organisations').doc(orgId).get();
   if (!orgSnap.exists) throw new HttpsError('failed-precondition', 'NO_ORG');
   const org = orgSnap.data();
+  // Wallet gate: an org in the red cannot start new agent work (utils/walletGate.js).
+  assertCanStartWork(org);
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
@@ -142,6 +145,7 @@ export const replyToClarify = onCall({ region: 'asia-south1', secrets: [ANTHROPI
   const d = snap.data();
   if (d.userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
   if (d.status !== 'clarifying' || !d.awaitingOwner) throw new HttpsError('failed-precondition', 'NOT_AWAITING');
+  await assertOrgCanStartWork(db, d.orgId); // wallet gate — see utils/walletGate.js
   if (!d.sessionId || !d.designTaskId) throw new HttpsError('failed-precondition', 'NO_SESSION');
   const ownerTurns = (Array.isArray(d.turns) ? d.turns : []).filter((t) => t.role === 'owner').length;
   if (ownerTurns > MAX_CLARIFY_TURNS) throw new HttpsError('failed-precondition', 'TOO_MANY_REPLIES');
@@ -180,6 +184,7 @@ export const refineMockup = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_
   const d = snap.data();
   if (d.userId !== uid) throw new HttpsError('permission-denied', 'Not your design.');
   if (d.status !== 'mockup_review') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
+  await assertOrgCanStartWork(db, d.orgId); // wallet gate — a refine is charged like the first mock
 
   // A FORKED design (a teammate's copy of a shared design) has the approved mock + chat but no live
   // session — resuming the original's session would entangle two owners on one thread. So its first

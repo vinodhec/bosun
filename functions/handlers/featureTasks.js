@@ -13,6 +13,7 @@ import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { assertCanStartWork, assertOrgCanStartWork } from '../utils/walletGate.js';
 
 // Operational caps for a planning session — exploration, not a build, so it should be quick and
 // cheap. pollSessions terminates a planning session that crosses either.
@@ -29,6 +30,8 @@ async function loadOrgCtx(db, orgId) {
   const orgSnap = await db.collection('organisations').doc(orgId).get();
   if (!orgSnap.exists) throw new HttpsError('failed-precondition', 'NO_ORG');
   const org = orgSnap.data();
+  // Wallet gate: an org in the red cannot start new agent work (utils/walletGate.js).
+  assertCanStartWork(org);
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
@@ -142,6 +145,7 @@ export const approveFeaturePlan = onCall({ region: 'asia-south1', secrets: [ANTH
   if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
   if (f.status !== 'plan_review') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
   if (!Array.isArray(f.steps) || f.steps.length === 0) throw new HttpsError('failed-precondition', 'NO_PLAN');
+  await assertOrgCanStartWork(db, f.orgId); // wallet gate — approving starts a paid build step
 
   // startFeatureStep flips the feature to running and points step 0 at its task (figma + the
   // carried screenshots attached). On dispatch failure the feature stays plan_review to retry.
@@ -473,6 +477,7 @@ export const addFeatureChange = onCall({ region: 'asia-south1', secrets: [ANTHRO
   if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
   // Only once the feature is fully built (every step on testing). Finish the steps first otherwise.
   if (f.status !== 'complete') throw new HttpsError('failed-precondition', 'NOT_COMPLETE');
+  await assertOrgCanStartWork(db, f.orgId); // wallet gate — see utils/walletGate.js
 
   // This change may carry its own screenshots (what the owner is pointing at now); persist them.
   const newFileIds = await uploadImagesToFiles(images);
@@ -521,6 +526,7 @@ export const retryFeatureStep = onCall({ region: 'asia-south1', secrets: [ANTHRO
   const f = fSnap.data();
   if (f.userId !== uid) throw new HttpsError('permission-denied', 'Not your feature.');
   if (f.status !== 'running') throw new HttpsError('failed-precondition', 'NOT_BUILDING');
+  await assertOrgCanStartWork(db, f.orgId); // wallet gate — a retry is a fresh run
 
   const stepIndex = Number(f.currentStep) || 0;
   const cur = f.steps?.[stepIndex];

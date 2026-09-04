@@ -136,8 +136,9 @@ for tax. `purchases/{id}` follows the cardinal rule and is stricter than most: o
    caps + model routing, not a price. We absorb its cost.
 2. `createTask` — classifies if no complexity is passed, writes `tasks/{id}`, pulls the org's
    GitHub token from `orgSecrets/{orgId}` (the **vault** — clients have no read access, even via
-   rules), starts the Managed Agent session, stores `sessionId`. Balance is **NOT** gated — orgs
-   may go negative; the operator reconciles via top-ups / `adminDeductCredits`.
+   rules), starts the Managed Agent session, stores `sessionId`. The wallet is gated at the ZERO
+   line only (see "The wallet gate" below) — a positive balance is never *reserved*, so a round may
+   still overshoot it and the operator reconciles via top-ups / `adminDeductCredits`.
 3. Managed Agent (Anthropic-hosted, NOT our infra) clones the repo via the GitHub MCP server,
    fixes, pushes a branch, opens a PR. Beta header `managed-agents-2026-04-01` is required.
 4. `pollSessions` (scheduled) reads `session.usage` + runtime, terminates over-cap sessions,
@@ -174,6 +175,30 @@ makes the price independent of how long the owner took to reply.
   usage restarts at zero — leaving the old baseline makes the subtraction underflow and the round
   bills as free. Prior rounds keep their own deltas in `task.rounds` (which is what `actualCostUsd`
   sums), and `priorSessionIds` retains the sessions the task has moved off for cost forensics.
+
+## The wallet gate (no new agent work on a negative balance)
+
+An org whose `balance` has gone NEGATIVE cannot START anything that spends COGS. `utils/walletGate.js`
+is the one place this lives (`assertCanStartWork(org)` / `assertOrgCanStartWork(db, orgId)`), over the
+shared predicate `blocksNewWork(balance)` (`balance < 0`) and the single customer sentence
+`NEGATIVE_BALANCE_MESSAGE`. It throws `failed-precondition / LOW_BALANCE`, which every customer
+surface maps to that sentence, and the dashboard disables the submit button before the call is made.
+
+Gated (every customer callable that starts or resumes an agent run): `createTask`, `confirmQuote`,
+`reviseSession`; `startChat` / `replyToChat` / `approveChatBuild`; `planFeature` /
+`approveFeaturePlan` / `reviseFeaturePlan` / `addFeatureChange` / `retryFeatureStep`; `planDesign` /
+`replyToClarify` / `refineMockup`; `startComparison` / `replyToComparison` / `refineComparison`. In
+the four handlers with a local `loadOrgCtx` the check sits inside it, so every lane that loads org
+context is covered by construction.
+
+NOT gated, deliberately: reading, `approveFix` (that debit is money we have already earned — the
+gate must never stand between us and a charge), the deploy callables, the free `editFeaturePlan` /
+`approveDesign` hand-offs, and `advanceFeature`'s automatic move to the next step of a plan the
+owner already approved (blocking mid-feature would strand a half-built feature; the per-feature
+`FEATURE_BUILD_CAP_INR` still bounds it).
+
+The waiver is the operator's: an org with `agent_work` in `billingPaused` keeps working at a
+negative balance (testing / goodwill), exactly as `daily_plan` does for the nightly planner.
 
 ## The feature pipeline ("Plan a feature")
 

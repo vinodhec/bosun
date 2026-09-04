@@ -9,6 +9,7 @@ import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { assertCanStartWork, assertOrgCanStartWork } from '../utils/walletGate.js';
 
 // "Size up the competition" — a standalone, code-aware comparison. The agent reads the owner's OWN
 // repo to learn what their site does, weighs it against competitors (fetched server-side and/or the
@@ -31,6 +32,8 @@ async function loadOrgCtx(db, orgId) {
   const orgSnap = await db.collection('organisations').doc(orgId).get();
   if (!orgSnap.exists) throw new HttpsError('failed-precondition', 'NO_ORG');
   const org = orgSnap.data();
+  // Wallet gate: an org in the red cannot start new agent work (utils/walletGate.js).
+  assertCanStartWork(org);
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
@@ -152,6 +155,7 @@ export const replyToComparison = onCall({ region: 'asia-south1', secrets: [ANTHR
   const c = snap.data();
   if (c.userId !== uid) throw new HttpsError('permission-denied', 'Not your comparison.');
   if (c.status !== 'analysing' || !c.awaitingOwner) throw new HttpsError('failed-precondition', 'NOT_AWAITING');
+  await assertOrgCanStartWork(db, c.orgId); // wallet gate — see utils/walletGate.js
   if (!c.sessionId || !c.compareTaskId) throw new HttpsError('failed-precondition', 'NO_SESSION');
   const ownerTurns = (Array.isArray(c.turns) ? c.turns : []).filter((t) => t.role === 'owner').length;
   if (ownerTurns > MAX_CLARIFY_TURNS) throw new HttpsError('failed-precondition', 'TOO_MANY_REPLIES');
@@ -191,6 +195,7 @@ export const refineComparison = onCall({ region: 'asia-south1', secrets: [ANTHRO
   const c = snap.data();
   if (c.userId !== uid) throw new HttpsError('permission-denied', 'Not your comparison.');
   if (c.status !== 'report_ready') throw new HttpsError('failed-precondition', 'NOT_REVIEWABLE');
+  await assertOrgCanStartWork(db, c.orgId); // wallet gate — a refine is another paid run
   if (!c.sessionId || !c.compareTaskId) throw new HttpsError('failed-precondition', 'NO_SESSION');
 
   await ref.update({

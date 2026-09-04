@@ -4,6 +4,7 @@ import { formatINR } from '@shared/currency.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
 import RichText from './RichText.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import { NEGATIVE_BALANCE_MESSAGE } from '@shared/billing.js';
 
 // The markup tool pulls in the screenshot + drawing libraries (fabric, snapDOM) — load them only
 // when the owner actually opens "Mark up the screen", so they don't weigh down the dashboard.
@@ -324,6 +325,7 @@ export default function DesignCard({ design: d, onChanged, onGoToFeature }) {
 
 function friendly(e) {
   const m = String(e?.message || '');
+  if (m.includes('LOW_BALANCE')) return NEGATIVE_BALANCE_MESSAGE;
   if (m.includes('NOT_AWAITING')) return 'This design has moved on — refresh to see the latest.';
   if (m.includes('NOT_REVIEWABLE')) return 'This design isn’t ready to review yet.';
   if (m.includes('TOO_MANY_REPLIES')) return 'Let’s build from what we have — approve it or ask for changes after.';
