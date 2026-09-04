@@ -439,6 +439,26 @@ export function canAfford(balanceInr) {
   return (Number(balanceInr) || 0) >= MIN_CHARGE_INR;
 }
 
+/**
+ * ── The wallet gate on NEW agent work (operator decision 2026-09-04) ───────────────────────────
+ * An org whose wallet has gone NEGATIVE cannot START new agent work — no chat, no fix, no feature
+ * plan or build step, no design, no comparison. The fix pipeline historically let an org run
+ * negative and left the operator to reconcile; that was fine while a round was one small charge,
+ * but every builder lane now starts a session that costs real COGS before anything is billable, so
+ * an unpaid wallet just deepens a debt the owner never agreed to. Same principle (and the same
+ * `billingPaused` waiver) as the nightly planner's gate in handlers/planDailyTasks.js.
+ *
+ * What it does NOT block: reading, approving, deploying, or paying for work ALREADY done — the
+ * balance must never stand between us and a charge we have earned.
+ */
+export function blocksNewWork(balanceInr) {
+  return (Number(balanceInr) || 0) < 0;
+}
+
+/** The one customer-facing sentence for that gate (plain words — no billing jargon). */
+export const NEGATIVE_BALANCE_MESSAGE =
+  'Your balance is in the red — top up to start something new.';
+
 /** Low-balance threshold (INR) for the dashboard warning banner. */
 export const LOW_BALANCE_INR = 500;
 export function isLowBalance(balanceInr) {

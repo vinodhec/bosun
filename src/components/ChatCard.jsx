@@ -4,6 +4,7 @@ import { formatINR } from '@shared/currency.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
 import RichText from './RichText.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import { NEGATIVE_BALANCE_MESSAGE } from '@shared/billing.js';
 
 // The markup tool pulls in the drawing libraries (fabric, snapDOM) — load it only when the owner
 // opens "Mark up the screen", so it doesn't weigh down the dashboard.
@@ -223,6 +224,7 @@ export default function ChatCard({ chat: c, onChanged }) {
 
 function friendly(e) {
   const m = String(e?.message || '');
+  if (m.includes('LOW_BALANCE')) return NEGATIVE_BALANCE_MESSAGE;
   if (m.includes('NOT_AWAITING')) return 'This chat has moved on — refresh to see the latest.';
   if (m.includes('NOT_READY')) return 'This isn’t ready to build yet.';
   if (m.includes('BUDGET_SOFT')) return 'We’ve got enough to build this — go ahead and approve it, then start a new chat for anything else.';

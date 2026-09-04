@@ -9,6 +9,7 @@ import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import { chatChargeEstimateInr } from '../utils/billing.js';
+import { assertCanStartWork, assertOrgCanStartWork } from '../utils/walletGate.js';
 
 // "Chat & build" callables — one warm session that clarifies then builds (see utils/chatbotSession.js).
 // A chat is a tasks/{id} of kind:'chatbot' pollSessions finalizes turn by turn; the customer-facing
@@ -26,6 +27,8 @@ async function loadOrgCtx(db, orgId) {
   const orgSnap = await db.collection('organisations').doc(orgId).get();
   if (!orgSnap.exists) throw new HttpsError('failed-precondition', 'NO_ORG');
   const org = orgSnap.data();
+  // Wallet gate: an org in the red cannot start new agent work (utils/walletGate.js).
+  assertCanStartWork(org);
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
   const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
@@ -138,6 +141,7 @@ export const replyToChat = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_A
 
   const db = getFirestore();
   const { ref, c } = await loadOwnedChat(db, uid, chatId);
+  await assertOrgCanStartWork(db, c.orgId); // wallet gate — see utils/walletGate.js
   if (!['clarifying', 'ready_to_build', 'previewing'].includes(c.status) || !c.awaitingOwner) {
     throw new HttpsError('failed-precondition', 'NOT_AWAITING');
   }
@@ -179,6 +183,7 @@ export const approveChatBuild = onCall({ region: 'asia-south1', secrets: [ANTHRO
 
   const db = getFirestore();
   const { ref, c } = await loadOwnedChat(db, uid, chatId);
+  await assertOrgCanStartWork(db, c.orgId); // wallet gate — see utils/walletGate.js
   if (!['ready_to_build', 'previewing'].includes(c.status) || !c.awaitingOwner) {
     throw new HttpsError('failed-precondition', 'NOT_READY');
   }

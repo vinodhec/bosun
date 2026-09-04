@@ -9,6 +9,7 @@ import { sanitizeImages } from '../utils/images.js';
 import { sanitizeDocuments } from '../utils/documents.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { ANTHROPIC_API_KEY } from '../utils/secrets.js';
+import { assertCanStartWork } from '../utils/walletGate.js';
 
 // Normalise the optional "which page?" field: trim, cap length, add https:// to a bare domain, and
 // return null if it isn't a parseable URL so nothing junky is stored or fed to the agent.
@@ -20,7 +21,7 @@ function sanitizePageUrl(raw) {
   try { return new URL(s).toString(); } catch { return null; }
 }
 
-// Validate balance + the org's connected repo, create the task, and start a managed-agent
+// Validate the wallet + the org's connected repo, create the task, and start a managed-agent
 // session. The user is NOT charged here — billing happens in pollSessions after success.
 export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_API_KEY] }, async (request) => {
   const uid = request.auth?.uid;
@@ -63,6 +64,10 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   if (!orgSnap.exists) throw new HttpsError('failed-precondition', 'NO_ORG');
   const org = orgSnap.data();
 
+  // Wallet gate: an org in the red cannot start new agent work (utils/walletGate.js). Checked
+  // before the `large` park too — a quote we can't run is not worth the operator's time.
+  assertCanStartWork(org);
+
   const gh = org.github;
   if (!gh?.repoFullName || !gh?.vaultId) throw new HttpsError('failed-precondition', 'NO_REPO_CONNECTED');
 
@@ -96,8 +101,9 @@ export const createTask = onCall({ region: 'asia-south1', secrets: [ANTHROPIC_AP
   // Bind the agent's hard budget cap to the tier (NOT a flat global cap), so a "simple"
   // run can never spend the "complex" budget. Price is bracketed cost-plus — computed
   // from actual COGS in markRoundReady once the run finishes; nothing is quoted upfront.
-  // Balance is NOT gated — orgs are allowed to go negative; the operator reconciles via
-  // top-ups or manual deductions.
+  // The balance is gated only at the ZERO line (assertCanStartWork above): an org already in the
+  // red starts nothing new, but a positive wallet may still be overshot by a round — we never
+  // reserve the tier's worst case, so the operator reconciles the overshoot via top-ups.
   const tier = tierFor(complexity);
   const maxBudgetUsd = tier.maxBudgetUsd;
   const maxSeconds = tier.maxSeconds; // tier runtime cap — second guard alongside the $ cap
