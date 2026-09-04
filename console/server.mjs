@@ -73,7 +73,9 @@ const CFG = {
   ]),
   // The dependency-free fallback UI at / for loopback use. Off when exposed.
   localUi:     process.env.LOCAL_UI === '1',
-  idleMs:      Number(process.env.IDLE_MINUTES || 30) * 60_000,
+  // Per-minute billing: an idle session costs money, so it is ended (and parked, see
+  // destroySession) after 10 minutes without a turn, undo or ship.
+  idleMs:      Number(process.env.IDLE_MINUTES || 10) * 60_000,
   maxAgeMs:    Number(process.env.MAX_AGE_HOURS || 6) * 3_600_000,
   maxTurns:    Number(process.env.MAX_TURNS || 40),
   prLabel:     process.env.PR_LABEL || 'needs-validation',
@@ -283,14 +285,40 @@ const touch = (s) => { s.lastActivity = Date.now(); };
 const liveSession = () => [...sessions.values()].find((s) => s.devPid && alive(s.devPid));
 const devLogPath = (s) => path.join(CFG.sessionsDir, `${s.id}.dev.log`);
 
-async function createSession(owner, orgId = null) {
+// A session's history lives in its branch: checkpoint commits are "turn N: <prompt>", a ship
+// squashes them into one commit whose subject is the PR title. Resuming a branch (after an
+// idle park, or "Continue editing" on a shipped card) rebuilds the session from that: the
+// base is the newest non-checkpoint commit above origin/main (the last ship) or origin/main
+// itself, and every checkpoint above it comes back as an undoable turn.
+async function rebuildFromBranch(worktree) {
+  const mb = await sh('git', ['-C', worktree, 'merge-base', 'origin/main', 'HEAD']);
+  const log = await sh('git', ['-C', worktree, 'log', '--reverse', '--format=%H%x09%at%x09%s', `${mb}..HEAD`]);
+  let base = mb; const turns = [];
+  for (const line of log.split('\n').filter(Boolean)) {
+    const [sha, at, subject] = line.split('\t');
+    const m = /^turn \d+: (.*)$/.exec(subject || '');
+    if (m) turns.push({ prompt: m[1], sha, at: Number(at) * 1000 });
+    else { base = sha; turns.length = 0; }
+  }
+  return { base, turns };
+}
+
+async function createSession(owner, orgId = null, resumeBranch = null) {
   const sid = randomBytes(16).toString('hex');
   const worktree = path.join(CFG.sessionsDir, sid);
-  const branch = `chat/${sid.slice(0, 8)}`;
+  const branch = resumeBranch || `chat/${sid.slice(0, 8)}`;
 
   await sh('git', ['-C', CFG.repo, 'fetch', 'origin', '--quiet']);
-  await sh('git', ['-C', CFG.repo, 'worktree', 'add', '-b', branch, worktree, CFG.base]);
-  const base = await sh('git', ['-C', worktree, 'rev-parse', 'HEAD']);
+  let base, seededTurns = [];
+  if (resumeBranch) {
+    // A stale local branch from an earlier session on this box would block the checkout.
+    try { await sh('git', ['-C', CFG.repo, 'branch', '-D', branch]); } catch {}
+    await sh('git', ['-C', CFG.repo, 'worktree', 'add', '-b', branch, worktree, `origin/${branch}`]);
+    ({ base, turns: seededTurns } = await rebuildFromBranch(worktree));
+  } else {
+    await sh('git', ['-C', CFG.repo, 'worktree', 'add', '-b', branch, worktree, CFG.base]);
+    base = await sh('git', ['-C', worktree, 'rev-parse', 'HEAD']);
+  }
   // Screenshots the user attaches to a turn are written under the worktree (the guard
   // lets the agent Read only there) but must never reach a checkpoint or the PR: the
   // per-worktree exclude file keeps `git add -A` blind to them.
@@ -304,7 +332,7 @@ async function createSession(owner, orgId = null) {
   const s = {
     id: sid, token: randomBytes(24).toString('hex'), previewToken: randomBytes(24).toString('hex'),
     owner: owner || null, orgId: orgId || null, worktree, branch, base, devPort,
-    claudeSid: randomUUID(), started: false, turns: [], clients: [], busy: false, pendingNote: null,
+    claudeSid: randomUUID(), started: false, turns: seededTurns, resumed: !!resumeBranch, clients: [], busy: false, pendingNote: null,
     createdAt: Date.now(), lastActivity: Date.now(),
   };
   sessions.set(sid, s);
@@ -382,8 +410,22 @@ function prewarm(s) {
 async function destroySession(sid, reason = 'ended') {
   const s = sessions.get(sid);
   if (!s) return;
-  emit(s, { t: 'ended', v: reason });
-  postHome('ended', { sid: s.id, orgId: s.orgId, owner: s.owner, reason, minutes: s.billedMinutes || 0, turns: s.turns.length });
+  // Unsent work is never thrown away by a timeout: an idle / max-age end pushes the branch
+  // as it stands (checkpoints and all) and tells home it is PARKED, so the owner can resume
+  // it later and carry on. Only an explicit End (or an errored turn-less session) discards.
+  let parked = false;
+  if (s.turns.length && !s.busy && /^(idle|max age|out of credit)$/.test(reason)) {
+    try {
+      await sh('git', ['-C', s.worktree, 'push', '--force-with-lease', '-u', 'origin', s.branch]);
+      parked = true;
+      postHome('parked', {
+        sid: s.id, orgId: s.orgId, owner: s.owner, branch: s.branch, reason, turns: s.turns.length,
+        title: s.turns[0].prompt.slice(0, 72), lastPrompt: s.turns[s.turns.length - 1].prompt.slice(0, 120),
+      });
+    } catch (e) { console.warn(`park failed for ${sid.slice(0, 8)}: ${String(e.message || e).split('\n')[0]}`); }
+  }
+  emit(s, { t: 'ended', v: reason, parked });
+  postHome('ended', { sid: s.id, orgId: s.orgId, owner: s.owner, reason, parked, minutes: s.billedMinutes || 0, turns: s.turns.length });
   await killPid(s.devPid);
   try { await sh('git', ['-C', CFG.repo, 'worktree', 'remove', '--force', s.worktree]); } catch {}
   try { await sh('git', ['-C', CFG.repo, 'branch', '-D', s.branch]); } catch {}
@@ -564,10 +606,14 @@ async function ship(s, title) {
   // Belt and braces: never let a stray session log into the PR.
   try { await sh('git', ['-C', s.worktree, 'rm', '-q', '--cached', '--ignore-unmatch', 'dev-server.log']); } catch {}
   await sh('git', ['-C', s.worktree, 'commit', '-q', '-m', title]);
-  await sh('git', ['-C', s.worktree, 'push', '-u', 'origin', s.branch]);
-  const body = `Built in an agent-console session (${s.turns.length} turn${s.turns.length === 1 ? '' : 's'}).\n\n` +
+  // The squash rewrites whatever a park or an earlier ship pushed; lease against origin.
+  await sh('git', ['-C', s.worktree, 'push', '--force-with-lease', '-u', 'origin', s.branch]);
+  const body = `Built in a Chat & code session (${s.turns.length} turn${s.turns.length === 1 ? '' : 's'}).\n\n` +
     s.turns.map((t, i) => `${i + 1}. ${t.prompt.replace(/\n/g, ' ').slice(0, 120)}`).join('\n');
-  const url = await sh('gh', ['pr', 'create', '--base', 'main', '--head', s.branch, '--title', title, '--body', body, '--label', CFG.prLabel], { cwd: s.worktree });
+  // A resumed branch may already have an open PR: the push above updated it, reuse its URL.
+  let url = '';
+  try { url = await sh('gh', ['pr', 'list', '--head', s.branch, '--state', 'open', '--json', 'url', '--jq', '.[0].url // empty'], { cwd: s.worktree }); } catch {}
+  if (!url) url = await sh('gh', ['pr', 'create', '--base', 'main', '--head', s.branch, '--title', title, '--body', body, '--label', CFG.prLabel], { cwd: s.worktree });
   // The squash replaced the checkpoints; the session continues from the shipped commit.
   const sha = await sh('git', ['-C', s.worktree, 'rev-parse', 'HEAD']);
   const shippedTurns = s.turns.length;
@@ -651,20 +697,19 @@ const server = http.createServer(async (req, res) => {
           return json({ error: 'wrong_repo', serves: CFG.repoFullName }, 403);
         }
         const live = liveSession();
-        // One live session per ORGANISATION (operator decision 2026-09-04): anyone from the
-        // org that holds it joins it — same person on a reload, or a teammate — and works in
-        // the same branch and preview. Turns are serialised by `busy`, so two people typing
-        // at once take turns rather than collide.
-        const sameOrg = live && body.orgId && live.orgId && String(body.orgId) === live.orgId;
-        const sameOwner = live && body.owner && live.owner === body.owner;
-        if (sameOrg || sameOwner) {
+        // The same person coming back (reload, new tab, lost storage) rejoins their own
+        // live session. Anyone else is told WHO holds it (operator decision 2026-09-04:
+        // one session at a time, named, not shared).
+        if (live && body.owner && live.owner === body.owner) {
           touch(live);
-          return json({ ...publicSession(live), rejoined: true, owner: live.owner, teammate: !sameOwner });
+          return json({ ...publicSession(live), rejoined: true, owner: live.owner });
         }
         // One dev server is ~2 GB. One live session at a time; be honest about it.
-        if (live) return json({ error: 'busy', owner: live.owner, since: live.createdAt, turns: live.turns.length }, 409);
-        const s = await createSession(body.owner, body.orgId ? String(body.orgId) : null);
-        return json(publicSession(s));
+        if (live) return json({ error: 'busy', owner: live.owner, since: live.createdAt, lastActivity: live.lastActivity, turns: live.turns.length }, 409);
+        // `branch` resumes a parked or shipped session's branch (must exist on origin).
+        const resume = body.branch && /^chat\/[a-f0-9]{8}$/.test(String(body.branch)) ? String(body.branch) : null;
+        const s = await createSession(body.owner, body.orgId ? String(body.orgId) : null, resume);
+        return json({ ...publicSession(s), resumed: !!resume });
       }
 
       const s = sessionFromToken(req, u);

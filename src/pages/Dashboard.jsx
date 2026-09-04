@@ -67,6 +67,8 @@ export default function Dashboard() {
   const orgId = selectedOrgId || activeOrgId || null;
   const org = orgsLoading ? undefined : (orgs.find((o) => o.id === orgId) || null);
   const { members, meId } = useOrgStats(user, orgId);
+  // "Continue editing" on a Chat & code card: which branch the console should reopen when it mounts.
+  const [consoleResume, setConsoleResume] = useState(null);
   const [mode, setMode] = useState('fix'); // 'fix' = one-off fix · 'feature' = plan a feature as steps
   const [problem, setProblem] = useState('');
   // Optional "which page is it on?" link — helps us jump straight to the right page. Fix tab only.
@@ -363,7 +365,13 @@ export default function Dashboard() {
 
             {/* Chat & code is a live session, not a form: the panel replaces the composer below. */}
             {mode === 'console' ? (
-              <ConsolePanel orgId={orgId} connected={connected} balance={balance} onExit={() => setMode('chat')} />
+              <ConsolePanel
+                orgId={orgId}
+                connected={connected}
+                balance={balance}
+                resume={consoleResume}
+                onExit={() => { setConsoleResume(null); setMode('fix'); refreshAll(); }}
+              />
             ) : (<>
             <h1 className="text-xl font-bold tracking-tight text-ink">
               {mode === 'chat' ? 'What would you like to change or add?'
@@ -509,7 +517,7 @@ export default function Dashboard() {
             <section className="space-y-3">
               <h2 className="section-label">Your fixes</h2>
               {sessions.map((s) => (
-                <SessionCard key={s.id} session={s} onRevised={refreshAll} />
+                <SessionCard key={s.id} session={s} onRevised={refreshAll} onContinue={(branch) => { setConsoleResume({ branch, at: Date.now() }); setMode('console'); setErr(''); }} />
               ))}
             </section>
           )}
@@ -531,7 +539,7 @@ function roundCost(r) {
   return r.kind === 'initial' ? formatINR(r.addedInr) : `+${formatINR(r.addedInr)}`;
 }
 
-function SessionCard({ session: s, onRevised, hideGoLive = false }) {
+function SessionCard({ session: s, onRevised, hideGoLive = false, onContinue }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState('unresolved'); // 'unresolved' (free) | 'new_scope' (paid)
   const [changes, setChanges] = useState('');
@@ -829,6 +837,12 @@ function SessionCard({ session: s, onRevised, hideGoLive = false }) {
               )
             )}
 
+            {/* Chat & code ships: until the branch is merged, reopen a live session on it. */}
+            {s.kind === 'console' && s.branch && !s.deployedTesting && !s.deployedProd && onContinue && (
+              <button onClick={() => onContinue(s.branch)} disabled={busy} className="btn btn-outline">
+                Continue editing
+              </button>
+            )}
             {s.deployedTesting && !s.deployedProd && !s.buildingPreview && <span className="text-sm font-medium text-ink-soft">✓ on testing</span>}
             {s.deployedProd && <span className="text-sm font-medium text-good">Live ✓</span>}
           </div>
