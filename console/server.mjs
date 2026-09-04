@@ -269,20 +269,38 @@ function proxyHttp(s, req, res) {
       up.pipe(res);
     },
   );
-  p.on('error', () => { res.writeHead(502, { 'content-type': 'text/plain' }); res.end('dev server not ready — try again in a few seconds'); });
+  p.on('error', () => { if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain' }); res.end('dev server not ready — try again in a few seconds'); });
+  // Every socket on both sides needs an 'error' listener: a dev server dying mid-response
+  // (End, idle) resets these, and an unhandled 'error' takes the whole orchestrator down —
+  // which is exactly what happened on 2026-09-04 (ECONNRESET on End → crash → new tunnel).
+  p.on('response', (up) => up.on('error', () => res.destroy()));
+  req.on('error', () => p.destroy());
+  res.on('error', () => p.destroy());
   req.pipe(p);
   touch(s);
 }
 function proxyUpgrade(s, req, sock, head) {
   const up = http.request({ host: '127.0.0.1', port: s.devPort, path: req.url, headers: { ...req.headers, host: `127.0.0.1:${s.devPort}` } });
+  sock.on('error', () => up.destroy());
   up.on('upgrade', (ures, usock, uhead) => {
     sock.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(ures.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n`);
     if (uhead?.length) sock.unshift(uhead);
+    // HMR websocket. When the dev server goes (End, idle) usock resets; without these the
+    // reset is an uncaught 'error' on a Socket and the process exits.
+    usock.on('error', () => sock.destroy());
+    sock.on('error', () => usock.destroy());
+    usock.on('close', () => sock.destroy());
+    sock.on('close', () => usock.destroy());
     usock.pipe(sock).pipe(usock);
   });
   up.on('error', () => sock.destroy());
   up.end(head);
 }
+
+// Last line of defence for the one-process design: a stray socket error must not take the
+// tunnel, the sessions and the meter down with it. Log it and keep serving.
+process.on('uncaughtException', (e) => console.error('uncaughtException (kept running):', e?.stack || e));
+process.on('unhandledRejection', (e) => console.error('unhandledRejection (kept running):', e?.stack || e));
 
 // ── session lifecycle ────────────────────────────────────────────────────────
 const touch = (s) => { s.lastActivity = Date.now(); };
@@ -732,6 +750,9 @@ const server = http.createServer(async (req, res) => {
           touch(live);
           return json({ ...publicSession(live), rejoined: true, owner: live.owner });
         }
+        // The page re-resolving a session after a tunnel move must never CREATE one: an
+        // unseen fresh session would boot a dev server and bill with nobody attached.
+        if (body.rejoinOnly) return json({ error: 'no_live' }, 410);
         // One dev server is ~2 GB. One live session at a time; be honest about it.
         if (live) return json({ error: 'busy', owner: live.owner, since: live.createdAt, lastActivity: live.lastActivity, turns: live.turns.length }, 409);
         // `branch` resumes a parked or shipped session's branch (must exist on origin).
@@ -749,7 +770,12 @@ const server = http.createServer(async (req, res) => {
         try { const b = fs.readFileSync(devLogPath(s)); tail = b.subarray(Math.max(0, b.length - 4096)).toString(); } catch {}
         res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(tail);
       }
-      if (op === 'session' && req.method === 'DELETE') { await destroySession(s.id, 'ended by user'); return json({ ok: true }); }
+      if (op === 'session' && req.method === 'DELETE') {
+        // Answer first, tear down after: killing the dev server and removing a 2 GB worktree
+        // takes seconds, and the page must not be left guessing whether End went through.
+        destroySession(s.id, 'ended by user').catch((e) => console.error('destroy failed:', e?.message || e));
+        return json({ ok: true });
+      }
       if (op === 'poll') {
         // Long-poll: everything after `after` (a seq), or wait up to `wait` seconds for the
         // next emit. A fresh page passes after=0 to replay the ring; `started` lets it

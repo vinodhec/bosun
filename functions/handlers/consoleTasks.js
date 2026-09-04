@@ -90,7 +90,9 @@ export const openConsoleSession = onCall({ region: REGION }, async (request) => 
   if (!consoleUrl) throw new HttpsError('unavailable', 'CONSOLE_OFFLINE');
 
   const owner = request.auth.token?.email || uid;
-  const body = JSON.stringify({ owner, orgId, repo, branch: branch || undefined, ts: Date.now() });
+  // rejoinOnly: the page lost the box's address and wants ITS session back — never a new one.
+  const rejoinOnly = Boolean(request.data?.rejoinOnly);
+  const body = JSON.stringify({ owner, orgId, repo, branch: branch || undefined, rejoinOnly: rejoinOnly || undefined, ts: Date.now() });
   const { signature, timestamp } = signPayload(secret, body);
   let res;
   try {
@@ -116,6 +118,7 @@ export const openConsoleSession = onCall({ region: REGION }, async (request) => 
     });
   }
   if (res.status === 403 && data.error === 'wrong_repo') throw new HttpsError('failed-precondition', 'WRONG_REPO');
+  if (res.status === 410) throw new HttpsError('not-found', 'NO_LIVE');
   if (!res.ok || !data.sid || !data.token) {
     console.error('openConsoleSession:bad', res.status, JSON.stringify(data).slice(0, 300));
     throw new HttpsError('unavailable', 'CONSOLE_REFUSED');

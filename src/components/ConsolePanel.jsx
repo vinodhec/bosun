@@ -142,7 +142,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     const cur = sessionRef.current;
     if (!cur) return null;
     try {
-      const res = await openConsoleSession({ orgId });
+      const res = await openConsoleSession({ orgId, rejoinOnly: true });
       const s = res.data;
       if (!s?.rejoined || s.sid !== cur.sid) return null;
       const next = { ...cur, consoleUrl: s.consoleUrl, previewUrl: s.previewUrl, token: s.token };
@@ -378,13 +378,17 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     if (!session) return;
     if (turns > 0 && !window.confirm(`End and discard ${turns} unsent change${turns === 1 ? '' : 's'}? Press Ship first to keep them.`)) return;
     let { status: st } = await call(session, 'session', undefined, 'DELETE');
-    if (st === 0) {
+    // The poll may already have delivered `ended` (and cleared the session) while the
+    // DELETE was in flight — that IS success, whatever the DELETE's own fate.
+    const alreadyEnded = () => sessionRef.current === null;
+    if (st === 0 && !alreadyEnded()) {
       // Dead address (the box restarted): find the session at its new one and end it there.
       const fresh = await refreshSession();
       if (fresh) ({ status: st } = await call(fresh, 'session', undefined, 'DELETE'));
     }
+    const ok = st === 200 || st === 404 || alreadyEnded();
     clearSession();
-    add('info', st === 200 || st === 404
+    add('info', ok
       ? 'Session ended. The preview server is gone.'
       : 'Could not reach the console to end it. With no browser attached it ends by itself within two minutes and billing stops then.');
   };
