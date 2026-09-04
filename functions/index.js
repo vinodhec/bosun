@@ -157,3 +157,8 @@ export { weeklySeoReport, seoReportNow } from './handlers/seoWeeklyReport.js';
 
 // Scheduled: refresh the cached live USD->INR rate the billing path converts COGS at.
 export { refreshExchangeRate } from './handlers/fxRate.js';
+
+// Chat & code — the live-preview lane. openConsoleSession signs a session request to Bosun's
+// console box (console/server.mjs); consoleHook is where that box reports its URL, each live
+// minute (metered: console_minute), each turn and each shipped PR.
+export { openConsoleSession, consoleHook, listMyConsoleSessions } from './handlers/consoleTasks.js';
