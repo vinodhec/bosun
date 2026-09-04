@@ -388,12 +388,17 @@ here; the DATA never leaves the platform.
   Bosun builds the card from the CACHED tool result (`rememberListings` / `cardsFor`) — it cannot
   invent a price, a photo or a link. Ids leaking into prose are swapped for titles (`scrubIds`).
   Every reply ends with a `[[suggest:a|b|c]]` line that becomes tap chips.
-- **Metered per DELIVERED reply**: `assistant_message`, `ASSISTANT_MESSAGE_PRICE_PAISE` = ₹1.00 flat
-  (measured COGS ≈ 12–25 paise; the 3× rule would say ₹0.60 — set flat at ₹1 as a price the owner can
-  reason about, per-org overridable via `pricing.assistant_message`). Settled through
-  `settleMetered` (utils/meter.js, `assistantAccrualPaise`) with idempotencyKey
-  `${conversationId}:${turn}`. Tool hops are free; a degraded (model-down) reply is FREE and says so.
-  The lane shows in `adminMetrics` as "Website assistant replies".
+- **Metered two ways.** (1) `assistant_message`, `ASSISTANT_MESSAGE_PRICE_PAISE` = ₹0.50 flat per
+  DELIVERED reply (2.5× the ~20 paise measured COGS; the same rate as an auto-posted listing — it
+  launched at ₹1 and was cut on 2026-09-05 because a chat reply must not cost four WhatsApp
+  messages). (2) `assistant_outcome`, `ASSISTANT_OUTCOME_PRICE_PAISE` = ₹5 per NEW capture in a
+  turn — an enquiry sent, a requirement filed, a listing drafted — keyed on the platform's
+  `captured:true` on the tool result (a repeat by the same visitor is not a capture). Both settle
+  through `settleMetered` (utils/meter.js; `assistantAccrualPaise` / `assistantOutcomeAccrualPaise`),
+  idempotent on `${conversationId}:${turn}` and `${conversationId}:${turn}:${tool}`. Tool hops are
+  free; a degraded (model-down) reply is FREE and says so. Per-org override via `pricing.*`. Both
+  lanes show in `adminMetrics`. History is capped at 24 `Content` entries so a long chat's COGS stays
+  within ~2× a fresh one.
 - **Guards.** A NEGATIVE balance refuses the lane (402 `LOW_BALANCE`) — unlike the other metered
   lanes, because a public widget is unbounded demand; waived when `assistant_message` or
   `agent_work` is in `billingPaused`. Per-org daily cap (`org.assistant.dailyCap`, default 3000
