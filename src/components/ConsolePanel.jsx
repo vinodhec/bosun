@@ -117,16 +117,43 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   }, [orgId]);
   useEffect(() => { if (!session) loadParked(); }, [session, loadParked]);
 
+  // status 0 = the box could not be reached at all (dead tunnel hostname, network). Callers
+  // treat that as "re-resolve the console URL and try again", never as a silent no-op.
   const call = useCallback(async (s, op, body, method = 'POST') => {
-    const res = await fetch(`${s.consoleUrl}${API}${op}`, {
-      method,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${s.token}` },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    let data = {};
-    try { data = await res.json(); } catch { /* no body */ }
-    return { status: res.status, data };
+    try {
+      const res = await fetch(`${s.consoleUrl}${API}${op}`, {
+        method,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${s.token}` },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      let data = {};
+      try { data = await res.json(); } catch { /* no body */ }
+      return { status: res.status, data };
+    } catch {
+      return { status: 0, data: { error: 'unreachable' } };
+    }
   }, []);
+
+  // The tunnel hostname changes whenever the box restarts. The session survives on the box,
+  // so ask Bosun again: a rejoin hands back the same sid at the new address.
+  const sessionRef = useRef(null);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  const refreshSession = useCallback(async () => {
+    const cur = sessionRef.current;
+    if (!cur) return null;
+    try {
+      const res = await openConsoleSession({ orgId });
+      const s = res.data;
+      if (!s?.rejoined || s.sid !== cur.sid) return null;
+      const next = { ...cur, consoleUrl: s.consoleUrl, previewUrl: s.previewUrl, token: s.token };
+      setSession(next);
+      try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* storage blocked */ }
+      if (next.consoleUrl !== cur.consoleUrl) setPreviewNonce((n) => n + 1);
+      return next;
+    } catch {
+      return null;
+    }
+  }, [orgId]);
 
   const clearSession = useCallback(() => {
     pollRef.current?.abort();
@@ -204,11 +231,17 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     pollRef.current = ac;
     let after = 0;
     let failures = 0;
+    let cur = s;
     (async () => {
       while (!ac.signal.aborted) {
         try {
-          const res = await fetch(`${s.consoleUrl}${API}poll?after=${after}&wait=20`, {
-            headers: { authorization: `Bearer ${s.token}` },
+          if (failures && failures % 5 === 0) {
+            // Five misses in a row: most likely the tunnel moved. Re-resolve and carry on.
+            const fresh = await refreshSession();
+            if (fresh && fresh.consoleUrl !== cur.consoleUrl) { cur = fresh; add('info', 'Console moved — reconnected at its new address.'); }
+          }
+          const res = await fetch(`${cur.consoleUrl}${API}poll?after=${after}&wait=20`, {
+            headers: { authorization: `Bearer ${cur.token}` },
             signal: ac.signal,
           });
           if (res.status === 404) { handleEvent({ t: 'ended', v: 'gone' }); return; }
@@ -231,7 +264,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
         }
       }
     })();
-  }, [add, handleEvent]);
+  }, [add, handleEvent, refreshSession]);
 
   const openSession = useCallback(async ({ branch } = {}) => {
     setCreating(true);
@@ -312,10 +345,14 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     resetImages();
     setTurnRunning(true);
     add('user', `${text || 'See the attached screenshot.'}${shots.length ? ` 📎 ${shots.length}` : ''}`);
-    const { status: st, data } = await call(session, 'turn', { prompt: text, images: shots });
+    let { status: st, data } = await call(session, 'turn', { prompt: text, images: shots });
+    if (st === 0) {
+      const fresh = await refreshSession();
+      if (fresh) { add('info', 'Console moved — reconnected at its new address.'); ({ status: st, data } = await call(fresh, 'turn', { prompt: text, images: shots })); }
+    }
     if (st !== 200) {
       setTurnRunning(false);
-      add('error', String(data.error || `Turn refused (${st})`));
+      add('error', st === 0 ? 'Could not reach the console. Try again in a moment.' : String(data.error || `Turn refused (${st})`));
     }
   };
 
@@ -340,9 +377,16 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   const end = async () => {
     if (!session) return;
     if (turns > 0 && !window.confirm(`End and discard ${turns} unsent change${turns === 1 ? '' : 's'}? Press Ship first to keep them.`)) return;
-    await call(session, 'session', undefined, 'DELETE');
+    let { status: st } = await call(session, 'session', undefined, 'DELETE');
+    if (st === 0) {
+      // Dead address (the box restarted): find the session at its new one and end it there.
+      const fresh = await refreshSession();
+      if (fresh) ({ status: st } = await call(fresh, 'session', undefined, 'DELETE'));
+    }
     clearSession();
-    add('info', 'Session ended. The preview server is gone.');
+    add('info', st === 200 || st === 404
+      ? 'Session ended. The preview server is gone.'
+      : 'Could not reach the console to end it. With no browser attached it ends by itself within two minutes and billing stops then.');
   };
 
   const elapsed = session ? Math.max(0, now - (session.createdAt || now)) : 0;

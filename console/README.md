@@ -33,6 +33,7 @@ development, `LOCAL_UI=1 PUBLIC_URL=http://localhost:7000 node server.mjs` and s
 | `SESSIONS_DIR` | `~/agent-sessions` | one worktree per session + `registry.json` |
 | `CLAUDE_CONFIG_DIR` | `~/.claude-console` | **the account that runs turns.** Log it in once: `CLAUDE_CONFIG_DIR=~/.claude-console claude`, or set `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) in the env file. `ANTHROPIC_API_KEY` is honoured instead when set. |
 | `MODEL` | `sonnet` | opus burns a Pro window far faster |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_NAME` / `GIT_COMMITTER_EMAIL` | — | **Required.** Identity on every checkpoint and ship commit. Must be a GitHub account that is a member of the Vercel team: Vercel refuses to build a preview for any other author ("Deployment Blocked … commit email could not be matched to a GitHub account", seen 2026-09-04 with the box's default `portalmaadiveedu@gmail.com`). Use the same account `gh` is logged in as. |
 | `CONSOLE_SECRET` | — | = Bosun functions' `CONSOLE_SECRET`. Verifies session creation (inbound) and signs every report (outbound). Required unless `LOCAL_UI=1`. |
 | `CONSOLE_HOME_URL` | — | Bosun's `consoleHook` function URL. Everything the box says goes here. |
 | `TUNNEL` | unset | `1` spawns `cloudflared tunnel --url` and reports the trycloudflare URL it gets |
