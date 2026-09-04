@@ -87,6 +87,9 @@ export function sessionView(t, id, { userCanDeployProd = false, deploy = null } 
     canDeployTesting: t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd && !t.featureIntermediate,
     canDeployProd: userCanDeployProd && t.status === 'complete' && t.approved === true && !!t.prUrl && !t.deployedProd && !t.featureIntermediate,
     deployedTesting: !!t.deployedTesting,
+    // Chat & code ships land here as kind:'console'; `branch` lets the card reopen a session on it.
+    kind: t.kind || 'fix',
+    branch: t.branch || null,
     deployedProd: !!t.deployedProd,
     deployed: merged,
     // Sharing state for the "Share with my team" control on a finished fix (token builds the link).

@@ -124,6 +124,14 @@ export async function getPrHeadRef(repoFullName, prNumber, token) {
   return pr?.head?.ref || null;
 }
 
+// The PR's merge state, for reconciling changes merged OUTSIDE Bosun (a Chat & code PR merged
+// on GitHub by hand). `{ merged, state }` or null if the PR can't be read.
+export async function getPrState(repoFullName, prNumber, token) {
+  const pr = await ghGet(repoFullName, `/pulls/${prNumber}`, token);
+  if (!pr) return null;
+  return { merged: !!pr.merged, state: pr.state || null, mergedAt: pr.merged_at || null, headRef: pr.head?.ref || null };
+}
+
 // Trigger a `workflow_dispatch` GitHub Action in the customer's repo. Used for the Firebase
 // hosting path: the repo's own workflow does the Angular build + `firebase deploy`, Bosun just
 // kicks it off. `gitRef` is the branch the workflow FILE is read from (must be the default

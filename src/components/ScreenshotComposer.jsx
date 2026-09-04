@@ -3,7 +3,7 @@ import { MAX_IMAGES, ACCEPTED_TYPES, imageFilesFrom } from '../utils/images.js';
 import { MAX_DOCUMENTS, ACCEPTED_DOC_ACCEPT } from '../utils/documents.js';
 
 export default function ScreenshotComposer({
-  value, onChange, rows = 3, placeholder, autoFocus = false,
+  value, onChange, rows = 3, placeholder, autoFocus = false, onKeyDown, disabled = false,
   images, imgErr, dragging, setDragging, addFiles, removeImage,
   // Optional document attachments — the "attach a plan / spreadsheet" button only renders when
   // an `addDocs` handler is passed, so screenshot-only composers are unaffected.
@@ -33,8 +33,10 @@ export default function ScreenshotComposer({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onPaste={onPaste}
+        onKeyDown={onKeyDown}
         rows={rows}
         autoFocus={autoFocus}
+        disabled={disabled}
         placeholder={placeholder}
         className="w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-relaxed text-ink outline-none placeholder:text-ink-muted"
       />

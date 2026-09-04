@@ -29,6 +29,7 @@ import {
   DEFECT_REGRESSION_TEST_PRICE_PAISE,
   DEFECT_SLA_REPORT_PRICE_PAISE,
   ASSISTANT_MESSAGE_PRICE_PAISE,
+  CONSOLE_MINUTE_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
   priceForService,
@@ -134,6 +135,14 @@ export const SERVICE_DEFS = {
     accrualField: 'defectReportAccrualPaise',
     kind: 'defect_sla_report',
     label: 'Weekly defect SLA report',
+  },
+  // Chat & code: reported by Bosun's OWN console box (handlers/consoleTasks.js#consoleHook), one
+  // event per minute a session is live — minute 1 at session start. Time, not work, is the unit.
+  console_minute: {
+    pricePaise: CONSOLE_MINUTE_PRICE_PAISE,
+    accrualField: 'consoleMinuteAccrualPaise',
+    kind: 'console_minute',
+    label: 'Chat & code — session minute',
   },
 };
 

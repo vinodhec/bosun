@@ -1,0 +1,613 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { openConsoleSession, listMyConsoleSessions, customerDeployTesting } from '../firebase/functions.js';
+import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import ScreenshotComposer from './ScreenshotComposer.jsx';
+import { formatINR } from '@shared/currency.js';
+
+/**
+ * Chat & code — chat on the left, the customer's own website on the right. Full screen.
+ *
+ * One callable (`openConsoleSession`) opens the session on Bosun's console box; after that every
+ * turn, the event feed and the preview go browser → box directly with the per-session token.
+ * Nothing streams through Functions. The box bills a minute the moment the session opens and one
+ * more for every minute it stays open, so the top bar shows the running clock.
+ *
+ * Events arrive by LONG-POLL (`poll?after=<seq>`), not SSE: the Cloudflare quick tunnel in front
+ * of the box buffers an event-stream until it ends, so nothing ever showed while a turn ran. A
+ * poll response ends per batch and streams through anything. A fresh attach replays the session's
+ * event ring from seq 0, so a reload sees the conversation so far.
+ *
+ * Lifecycle: one live session on the box at a time — someone else's shows as "X is using it".
+ * Ten idle minutes end a session, but unsent work is PARKED (branch pushed) and listed here under
+ * Resume. A shipped change becomes a card in "Fix something" (Preview / Deploy to testing / Go
+ * live) with "Continue editing", which mounts this panel with `resume={{ branch }}`.
+ *
+ * Screenshots ride along with a turn (paste / drop / attach, same composer as the Fix tab); the box
+ * saves them beside the worktree and tells the agent to look at them first.
+ */
+
+const STORAGE_KEY = 'bosun:console-session';
+const API = '/__console/api/';
+
+let nextId = 1;
+
+const ERRORS = {
+  CONSOLE_OFFLINE: 'The console service is not reachable at the moment. Try again in a minute.',
+  CONSOLE_REFUSED: 'The console service refused to open a session. Try again in a minute.',
+  CONSOLE_NOT_CONFIGURED: 'Chat & code is not switched on for this workspace yet.',
+  INSUFFICIENT_BALANCE: 'Not enough credit to start a session. Top up and try again.',
+  NO_REPO_CONNECTED: 'Connect a repository first — the Bosun team does this for you.',
+  WRONG_REPO: 'This workspace is not set up on the console yet. Ask the Bosun team.',
+  NO_ORG: 'Your account isn’t linked to an organisation yet.',
+  NOT_YOUR_BRANCH: 'That session belongs to another workspace.',
+  BAD_BRANCH: 'That session cannot be resumed.',
+};
+
+function fmtElapsed(ms) {
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+const fmtTime = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
+
+export default function ConsolePanel({ orgId, connected, balance = null, resume = null, onExit }) {
+  const [session, setSession] = useState(null);
+  const [lines, setLines] = useState([]);
+  const [prompt, setPrompt] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [turnRunning, setTurnRunning] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const [turns, setTurns] = useState(0);
+  const [shipTitle, setShipTitle] = useState('');
+  const [shipping, setShipping] = useState(false);
+  const [busyInfo, setBusyInfo] = useState(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const [parked, setParked] = useState(null);
+  const [deployingId, setDeployingId] = useState(null);
+  // True from the moment a preview frame is (re)mounted until its onLoad fires.
+  const [frameLoading, setFrameLoading] = useState(true);
+  useEffect(() => { setFrameLoading(true); }, [previewNonce, previewReady]);
+  const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
+
+  const pollRef = useRef(null); // AbortController of the running poll loop
+  const logRef = useRef(null);
+  const streamIdRef = useRef(null);
+  const resumedRef = useRef(null); // which resume request we already acted on
+
+  const add = useCallback((kind, text) => {
+    const id = nextId++;
+    setLines((prev) => [...prev, { id, kind, text }]);
+    return id;
+  }, []);
+
+  const appendStream = useCallback((chunk) => {
+    setLines((prev) => {
+      const id = streamIdRef.current;
+      if (id !== null) {
+        const idx = prev.findIndex((l) => l.id === id);
+        if (idx >= 0) {
+          const copy = prev.slice();
+          copy[idx] = { ...copy[idx], text: copy[idx].text + chunk };
+          return copy;
+        }
+      }
+      const fresh = nextId++;
+      streamIdRef.current = fresh;
+      return [...prev, { id: fresh, kind: 'agent', text: chunk }];
+    });
+  }, []);
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [lines]);
+
+  // Running clock while a session is live — billing is per minute, so show the minutes.
+  useEffect(() => {
+    if (!session) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [session]);
+
+  const loadParked = useCallback(async () => {
+    try {
+      const res = await listMyConsoleSessions({ orgId });
+      setParked(res?.data?.sessions ?? []);
+    } catch {
+      setParked([]);
+    }
+  }, [orgId]);
+  // Deploy to testing = merge the PR to main. Same callable as the card under "Fix something";
+  // the entry drops off the list once merged.
+  const deployToTesting = useCallback(async (p) => {
+    if (!p?.taskId) return;
+    if (!window.confirm(`Deploy "${p.title || p.branch}" to testing? This merges it to main.`)) return;
+    setDeployingId(p.taskId);
+    try {
+      await customerDeployTesting({ taskId: p.taskId });
+      add('checkpoint', `Deployed to testing: ${p.title || p.branch}. It is merged to main and builds there now.`);
+    } catch (err) {
+      add('error', `Could not deploy to testing: ${String(err?.message || err)}`);
+    } finally {
+      setDeployingId(null);
+      loadParked();
+    }
+  }, [add, loadParked]);
+
+  // While no session is open, keep the list fresh: a shipped entry's preview link appears a few
+  // minutes after Ship, and a merge on the card (or on GitHub) drops the entry.
+  useEffect(() => {
+    if (session) return undefined;
+    loadParked();
+    const t = setInterval(loadParked, 30_000);
+    return () => clearInterval(t);
+  }, [session, loadParked]);
+
+  // status 0 = the box could not be reached at all (dead tunnel hostname, network). Callers
+  // treat that as "re-resolve the console URL and try again", never as a silent no-op.
+  const call = useCallback(async (s, op, body, method = 'POST') => {
+    try {
+      const res = await fetch(`${s.consoleUrl}${API}${op}`, {
+        method,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${s.token}` },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      let data = {};
+      try { data = await res.json(); } catch { /* no body */ }
+      return { status: res.status, data };
+    } catch {
+      return { status: 0, data: { error: 'unreachable' } };
+    }
+  }, []);
+
+  // The tunnel hostname changes whenever the box restarts. The session survives on the box,
+  // so ask Bosun again: a rejoin hands back the same sid at the new address.
+  const sessionRef = useRef(null);
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  const refreshSession = useCallback(async () => {
+    const cur = sessionRef.current;
+    if (!cur) return null;
+    try {
+      const res = await openConsoleSession({ orgId, rejoinOnly: true });
+      const s = res.data;
+      if (!s?.rejoined || s.sid !== cur.sid) return null;
+      const next = { ...cur, consoleUrl: s.consoleUrl, previewUrl: s.previewUrl, token: s.token };
+      setSession(next);
+      try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* storage blocked */ }
+      if (next.consoleUrl !== cur.consoleUrl) setPreviewNonce((n) => n + 1);
+      return next;
+    } catch {
+      return null;
+    }
+  }, [orgId]);
+
+  const clearSession = useCallback(() => {
+    pollRef.current?.abort();
+    pollRef.current = null;
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ }
+    setSession(null);
+    setPreviewReady(false);
+    setTurns(0);
+    setTurnRunning(false);
+    setStatus(null);
+  }, []);
+
+  const handleEvent = useCallback((m) => {
+    switch (m.t) {
+      case 'text':
+        appendStream(String(m.v));
+        break;
+      case 'tool':
+        setStatus((prev) => ({ label: String(m.label || 'Working'), steps: (prev?.steps || 0) + 1 }));
+        add('tool', `${m.v}${m.f ? `  ${m.f}` : ''}`);
+        break;
+      case 'preview':
+        setPreviewReady(true);
+        setPreviewNonce((n) => n + 1);
+        break;
+      case 'checkpoint': {
+        streamIdRef.current = null;
+        setTurns(Number(m.n) || 0);
+        setStatus(null);
+        const changed = /(\d+) files? changed/.exec(String(m.stat || ''));
+        add('checkpoint', changed ? `Saved — ${changed[1]} file${changed[1] === '1' ? '' : 's'} changed. Check the preview.` : 'Nothing changed on the page.');
+        add('tool', `checkpoint ${m.n} @${m.sha} ${m.stat || ''}`);
+        break;
+      }
+      case 'undo':
+        streamIdRef.current = null;
+        setTurns(Number(m.turns) || 0);
+        add('checkpoint', 'Undone — the preview is back to how it was.');
+        add('tool', `reset to ${m.to}`);
+        setPreviewNonce((n) => n + 1);
+        break;
+      case 'shipped':
+        add('checkpoint', 'Shipped. It is now a card under “Fix something” — preview it there, then deploy to testing or go live. You can keep editing here; the card updates when you ship again.');
+        add('tool', `PR ${m.url}`);
+        setTurns(0);
+        break;
+      case 'idle':
+        streamIdRef.current = null;
+        setTurnRunning(false);
+        setStatus(null);
+        break;
+      case 'result':
+        if (m.err) add('error', `The turn ended with an error. ${m.v || ''}`);
+        break;
+      case 'ended':
+        add('info', m.parked
+          ? `Session ended (${m.v}). Your unsent changes were kept — find them under Resume below.`
+          : `Session ended (${m.v}).`);
+        clearSession();
+        break;
+      case 'error':
+      case 'stderr':
+        add('error', String(m.v));
+        break;
+      default:
+        break;
+    }
+  }, [add, appendStream, clearSession]);
+
+  // The poll loop. One request in flight at a time; the box answers as soon as there is a
+  // newer event, or after ~20 s with an empty batch. Replays from seq 0 on attach.
+  const attach = useCallback((s) => {
+    pollRef.current?.abort();
+    const ac = new AbortController();
+    pollRef.current = ac;
+    let after = 0;
+    let failures = 0;
+    let cur = s;
+    (async () => {
+      while (!ac.signal.aborted) {
+        try {
+          if (failures && failures % 5 === 0) {
+            // Five misses in a row: most likely the tunnel moved. Re-resolve and carry on.
+            const fresh = await refreshSession();
+            if (fresh && fresh.consoleUrl !== cur.consoleUrl) { cur = fresh; add('info', 'Console moved — reconnected at its new address.'); }
+          }
+          const res = await fetch(`${cur.consoleUrl}${API}poll?after=${after}&wait=20`, {
+            headers: { authorization: `Bearer ${cur.token}` },
+            signal: ac.signal,
+          });
+          if (res.status === 404) { handleEvent({ t: 'ended', v: 'gone' }); return; }
+          if (!res.ok) throw new Error(`poll ${res.status}`);
+          const data = await res.json();
+          if (failures >= 3) add('info', 'Reconnected.');
+          failures = 0;
+          for (const ev of data.events || []) {
+            after = Math.max(after, Number(ev.seq) || 0);
+            handleEvent(ev);
+          }
+          if (data.started) setPreviewReady(true);
+          if (data.busy) setTurnRunning(true);
+          if (typeof data.turns === 'number') setTurns(data.turns);
+        } catch {
+          if (ac.signal.aborted) return;
+          failures += 1;
+          if (failures === 3) add('info', 'Connection to the console dropped — retrying…');
+          await new Promise((r) => setTimeout(r, Math.min(5000, 500 * failures)));
+        }
+      }
+    })();
+  }, [add, handleEvent, refreshSession]);
+
+  const openSession = useCallback(async ({ branch } = {}) => {
+    setCreating(true);
+    setBusyInfo(null);
+    setLines([]);
+    setPreviewReady(false);
+    setTurns(0);
+    add('info', branch ? 'Reopening your earlier work…' : 'Setting up your workspace…');
+    try {
+      const res = await openConsoleSession({ orgId, branch: branch || undefined });
+      const s = res.data;
+      setSession(s);
+      try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch { /* storage blocked */ }
+      if (s.rejoined) {
+        setTurns(s.turns || 0);
+        setPreviewReady(Boolean(s.started));
+        add('info', `Picked up your live session (${s.turns || 0} change${s.turns === 1 ? '' : 's'} so far). Carry on, or press End to start clean.`);
+      } else if (s.resumed) {
+        setTurns(s.turns || 0);
+        add('info', `Resumed with your ${s.turns || 0} earlier change${s.turns === 1 ? '' : 's'}. The preview appears in about a minute; then carry on from where you left off.`);
+      } else {
+        add('info', 'Ready in about a minute — the preview appears on the right. Then just describe the change you want.');
+      }
+      add('tool', `branch ${s.branch}`);
+      attach(s);
+    } catch (err) {
+      const code = String(err?.message || '');
+      if (code === 'BUSY') {
+        const d = err?.details || {};
+        setBusyInfo(d);
+        add('error', `${d.owner || 'Someone'} is using Chat & code right now${d.since ? ` (since ${fmtTime(d.since)})` : ''}. One session at a time — it frees up when they end it, or after 10 idle minutes.`);
+      } else {
+        add('error', ERRORS[code] || `Could not open a session (${code || 'unknown error'}).`);
+      }
+    } finally {
+      setCreating(false);
+    }
+  }, [add, attach, orgId]);
+
+  // Survive a reload: the box still has the session; pick it back up.
+  useEffect(() => {
+    let raw = null;
+    try { raw = sessionStorage.getItem(STORAGE_KEY); } catch { /* storage blocked */ }
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    call(s, 'session', undefined, 'GET')
+      .then(({ status: st, data }) => {
+        if (st !== 200) { sessionStorage.removeItem(STORAGE_KEY); return; }
+        setSession(s);
+        setTurns(Number(data.turns) || 0);
+        setPreviewReady(Boolean(data.started));
+        setTurnRunning(Boolean(data.busy));
+        add('info', 'Resumed your session.');
+        attach(s);
+      })
+      .catch(() => sessionStorage.removeItem(STORAGE_KEY));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // "Continue editing" from a shipped card: open straight onto that branch (once per request).
+  useEffect(() => {
+    if (!resume?.branch || session || creating) return;
+    if (resumedRef.current === resume.at) return;
+    resumedRef.current = resume.at;
+    openSession({ branch: resume.branch });
+  }, [resume, session, creating, openSession]);
+
+  useEffect(() => () => pollRef.current?.abort(), []);
+
+  const canSend = !!session && !turnRunning && (prompt.trim().length > 0 || images.length > 0);
+
+  const send = async (e) => {
+    e?.preventDefault();
+    if (!canSend) return;
+    const text = prompt.trim();
+    const shots = images.map((im) => ({ mediaType: im.mediaType, data: im.data }));
+    setPrompt('');
+    resetImages();
+    setTurnRunning(true);
+    add('user', `${text || 'See the attached screenshot.'}${shots.length ? ` 📎 ${shots.length}` : ''}`);
+    let { status: st, data } = await call(session, 'turn', { prompt: text, images: shots });
+    if (st === 0) {
+      const fresh = await refreshSession();
+      if (fresh) { add('info', 'Console moved — reconnected at its new address.'); ({ status: st, data } = await call(fresh, 'turn', { prompt: text, images: shots })); }
+    }
+    if (st !== 200) {
+      setTurnRunning(false);
+      add('error', st === 0 ? 'Could not reach the console. Try again in a moment.' : String(data.error || `Turn refused (${st})`));
+    }
+  };
+
+  const undo = async () => {
+    if (!session || turnRunning) return;
+    const { status: st, data } = await call(session, 'undo', { back: 1 });
+    if (st !== 200) add('error', String(data.error || `Undo refused (${st})`));
+  };
+
+  const ship = async () => {
+    if (!session || turnRunning || !turns) return;
+    setShipping(true);
+    try {
+      const { status: st, data } = await call(session, 'ship', { title: shipTitle.trim() || undefined });
+      if (st !== 200) add('error', String(data.error || `Ship refused (${st})`));
+      else setShipTitle('');
+    } finally {
+      setShipping(false);
+    }
+  };
+
+  const end = async () => {
+    if (!session) return;
+    if (turns > 0 && !window.confirm(`End and discard ${turns} unsent change${turns === 1 ? '' : 's'}? Press Ship first to keep them.`)) return;
+    let { status: st } = await call(session, 'session', undefined, 'DELETE');
+    // The poll may already have delivered `ended` (and cleared the session) while the
+    // DELETE was in flight — that IS success, whatever the DELETE's own fate.
+    const alreadyEnded = () => sessionRef.current === null;
+    if (st === 0 && !alreadyEnded()) {
+      // Dead address (the box restarted): find the session at its new one and end it there.
+      const fresh = await refreshSession();
+      if (fresh) ({ status: st } = await call(fresh, 'session', undefined, 'DELETE'));
+    }
+    const ok = st === 200 || st === 404 || alreadyEnded();
+    clearSession();
+    add('info', ok
+      ? 'Session ended. The preview server is gone.'
+      : 'Could not reach the console to end it. With no browser attached it ends by itself within two minutes and billing stops then.');
+  };
+
+  const elapsed = session ? Math.max(0, now - (session.createdAt || now)) : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-white">
+      <div className="flex items-center gap-3 border-b border-line px-3 py-1.5 text-sm">
+        <button type="button" onClick={onExit} className="btn btn-ghost btn-sm" disabled={turnRunning}>
+          ← Back
+        </button>
+        <span className="font-semibold text-ink">Chat &amp; code</span>
+        {session && <span className="badge badge-brand whitespace-nowrap">{fmtElapsed(elapsed)}</span>}
+        <span className="ml-auto text-xs text-ink-soft">
+          {balance == null ? '' : `Balance ${formatINR(balance)}`}
+        </span>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Left: chat */}
+        <div className="flex w-[42%] min-w-[320px] flex-col border-r border-line">
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
+            {!session ? (
+              <button type="button" onClick={() => openSession()} disabled={creating || !connected} className="btn btn-primary btn-sm">
+                {creating ? 'Starting…' : 'New session'}
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={undo} disabled={turnRunning || !turns} className="btn btn-outline btn-sm">
+                  Undo turn
+                </button>
+                <input
+                  value={shipTitle}
+                  onChange={(e) => setShipTitle(e.target.value)}
+                  placeholder="Title for review (optional)"
+                  className="input min-w-0 flex-1 py-1 text-xs"
+                />
+                <button type="button" onClick={ship} disabled={turnRunning || !turns || shipping} className="btn btn-success btn-sm">
+                  {shipping ? 'Shipping…' : `Ship${turns ? ` (${turns})` : ''}`}
+                </button>
+                <button type="button" onClick={end} disabled={turnRunning} className="btn btn-outline btn-sm text-bad">
+                  End
+                </button>
+              </>
+            )}
+            <button type="button" onClick={() => setShowDetails((v) => !v)} className="ml-auto text-xs text-ink-muted hover:text-ink-soft">
+              {showDetails ? 'Hide details' : 'Details'}
+            </button>
+          </div>
+
+          <div ref={logRef} className="flex-1 space-y-1 overflow-auto px-3 py-2 text-sm">
+            {!lines.length && (
+              <p className="text-ink-soft">
+                Start a session. It takes a copy of your live website, boots a preview, and every message becomes a change you can
+                see on the right. Ship when it looks right — it becomes a card under “Fix something” to preview and deploy.
+              </p>
+            )}
+            {busyInfo && (
+              <p className="alert-warn text-xs">
+                {busyInfo.owner || 'Someone'} has the session{busyInfo.since ? ` since ${fmtTime(busyInfo.since)}` : ''}
+                {busyInfo.lastActivity ? `, last active ${fmtTime(busyInfo.lastActivity)}` : ''} ({busyInfo.turns || 0} change{busyInfo.turns === 1 ? '' : 's'}).
+                It ends by itself after 10 idle minutes.
+              </p>
+            )}
+            {!session && Array.isArray(parked) && parked.length > 0 && (
+              <div className="mt-2 rounded-lg border border-line p-2">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">Pick up where you left off</p>
+                <p className="mb-2 text-xs text-ink-soft">Shipped changes stay editable until they are deployed to testing. Unsent work is kept when a session times out.</p>
+                <ul className="space-y-1.5">
+                  {parked.map((p) => (
+                    <li key={p.id} className="flex flex-wrap items-center gap-2 text-xs">
+                      <button type="button" onClick={() => openSession({ branch: p.branch })} disabled={creating || !connected} className="btn btn-outline btn-sm">
+                        Resume
+                      </button>
+                      <span className={`badge ${p.kind === 'shipped' ? 'badge-brand' : 'badge-warn'}`}>{p.kind === 'shipped' ? 'shipped' : 'unsent'}</span>
+                      <span className="text-ink">{p.title || p.branch}</span>
+                      <span className="text-ink-soft">{p.turns} change{p.turns === 1 ? '' : 's'} · {p.owner || '—'} · {p.at ? new Date(p.at).toLocaleString() : ''}</span>
+                      {p.kind === 'shipped' && (
+                        p.previewUrl
+                          ? <a href={p.previewUrl} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline">Preview</a>
+                          : <span className="text-ink-muted">preview building…</span>
+                      )}
+                      {p.prUrl && <a href={p.prUrl} target="_blank" rel="noreferrer" className="text-ink-soft hover:underline">PR</a>}
+                      {p.kind === 'shipped' && p.taskId && (
+                        <button
+                          type="button"
+                          onClick={() => deployToTesting(p)}
+                          disabled={deployingId === p.taskId}
+                          className="btn btn-teal btn-sm"
+                        >
+                          {deployingId === p.taskId ? 'Merging…' : 'Deploy to testing'}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {lines.filter((l) => showDetails || l.kind !== 'tool').map((l) => (
+              <div
+                key={l.id}
+                className={
+                  l.kind === 'user' ? 'mt-2 whitespace-pre-wrap font-medium text-brand-700'
+                    : l.kind === 'tool' ? 'truncate font-mono text-[11px] text-ink-muted'
+                      : l.kind === 'checkpoint' ? 'mt-1 border-t border-dashed border-line pt-1 text-xs text-emerald-700'
+                        : l.kind === 'error' ? 'whitespace-pre-wrap text-xs text-bad'
+                          : l.kind === 'info' ? 'text-xs text-ink-soft'
+                            : 'whitespace-pre-wrap text-ink'
+                }
+              >
+                {l.kind === 'user' ? '› ' : l.kind === 'tool' ? '· ' : ''}
+                {l.text}
+              </div>
+            ))}
+            {turnRunning && (
+              <div className="flex items-center gap-2 text-xs text-ink-soft">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-brand-500" />
+                {status ? `${status.label}… (${status.steps} step${status.steps === 1 ? '' : 's'})` : 'Thinking…'}
+              </div>
+            )}
+          </div>
+
+          <form onSubmit={send} className="border-t border-line p-2">
+            <ScreenshotComposer
+              value={prompt}
+              onChange={setPrompt}
+              rows={2}
+              disabled={!session || turnRunning}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+              }}
+              placeholder={session ? 'Describe the change… paste or drop a screenshot to point at it (Enter to send)' : 'Start a session first'}
+              images={images}
+              imgErr={imgErr}
+              dragging={dragging}
+              setDragging={setDragging}
+              addFiles={addFiles}
+              removeImage={removeImage}
+            />
+            <div className="mt-1.5 flex justify-end">
+              <button type="submit" disabled={!canSend} className="btn btn-primary btn-sm">
+                Send
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* Right: live preview */}
+        <div className="flex flex-1 flex-col">
+          <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-xs text-ink-soft">
+            <span>Live preview</span>
+            {session && previewReady ? (
+              <>
+                <button type="button" onClick={() => setPreviewNonce((n) => n + 1)} className="btn btn-outline btn-sm py-0.5">
+                  Reload
+                </button>
+                <a href={session.previewUrl} target="_blank" rel="noreferrer" className="ml-auto text-brand-700 hover:underline">
+                  Open in new tab
+                </a>
+              </>
+            ) : session ? (
+              <span className="ml-auto">starting the preview…</span>
+            ) : null}
+          </div>
+          {session && previewReady ? (
+            <div className="relative flex-1">
+              <iframe
+                key={previewNonce}
+                title="Live preview"
+                src={session.previewUrl}
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                className="absolute inset-0 h-full w-full border-0"
+                onLoad={() => setFrameLoading(false)}
+              />
+              {frameLoading && (
+                // The dev server answers "ready" before the first page is compiled; the very first
+                // load takes ~30 s of blank frame. Say so instead of showing nothing.
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white/85 text-sm text-ink-soft">
+                  <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+                  <span>Loading the preview… the first page takes up to half a minute to compile.</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
+              {session ? 'The preview appears here once it is up (about a minute).' : 'No session.'}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

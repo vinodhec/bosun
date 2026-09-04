@@ -889,3 +889,17 @@ export function priceForService(org, service, fallbackPaise) {
   if (Number.isInteger(override) && override >= 0) return override;
   return fallbackPaise;
 }
+
+/**
+ * ── Chat & code (console_minute) ───────────────────────────────────────────────────────────────
+ * The live-preview lane: the customer chats, an agent edits a worktree of THEIR repo on Bosun's
+ * console box, and the change shows in a preview within seconds. The box is the cost — one dev
+ * server holds it for the whole session, turns or no turns — so the unit is TIME, not work:
+ *   console_minute — ₹13 per minute (₹780/hour) from session start, billed minute by minute while the session
+ *                    is live. Minute 1 is billed at start (the ₹13 minimum); minute k when the
+ *                    session reaches k−1 minutes of age. A session that dies with the box bills
+ *                    only the minutes it actually served, and Bosun ends a session the moment the
+ *                    org cannot pay the next minute.
+ * DEFAULT. An org's `pricing.console_minute` overrides (priceForService). Operator-set 2026-09-04.
+ */
+export const CONSOLE_MINUTE_PRICE_PAISE = 1300;  // ₹13 per session-minute (₹780/hour, operator-set 2026-09-04), flat; minimum one minute

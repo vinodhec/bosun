@@ -60,6 +60,11 @@ export const approveChatBuild = httpsCallable(functions, 'approveChatBuild');
 export const getChatMockHtml = httpsCallable(functions, 'getChatMockHtml');
 export const listMyChats = httpsCallable(functions, 'listMyChats');
 
+// "Chat & code": a live session on Bosun's console box — chat on the left, the customer's own site
+// on the right, every message an edit visible in seconds. Billed per minute the session is live.
+export const openConsoleSession = httpsCallable(functions, 'openConsoleSession');
+export const listMyConsoleSessions = httpsCallable(functions, 'listMyConsoleSessions');
+
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
 export const adminAddCredits = httpsCallable(functions, 'adminAddCredits');
