@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openConsoleSession, listMyConsoleSessions } from '../firebase/functions.js';
+import { openConsoleSession, listMyConsoleSessions, customerDeployTesting } from '../firebase/functions.js';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import ScreenshotComposer from './ScreenshotComposer.jsx';
 import { formatINR } from '@shared/currency.js';
@@ -66,6 +66,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   const [status, setStatus] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [parked, setParked] = useState(null);
+  const [deployingId, setDeployingId] = useState(null);
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
 
   const pollRef = useRef(null); // AbortController of the running poll loop
@@ -115,6 +116,23 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
       setParked([]);
     }
   }, [orgId]);
+  // Deploy to testing = merge the PR to main. Same callable as the card under "Fix something";
+  // the entry drops off the list once merged.
+  const deployToTesting = useCallback(async (p) => {
+    if (!p?.taskId) return;
+    if (!window.confirm(`Deploy "${p.title || p.branch}" to testing? This merges it to main.`)) return;
+    setDeployingId(p.taskId);
+    try {
+      await customerDeployTesting({ taskId: p.taskId });
+      add('checkpoint', `Deployed to testing: ${p.title || p.branch}. It is merged to main and builds there now.`);
+    } catch (err) {
+      add('error', `Could not deploy to testing: ${String(err?.message || err)}`);
+    } finally {
+      setDeployingId(null);
+      loadParked();
+    }
+  }, [add, loadParked]);
+
   // While no session is open, keep the list fresh: a shipped entry's preview link appears a few
   // minutes after Ship, and a merge on the card (or on GitHub) drops the entry.
   useEffect(() => {
@@ -480,6 +498,16 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                           : <span className="text-ink-muted">preview building…</span>
                       )}
                       {p.prUrl && <a href={p.prUrl} target="_blank" rel="noreferrer" className="text-ink-soft hover:underline">PR</a>}
+                      {p.kind === 'shipped' && p.taskId && (
+                        <button
+                          type="button"
+                          onClick={() => deployToTesting(p)}
+                          disabled={deployingId === p.taskId}
+                          className="btn btn-teal btn-sm"
+                        >
+                          {deployingId === p.taskId ? 'Merging…' : 'Deploy to testing'}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -346,6 +346,7 @@ export const listMyConsoleSessions = onCall({ region: REGION }, async (request) 
     if (t?.deployedTesting || t?.deployedProd) continue;
     v.previewUrl = t?.previewUrl || null;
     v.prUrl = t?.prUrl || v.prUrl;
+    v.taskId = t ? taskRef.id : null;   // lets the panel call customerDeployTesting directly
     // Merged on GitHub by hand? Then it is on main already: mark the card and let it go.
     const prNum = v.prUrl ? Number(String(v.prUrl).split('/').pop()) : null;
     if (prNum && t?.repoFullName) {
