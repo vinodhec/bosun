@@ -12,7 +12,7 @@
  *                        that (turns, the SSE stream, the preview iframe) goes browser → box directly
  *                        with the per-session token the box hands back.
  *   consoleHook          (HTTP) — the box reports in: `url` at boot, `minute` once per minute a
- *                        session is live (the meter: console_minute, ₹12/min, minute 1 at start),
+ *                        session is live (the meter: console_minute, ₹13/min = ₹780/hour, minute 1 at start),
  *                        `turn` and `ship` for the session record. Signed with the same secret.
  *   listMyConsoleSessions (callable) — the org's recent sessions for the dashboard tab.
  *
@@ -116,6 +116,9 @@ export const openConsoleSession = onCall({ region: REGION }, async (request) => 
     branch: String(data.branch || ''),
     createdAt: Number(data.createdAt) || Date.now(),
     rejoined,
+    // One live session per org: when a teammate holds it, the caller joins theirs.
+    owner: data.owner ? String(data.owner) : owner,
+    teammate: Boolean(data.teammate),
     turns: Number(data.turns) || 0,
     started: Boolean(data.started),
     minuteInr: floor,

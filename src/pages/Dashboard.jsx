@@ -17,7 +17,7 @@ import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments.js';
 import { useOrgStats } from '../hooks/useOrgStats.js';
 import { formatINR } from '@shared/currency.js';
-import { FEATURE_BUILD_CAP_INR, CONSOLE_MINUTE_PRICE_PAISE } from '@shared/billing.js';
+import { FEATURE_BUILD_CAP_INR } from '@shared/billing.js';
 import { clarityStars } from '@shared/gamification.js';
 import { MAX_IMAGES } from '../utils/images.js';
 
@@ -363,7 +363,7 @@ export default function Dashboard() {
 
             {/* Chat & code is a live session, not a form: the panel replaces the composer below. */}
             {mode === 'console' ? (
-              <ConsolePanel orgId={orgId} connected={connected} minuteInr={CONSOLE_MINUTE_PRICE_PAISE / 100} balance={balance} onExit={() => setMode('chat')} />
+              <ConsolePanel orgId={orgId} connected={connected} balance={balance} onExit={() => setMode('chat')} />
             ) : (<>
             <h1 className="text-xl font-bold tracking-tight text-ink">
               {mode === 'chat' ? 'What would you like to change or add?'

@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { openConsoleSession, listMyConsoleSessions } from '../firebase/functions.js';
+import { openConsoleSession } from '../firebase/functions.js';
+import { useImageAttachments } from '../hooks/useImageAttachments.js';
+import ScreenshotComposer from './ScreenshotComposer.jsx';
 import { formatINR } from '@shared/currency.js';
 
 /**
- * Chat & code — chat on the left, the customer's own website on the right.
+ * Chat & code — chat on the left, the customer's own website on the right. Full screen.
  *
  * One callable (`openConsoleSession`) opens the session on Bosun's console box; after that every
- * turn, the event stream and the preview go browser → box directly with the per-session token.
+ * turn, the event feed and the preview go browser → box directly with the per-session token.
  * Nothing streams through Functions. The box bills a minute the moment the session opens and one
- * more for every minute it stays open, so the header shows the running time and the price.
+ * more for every minute it stays open, so the top bar shows the running clock.
+ *
+ * Events arrive by LONG-POLL (`poll?after=<seq>`), not SSE: the Cloudflare quick tunnel in front
+ * of the box buffers an event-stream until it ends, so nothing ever showed while a turn ran. A
+ * poll response ends per batch and streams through anything. A fresh attach replays the session's
+ * event ring from seq 0, so a reload or a teammate joining sees the conversation so far.
+ *
+ * Screenshots ride along with a turn (paste / drop / attach, same composer as the Fix tab); the box
+ * saves them beside the worktree and tells the agent to look at them first.
  */
 
 const STORAGE_KEY = 'bosun:console-session';
@@ -33,7 +43,7 @@ function fmtElapsed(ms) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance = null, onExit }) {
+export default function ConsolePanel({ orgId, connected, balance = null, onExit }) {
   const [session, setSession] = useState(null);
   const [lines, setLines] = useState([]);
   const [prompt, setPrompt] = useState('');
@@ -48,9 +58,9 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
   const [showDetails, setShowDetails] = useState(false);
   const [status, setStatus] = useState(null);
   const [now, setNow] = useState(Date.now());
-  const [history, setHistory] = useState(null);
+  const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
 
-  const esRef = useRef(null);
+  const pollRef = useRef(null); // AbortController of the running poll loop
   const logRef = useRef(null);
   const streamIdRef = useRef(null);
 
@@ -81,22 +91,12 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [lines]);
 
-  // Running clock while a session is live — the price is per minute, so show the minutes.
+  // Running clock while a session is live — billing is per minute, so show the minutes.
   useEffect(() => {
     if (!session) return undefined;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [session]);
-
-  const loadHistory = useCallback(async () => {
-    try {
-      const res = await listMyConsoleSessions({ orgId });
-      setHistory(res?.data?.sessions ?? []);
-    } catch {
-      setHistory([]);
-    }
-  }, [orgId]);
-  useEffect(() => { loadHistory(); }, [loadHistory]);
 
   const call = useCallback(async (s, op, body, method = 'POST') => {
     const res = await fetch(`${s.consoleUrl}${API}${op}`, {
@@ -109,72 +109,108 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
     return { status: res.status, data };
   }, []);
 
-  const attach = useCallback((s) => {
-    esRef.current?.close();
-    const es = new EventSource(`${s.consoleUrl}${API}events?token=${encodeURIComponent(s.token)}`);
-    es.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      switch (m.t) {
-        case 'text':
-          appendStream(String(m.v));
-          break;
-        case 'tool':
-          setStatus((prev) => ({ label: String(m.label || 'Working'), steps: (prev?.steps || 0) + 1 }));
-          add('tool', `${m.v}${m.f ? `  ${m.f}` : ''}`);
-          break;
-        case 'preview':
-          setPreviewReady(true);
-          setPreviewNonce((n) => n + 1);
-          break;
-        case 'checkpoint': {
-          streamIdRef.current = null;
-          setTurns(Number(m.n) || 0);
-          setStatus(null);
-          const changed = /(\d+) files? changed/.exec(String(m.stat || ''));
-          add('checkpoint', changed ? `Saved — ${changed[1]} file${changed[1] === '1' ? '' : 's'} changed. Check the preview.` : 'Nothing changed on the page.');
-          add('tool', `checkpoint ${m.n} @${m.sha} ${m.stat || ''}`);
-          break;
-        }
-        case 'undo':
-          streamIdRef.current = null;
-          setTurns(Number(m.turns) || 0);
-          add('checkpoint', 'Undone — the preview is back to how it was.');
-          add('tool', `reset to ${m.to}`);
-          setPreviewNonce((n) => n + 1);
-          break;
-        case 'shipped':
-          add('checkpoint', 'Sent for review. It goes live once it passes validation and your team approves it.');
-          add('tool', `PR ${m.url}`);
-          setTurns(0);
-          loadHistory();
-          break;
-        case 'idle':
-          streamIdRef.current = null;
-          setTurnRunning(false);
-          setStatus(null);
-          break;
-        case 'result':
-          if (m.err) add('error', `The turn ended with an error. ${m.v || ''}`);
-          break;
-        case 'ended':
-          add('info', `Session ended (${m.v}).`);
-          es.close();
-          setSession(null);
-          setPreviewReady(false);
-          try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ }
-          loadHistory();
-          break;
-        case 'error':
-        case 'stderr':
-          add('error', String(m.v));
-          break;
-        default:
-          break;
+  const clearSession = useCallback(() => {
+    pollRef.current?.abort();
+    pollRef.current = null;
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ }
+    setSession(null);
+    setPreviewReady(false);
+    setTurns(0);
+    setTurnRunning(false);
+    setStatus(null);
+  }, []);
+
+  const handleEvent = useCallback((m) => {
+    switch (m.t) {
+      case 'text':
+        appendStream(String(m.v));
+        break;
+      case 'tool':
+        setStatus((prev) => ({ label: String(m.label || 'Working'), steps: (prev?.steps || 0) + 1 }));
+        add('tool', `${m.v}${m.f ? `  ${m.f}` : ''}`);
+        break;
+      case 'preview':
+        setPreviewReady(true);
+        setPreviewNonce((n) => n + 1);
+        break;
+      case 'checkpoint': {
+        streamIdRef.current = null;
+        setTurns(Number(m.n) || 0);
+        setStatus(null);
+        const changed = /(\d+) files? changed/.exec(String(m.stat || ''));
+        add('checkpoint', changed ? `Saved — ${changed[1]} file${changed[1] === '1' ? '' : 's'} changed. Check the preview.` : 'Nothing changed on the page.');
+        add('tool', `checkpoint ${m.n} @${m.sha} ${m.stat || ''}`);
+        break;
       }
-    };
-    es.onerror = () => add('error', 'Lost the event stream — the console service may have restarted. Start a new session if this persists.');
-    esRef.current = es;
-  }, [add, appendStream, loadHistory]);
+      case 'undo':
+        streamIdRef.current = null;
+        setTurns(Number(m.turns) || 0);
+        add('checkpoint', 'Undone — the preview is back to how it was.');
+        add('tool', `reset to ${m.to}`);
+        setPreviewNonce((n) => n + 1);
+        break;
+      case 'shipped':
+        add('checkpoint', 'Sent for review. It goes live once it passes validation and your team approves it.');
+        add('tool', `PR ${m.url}`);
+        setTurns(0);
+        break;
+      case 'idle':
+        streamIdRef.current = null;
+        setTurnRunning(false);
+        setStatus(null);
+        break;
+      case 'result':
+        if (m.err) add('error', `The turn ended with an error. ${m.v || ''}`);
+        break;
+      case 'ended':
+        add('info', `Session ended (${m.v}).`);
+        clearSession();
+        break;
+      case 'error':
+      case 'stderr':
+        add('error', String(m.v));
+        break;
+      default:
+        break;
+    }
+  }, [add, appendStream, clearSession]);
+
+  // The poll loop. One request in flight at a time; the box answers as soon as there is a
+  // newer event, or after ~20 s with an empty batch. Replays from seq 0 on attach.
+  const attach = useCallback((s) => {
+    pollRef.current?.abort();
+    const ac = new AbortController();
+    pollRef.current = ac;
+    let after = 0;
+    let failures = 0;
+    (async () => {
+      while (!ac.signal.aborted) {
+        try {
+          const res = await fetch(`${s.consoleUrl}${API}poll?after=${after}&wait=20`, {
+            headers: { authorization: `Bearer ${s.token}` },
+            signal: ac.signal,
+          });
+          if (res.status === 404) { handleEvent({ t: 'ended', v: 'gone' }); return; }
+          if (!res.ok) throw new Error(`poll ${res.status}`);
+          const data = await res.json();
+          if (failures >= 3) add('info', 'Reconnected.');
+          failures = 0;
+          for (const ev of data.events || []) {
+            after = Math.max(after, Number(ev.seq) || 0);
+            handleEvent(ev);
+          }
+          if (data.started) setPreviewReady(true);
+          if (data.busy) setTurnRunning(true);
+          if (typeof data.turns === 'number') setTurns(data.turns);
+        } catch {
+          if (ac.signal.aborted) return;
+          failures += 1;
+          if (failures === 3) add('info', 'Connection to the console dropped — retrying…');
+          await new Promise((r) => setTimeout(r, Math.min(5000, 500 * failures)));
+        }
+      }
+    })();
+  }, [add, handleEvent]);
 
   // Survive a reload: the box still has the session; pick it back up.
   useEffect(() => {
@@ -196,7 +232,7 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => esRef.current?.close(), []);
+  useEffect(() => () => pollRef.current?.abort(), []);
 
   const newSession = async () => {
     setCreating(true);
@@ -213,7 +249,9 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
       if (s.rejoined) {
         setTurns(s.turns || 0);
         setPreviewReady(Boolean(s.started));
-        add('info', `Picked up your earlier session (${s.turns || 0} change${s.turns === 1 ? '' : 's'} so far). Carry on, or press End to start clean.`);
+        add('info', s.teammate
+          ? `Joined your team's live session (started by ${s.owner || 'a teammate'}, ${s.turns || 0} change${s.turns === 1 ? '' : 's'} so far). You share one preview and one branch — take turns.`
+          : `Picked up your earlier session (${s.turns || 0} change${s.turns === 1 ? '' : 's'} so far). Carry on, or press End to start clean.`);
       } else {
         add('info', 'Ready in about a minute — the preview appears on the right. Then just describe the change you want.');
       }
@@ -228,14 +266,18 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
     }
   };
 
+  const canSend = !!session && !turnRunning && (prompt.trim().length > 0 || images.length > 0);
+
   const send = async (e) => {
     e?.preventDefault();
-    if (!session || turnRunning || !prompt.trim()) return;
+    if (!canSend) return;
     const text = prompt.trim();
+    const shots = images.map((im) => ({ mediaType: im.mediaType, data: im.data }));
     setPrompt('');
+    resetImages();
     setTurnRunning(true);
-    add('user', text);
-    const { status: st, data } = await call(session, 'turn', { prompt: text });
+    add('user', `${text || 'See the attached screenshot.'}${shots.length ? ` 📎 ${shots.length}` : ''}`);
+    const { status: st, data } = await call(session, 'turn', { prompt: text, images: shots });
     if (st !== 200) {
       setTurnRunning(false);
       add('error', String(data.error || `Turn refused (${st})`));
@@ -263,18 +305,12 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
   const end = async () => {
     if (!session) return;
     await call(session, 'session', undefined, 'DELETE');
-    esRef.current?.close();
-    try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ }
-    setSession(null);
-    setPreviewReady(false);
-    setTurns(0);
+    clearSession();
     add('info', 'Session ended. The preview server is gone.');
-    loadHistory();
   };
 
   const elapsed = session ? Math.max(0, now - (session.createdAt || now)) : 0;
 
-  // Full screen: the page behind is covered — a live session wants every pixel for the preview.
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-white">
       <div className="flex items-center gap-3 border-b border-line px-3 py-1.5 text-sm">
@@ -357,20 +393,28 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
             )}
           </div>
 
-          <form onSubmit={send} className="flex border-t border-line">
-            <textarea
+          <form onSubmit={send} className="border-t border-line p-2">
+            <ScreenshotComposer
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={setPrompt}
+              rows={2}
+              disabled={!session || turnRunning}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
               }}
-              disabled={!session || turnRunning}
-              placeholder={session ? 'Describe the change… (Enter to send, Shift+Enter for a new line)' : 'Start a session first'}
-              className="h-16 flex-1 resize-none px-3 py-2 text-sm outline-none disabled:bg-slate-50"
+              placeholder={session ? 'Describe the change… paste or drop a screenshot to point at it (Enter to send)' : 'Start a session first'}
+              images={images}
+              imgErr={imgErr}
+              dragging={dragging}
+              setDragging={setDragging}
+              addFiles={addFiles}
+              removeImage={removeImage}
             />
-            <button type="submit" disabled={!session || turnRunning || !prompt.trim()} className="btn btn-primary rounded-none px-4">
-              Send
-            </button>
+            <div className="mt-1.5 flex justify-end">
+              <button type="submit" disabled={!canSend} className="btn btn-primary btn-sm">
+                Send
+              </button>
+            </div>
           </form>
         </div>
 
@@ -406,25 +450,6 @@ export default function ConsolePanel({ orgId, connected, minuteInr = 12, balance
           )}
         </div>
       </div>
-
-      {!session && Array.isArray(history) && history.length > 0 && (
-        <div className="max-h-56 overflow-auto border-t border-line px-3 py-2">
-          <h2 className="section-label">Recent sessions</h2>
-          <ul className="mt-2 divide-y divide-line rounded-xl border border-line bg-white text-sm">
-            {history.map((h) => (
-              <li key={h.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
-                <span className="text-ink-soft">{new Date(h.createdAt).toLocaleString()}</span>
-                <span className="text-ink">{h.owner || '—'}</span>
-                <span className="text-ink-soft">{h.minutes} min · {h.turns} turn{h.turns === 1 ? '' : 's'}</span>
-                <span className={`badge ${h.status === 'live' ? 'badge-brand' : ''}`}>{h.status}</span>
-                {h.prUrls?.map((u) => (
-                  <a key={u} href={u} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline">PR</a>
-                ))}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }

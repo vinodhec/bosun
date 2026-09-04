@@ -10,7 +10,7 @@ Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/node %h/apps/bosun/console/server.mjs
 Restart=always
 RestartSec=5
-KillMode=mixed
+KillMode=process
 TimeoutStopSec=20
 
 [Install]

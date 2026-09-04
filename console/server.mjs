@@ -67,6 +67,7 @@ const CFG = {
   // Browser origins allowed to call the API and to frame the preview.
   origins:     list(process.env.CONSOLE_ALLOWED_ORIGINS, [
     'https://bosun-76bba.web.app', 'https://bosun-76bba.firebaseapp.com', 'http://localhost:5173',
+    'https://practicethedeal.com', 'https://www.practicethedeal.com', 'http://practicethedeal.com', 'http://www.practicethedeal.com',
     'https://www.maadiveedu.com', 'https://maadiveedu.com',
     'https://mav30prod-maadiveedu.vercel.app', 'http://localhost:3000', 'http://localhost:3100',
   ]),
@@ -170,10 +171,30 @@ const sh = (cmd, args, opts = {}) =>
     p.on('close', (c) => (c === 0 ? res(out.trim()) : rej(new Error(`${cmd} ${args.join(' ')} → ${c}\n${err}`))));
   });
 
+// Events reach the page by LONG-POLL, not SSE: the Cloudflare quick tunnel in front of
+// this box buffers a text/event-stream response until it ends (measured 2026-09-04:
+// every event of a 12 s stream arrived at +12 s, over quic and http2 alike, with up to
+// 16 KB of padding). A poll response ends per batch, so it streams through anything.
+// Each session keeps a ring of numbered events; `poll?after=N` answers at once when
+// newer events exist, else parks the request until the next emit or the wait expires.
+// The SSE endpoint stays for loopback/local use.
+const EVENT_RING = 2000;
 const emit = (s, obj) => {
+  s.seq = (s.seq || 0) + 1;
+  const ev = { seq: s.seq, ...obj };
+  (s.events ||= []).push(ev);
+  if (s.events.length > EVENT_RING) s.events.splice(0, s.events.length - EVENT_RING);
+  const waiters = s.waiters || []; s.waiters = [];
+  for (const w of waiters) { try { w(); } catch {} }
   const line = `data: ${JSON.stringify(obj)}\n\n`;
   for (const c of s.clients) { try { c.write(line); } catch {} }
 };
+const eventsAfter = (s, after) => (s.events || []).filter((e) => e.seq > after);
+const waitForEvent = (s, ms) => new Promise((resolve) => {
+  const t = setTimeout(() => { s.waiters = (s.waiters || []).filter((w) => w !== wake); resolve(); }, ms);
+  const wake = () => { clearTimeout(t); resolve(); };
+  (s.waiters ||= []).push(wake);
+});
 
 // ── auth ─────────────────────────────────────────────────────────────────────
 const SIG_WINDOW_MS = 5 * 60_000;
@@ -212,7 +233,11 @@ function sessionFromCookie(req) {
 // ── CORS + framing ───────────────────────────────────────────────────────────
 function cors(req, res) {
   const o = req.headers.origin;
-  if (!o || !CFG.origins.includes(o)) return false;
+  if (!o || !CFG.origins.includes(o)) {
+    // Name the origin: a dashboard on a host we did not list is otherwise invisible.
+    if (o) console.log(`cors: origin not allowed ${o} (${req.method} ${req.url.split('?')[0]})`);
+    return false;
+  }
   res.setHeader('access-control-allow-origin', o);
   res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
   res.setHeader('access-control-allow-headers', 'authorization,content-type');
@@ -266,6 +291,14 @@ async function createSession(owner, orgId = null) {
   await sh('git', ['-C', CFG.repo, 'fetch', 'origin', '--quiet']);
   await sh('git', ['-C', CFG.repo, 'worktree', 'add', '-b', branch, worktree, CFG.base]);
   const base = await sh('git', ['-C', worktree, 'rev-parse', 'HEAD']);
+  // Screenshots the user attaches to a turn are written under the worktree (the guard
+  // lets the agent Read only there) but must never reach a checkpoint or the PR: the
+  // per-worktree exclude file keeps `git add -A` blind to them.
+  try {
+    const excl = path.resolve(worktree, await sh('git', ['-C', worktree, 'rev-parse', '--git-path', 'info/exclude']));
+    fs.mkdirSync(path.dirname(excl), { recursive: true });
+    fs.appendFileSync(excl, '\n.chat-attachments/\n');
+  } catch (e) { console.warn('attachments exclude skipped:', e.message.split('\n')[0]); }
 
   const devPort = await freePort(CFG.devPort0);
   const s = {
@@ -618,9 +651,16 @@ const server = http.createServer(async (req, res) => {
           return json({ error: 'wrong_repo', serves: CFG.repoFullName }, 403);
         }
         const live = liveSession();
-        // The same person coming back (reload, new tab, lost storage) rejoins their
-        // own session instead of being told it is busy.
-        if (live && body.owner && live.owner === body.owner) { touch(live); return json({ ...publicSession(live), rejoined: true }); }
+        // One live session per ORGANISATION (operator decision 2026-09-04): anyone from the
+        // org that holds it joins it — same person on a reload, or a teammate — and works in
+        // the same branch and preview. Turns are serialised by `busy`, so two people typing
+        // at once take turns rather than collide.
+        const sameOrg = live && body.orgId && live.orgId && String(body.orgId) === live.orgId;
+        const sameOwner = live && body.owner && live.owner === body.owner;
+        if (sameOrg || sameOwner) {
+          touch(live);
+          return json({ ...publicSession(live), rejoined: true, owner: live.owner, teammate: !sameOwner });
+        }
         // One dev server is ~2 GB. One live session at a time; be honest about it.
         if (live) return json({ error: 'busy', owner: live.owner, since: live.createdAt, turns: live.turns.length }, 409);
         const s = await createSession(body.owner, body.orgId ? String(body.orgId) : null);
@@ -637,6 +677,16 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(tail);
       }
       if (op === 'session' && req.method === 'DELETE') { await destroySession(s.id, 'ended by user'); return json({ ok: true }); }
+      if (op === 'poll') {
+        // Long-poll: everything after `after` (a seq), or wait up to `wait` seconds for the
+        // next emit. A fresh page passes after=0 to replay the ring; `started` lets it
+        // know the preview is up even when no `preview` event is in the window.
+        const after = Number(u.searchParams.get('after') || 0);
+        const waitMs = Math.min(25_000, Math.max(0, Number(u.searchParams.get('wait') || 20) * 1000));
+        let evs = eventsAfter(s, after);
+        if (!evs.length && waitMs) { await waitForEvent(s, waitMs); evs = eventsAfter(s, after); }
+        return json({ events: evs, seq: s.seq || 0, started: s.started, busy: s.busy, turns: s.turns.length });
+      }
       if (op === 'events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
         res.write(': ok\n\n');
@@ -648,10 +698,31 @@ const server = http.createServer(async (req, res) => {
       if (op === 'turn' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}');
         const prompt = String(b.prompt || '').trim();
-        if (!prompt) return json({ error: 'empty prompt' }, 400);
-        const p = s.pendingNote ? `${s.pendingNote}\n\n${prompt}` : prompt;
+        const images = Array.isArray(b.images) ? b.images.slice(0, 5) : [];
+        if (!prompt && !images.length) return json({ error: 'empty prompt' }, 400);
+        // Attached screenshots: saved under the worktree (inside the guard's Read fence,
+        // outside git via info/exclude) and named in the prompt so the agent reads them first.
+        const saved = [];
+        if (images.length) {
+          const dir = path.join(s.worktree, '.chat-attachments');
+          fs.mkdirSync(dir, { recursive: true });
+          const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+          images.forEach((im, i) => {
+            const ext = EXT[String(im?.mediaType || '')];
+            const data = String(im?.data || '');
+            if (!ext || !data || data.length > 8_000_000) return;
+            const file = path.join(dir, `turn${s.turns.length + 1}-${i + 1}.${ext}`);
+            fs.writeFileSync(file, Buffer.from(data, 'base64'));
+            saved.push(file);
+          });
+        }
+        const shown = prompt || 'See the attached screenshot.';
+        let p = saved.length
+          ? `The user attached ${saved.length} screenshot${saved.length === 1 ? '' : 's'}. Read ${saved.length === 1 ? 'it' : 'each one'} with the Read tool before doing anything else:\n${saved.map((f) => `- ${f}`).join('\n')}\n\n${shown}`
+          : shown;
+        if (s.pendingNote) p = `${s.pendingNote}\n\n${p}`;
         s.pendingNote = null;
-        runTurn(s, p, prompt);
+        runTurn(s, p, saved.length ? `${shown} [${saved.length} screenshot${saved.length === 1 ? '' : 's'}]` : shown);
         return json({ ok: true });
       }
       if (op === 'undo' && req.method === 'POST') {
