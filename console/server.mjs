@@ -400,6 +400,11 @@ async function createSession(owner, orgId = null, resumeBranch = null) {
     }
   } catch (e) { console.warn('cache seed skipped:', e.message.split('\n')[0]); }
 
+  // A resumed branch carries its earlier turns (checkpoint commits, see rebuildFromBranch).
+  // Replay them into the event ring so the page shows the conversation it is continuing —
+  // "which one was this?" is answered by the transcript, not a branch id.
+  seededTurns.forEach((t, i) => emit(s, { t: 'history', n: i + 1, v: t.prompt, at: t.at }));
+
   // The dev server logs to a FILE, not a pipe: a pipe dies with the orchestrator and an
   // adopted server would then be writing into a closed fd. The file also survives for
   // debugging and feeds /__console/api/devlog.
@@ -425,6 +430,15 @@ async function createSession(owner, orgId = null, resumeBranch = null) {
         c.once('error', () => r(false));
       });
       if (ok) {
+        // The socket is up but nothing is compiled yet: the first request for "/" takes
+        // 20–60 s on this box, and that used to be the customer's request — a blank frame
+        // behind the tunnel. Turns may start now (the agent's edits compile alongside);
+        // the PREVIEW is announced only once "/" has actually rendered, so the first thing
+        // the customer sees is a page, not a spinner.
+        s.devUp = true;
+        emit(s, { t: 'compiling' });
+        await warmFirstPage(s);
+        if (!sessions.has(sid)) return;
         s.started = true;
         saveRegistry();
         emit(s, { t: 'preview' });
@@ -435,6 +449,18 @@ async function createSession(owner, orgId = null, resumeBranch = null) {
   })();
   saveRegistry();
   return s;
+}
+
+// Request "/" and wait for it to come back — that is the first-page compile. Capped: a
+// broken page must not hold the preview hostage, it just shows as broken.
+function warmFirstPage(s, capMs = Number(process.env.WARM_CAP_MS || 120_000)) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; clearTimeout(cap); resolve(); } };
+    const cap = setTimeout(finish, capMs);
+    const req = http.get({ host: '127.0.0.1', port: s.devPort, path: '/' }, (res) => { res.resume(); res.on('end', finish); res.on('error', finish); });
+    req.on('error', finish);
+  });
 }
 
 // First hit of each route costs 11–24s to compile. Fire them now so the compile
@@ -541,7 +567,7 @@ const TOOL_LABEL = { Read: 'Reading the code', Grep: 'Searching the code', Glob:
 function runTurn(s, prompt, shown = prompt) {
   if (s.busy) return emit(s, { t: 'error', v: 'a turn is already running' });
   if (s.turns.length >= CFG.maxTurns) return emit(s, { t: 'error', v: `this session hit its ${CFG.maxTurns}-turn cap — ship it or start a new one` });
-  if (!s.started) return emit(s, { t: 'error', v: 'the preview server is not running — start a new session' });
+  if (!s.started && !s.devUp) return emit(s, { t: 'error', v: 'the preview server is not running — start a new session' });
   s.busy = true;
   touch(s);
 

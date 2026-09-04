@@ -324,6 +324,8 @@ export const listMyConsoleSessions = onCall({ region: REGION }, async (request) 
     return {
       id: d.id, kind, owner: s.owner || null, branch: s.branch || '', title: s.shippedTitle || s.title || s.lastPrompt || '',
       turns: s.turns || 0, minutes: s.minutes || 0, at: s.parkedAt || s.lastShipAt || s.createdAt || 0,
+      // When it began and when it was last touched — the two dates that tell four sessions apart.
+      startedAt: Number(s.createdAt) || 0, lastAt: s.parkedAt || s.lastShipAt || s.updatedAt?.toMillis?.() || Number(s.createdAt) || 0,
       prUrl: Array.isArray(s.prUrls) && s.prUrls.length ? s.prUrls[s.prUrls.length - 1] : null, previewUrl: null,
     };
   };

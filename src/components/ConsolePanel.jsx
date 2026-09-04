@@ -49,6 +49,18 @@ function fmtElapsed(ms) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 const fmtTime = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '');
+const fmtDay = (ms) => (ms ? new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
+function ago(ms) {
+  if (!ms) return '';
+  const m = Math.floor((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+/** A session's name for humans: the title it was shipped/parked with, else its first message. */
+const sessionName = (p) => (p?.title || '').trim() || 'Untitled session';
 
 export default function ConsolePanel({ orgId, connected, balance = null, resume = null, onExit }) {
   const [session, setSession] = useState(null);
@@ -67,6 +79,14 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   const [now, setNow] = useState(Date.now());
   const [parked, setParked] = useState(null);
   const [deployingId, setDeployingId] = useState(null);
+  // Outcome of a "Deploy to testing" from the Resume list. A BANNER, not a chat line: the merge
+  // takes a while, and when it landed as a chat line it turned up at the bottom of whatever
+  // session the customer had started in the meantime.
+  const [notice, setNotice] = useState(null);
+  // The name of the live session (first message, or the resumed entry's title) — shown in the bar.
+  const [sessionTitle, setSessionTitle] = useState('');
+  // The dev server is up but its first page is still compiling (box event `compiling`).
+  const [compiling, setCompiling] = useState(false);
   // True from the moment a preview frame is (re)mounted until its onLoad fires.
   const [frameLoading, setFrameLoading] = useState(true);
   useEffect(() => { setFrameLoading(true); }, [previewNonce, previewReady]);
@@ -77,9 +97,9 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   const streamIdRef = useRef(null);
   const resumedRef = useRef(null); // which resume request we already acted on
 
-  const add = useCallback((kind, text) => {
+  const add = useCallback((kind, text, at = Date.now()) => {
     const id = nextId++;
-    setLines((prev) => [...prev, { id, kind, text }]);
+    setLines((prev) => [...prev, { id, kind, text, at }]);
     return id;
   }, []);
 
@@ -125,11 +145,12 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     if (!p?.taskId) return;
     if (!window.confirm(`Deploy "${p.title || p.branch}" to testing? This merges it to main.`)) return;
     setDeployingId(p.taskId);
+    setNotice(null);
     try {
       await customerDeployTesting({ taskId: p.taskId });
-      add('checkpoint', `Deployed to testing: ${p.title || p.branch}. It is merged to main and builds there now.`);
+      setNotice({ tone: 'ok', text: `“${sessionName(p)}” is deployed to testing — merged to main and building there now.` });
     } catch (err) {
-      add('error', `Could not deploy to testing: ${String(err?.message || err)}`);
+      setNotice({ tone: 'bad', text: `Could not deploy “${sessionName(p)}” to testing: ${String(err?.message || err)}` });
     } finally {
       setDeployingId(null);
       loadParked();
@@ -189,9 +210,11 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ }
     setSession(null);
     setPreviewReady(false);
+    setCompiling(false);
     setTurns(0);
     setTurnRunning(false);
     setStatus(null);
+    setSessionTitle('');
   }, []);
 
   const handleEvent = useCallback((m) => {
@@ -203,9 +226,18 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
         setStatus((prev) => ({ label: String(m.label || 'Working'), steps: (prev?.steps || 0) + 1 }));
         add('tool', `${m.v}${m.f ? `  ${m.f}` : ''}`);
         break;
+      case 'compiling':
+        setCompiling(true);
+        break;
       case 'preview':
+        setCompiling(false);
         setPreviewReady(true);
         setPreviewNonce((n) => n + 1);
+        break;
+      case 'history':
+        // An earlier turn of the branch being resumed — shown as the conversation this continues.
+        add('past', String(m.v), Number(m.at) || 0);
+        setSessionTitle((cur) => cur || String(m.v).slice(0, 72));
         break;
       case 'checkpoint': {
         streamIdRef.current = null;
@@ -294,13 +326,18 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     })();
   }, [add, handleEvent, refreshSession]);
 
-  const openSession = useCallback(async ({ branch } = {}) => {
+  const openSession = useCallback(async ({ branch, entry } = {}) => {
     setCreating(true);
     setBusyInfo(null);
+    setNotice(null);
     setLines([]);
     setPreviewReady(false);
+    setCompiling(false);
     setTurns(0);
-    add('info', branch ? 'Reopening your earlier work…' : 'Setting up your workspace…');
+    setSessionTitle(entry ? sessionName(entry) : '');
+    add('info', branch
+      ? `Reopening “${sessionName(entry)}”${entry?.startedAt ? ` (started ${fmtDay(entry.startedAt)})` : ''}…`
+      : 'Setting up your workspace…');
     try {
       const res = await openConsoleSession({ orgId, branch: branch || undefined });
       const s = res.data;
@@ -312,9 +349,9 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
         add('info', `Picked up your live session (${s.turns || 0} change${s.turns === 1 ? '' : 's'} so far). Carry on, or press End to start clean.`);
       } else if (s.resumed) {
         setTurns(s.turns || 0);
-        add('info', `Resumed with your ${s.turns || 0} earlier change${s.turns === 1 ? '' : 's'}. The preview appears in about a minute; then carry on from where you left off.`);
+        add('info', `Resumed with your ${s.turns || 0} earlier change${s.turns === 1 ? '' : 's'} — the earlier messages are listed above. The preview appears once the first page has compiled; then carry on from where you left off.`);
       } else {
-        add('info', 'Ready in about a minute — the preview appears on the right. Then just describe the change you want.');
+        add('info', 'Ready in about a minute — the preview appears on the right once its first page has compiled. Then just describe the change you want.');
       }
       add('tool', `branch ${s.branch}`);
       attach(s);
@@ -373,6 +410,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
     resetImages();
     setTurnRunning(true);
     add('user', `${text || 'See the attached screenshot.'}${shots.length ? ` 📎 ${shots.length}` : ''}`);
+    if (text) setSessionTitle((cur) => cur || text.slice(0, 72));
     let { status: st, data } = await call(session, 'turn', { prompt: text, images: shots });
     if (st === 0) {
       const fresh = await refreshSession();
@@ -431,6 +469,9 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
         </button>
         <span className="font-semibold text-ink">Chat &amp; code</span>
         {session && <span className="badge badge-brand whitespace-nowrap">{fmtElapsed(elapsed)}</span>}
+        {session && sessionTitle && (
+          <span className="min-w-0 truncate text-ink-soft" title={sessionTitle}>· {sessionTitle}</span>
+        )}
         <span className="ml-auto text-xs text-ink-soft">
           {balance == null ? '' : `Balance ${formatINR(balance)}`}
         </span>
@@ -475,6 +516,12 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                 see on the right. Ship when it looks right — it becomes a card under “Fix something” to preview and deploy.
               </p>
             )}
+            {notice && (
+              <div className={`mb-2 flex items-start gap-2 rounded-lg px-3 py-2 text-xs ${notice.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}`}>
+                <span className="flex-1">{notice.text}</span>
+                <button type="button" onClick={() => setNotice(null)} className="text-ink-muted hover:text-ink-soft">✕</button>
+              </div>
+            )}
             {busyInfo && (
               <p className="alert-warn text-xs">
                 {busyInfo.owner || 'Someone'} has the session{busyInfo.since ? ` since ${fmtTime(busyInfo.since)}` : ''}
@@ -486,15 +533,25 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
               <div className="mt-2 rounded-lg border border-line p-2">
                 <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">Pick up where you left off</p>
                 <p className="mb-2 text-xs text-ink-soft">Shipped changes stay editable until they are deployed to testing. Unsent work is kept when a session times out.</p>
-                <ul className="space-y-1.5">
-                  {parked.map((p) => (
-                    <li key={p.id} className="flex flex-wrap items-center gap-2 text-xs">
-                      <button type="button" onClick={() => openSession({ branch: p.branch })} disabled={creating || !connected} className="btn btn-outline btn-sm">
+                <ul className="space-y-2">
+                  {[...parked].sort((a, b) => (b.lastAt || b.at || 0) - (a.lastAt || a.at || 0)).map((p) => (
+                    <li key={p.id} className="rounded-md border border-line/70 bg-white p-2 text-xs">
+                      <div className="flex items-start gap-2">
+                        <span className={`badge ${p.kind === 'shipped' ? 'badge-brand' : 'badge-warn'}`}>{p.kind === 'shipped' ? 'shipped' : 'unsent'}</span>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold text-ink" title={sessionName(p)}>{sessionName(p)}</div>
+                          <div className="text-ink-soft">
+                            {p.startedAt ? `Started ${fmtDay(p.startedAt)}` : ''}
+                            {p.lastAt || p.at ? ` · last worked on ${ago(p.lastAt || p.at)}` : ''}
+                            {` · ${p.turns} change${p.turns === 1 ? '' : 's'}`}
+                            {p.owner ? ` · ${p.owner}` : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                      <button type="button" onClick={() => openSession({ branch: p.branch, entry: p })} disabled={creating || !connected} className="btn btn-outline btn-sm">
                         Resume
                       </button>
-                      <span className={`badge ${p.kind === 'shipped' ? 'badge-brand' : 'badge-warn'}`}>{p.kind === 'shipped' ? 'shipped' : 'unsent'}</span>
-                      <span className="text-ink">{p.title || p.branch}</span>
-                      <span className="text-ink-soft">{p.turns} change{p.turns === 1 ? '' : 's'} · {p.owner || '—'} · {p.at ? new Date(p.at).toLocaleString() : ''}</span>
                       {p.kind === 'shipped' && (
                         p.previewUrl
                           ? <a href={p.previewUrl} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline">Preview</a>
@@ -511,6 +568,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                           {deployingId === p.taskId ? 'Merging…' : 'Deploy to testing'}
                         </button>
                       )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -521,6 +579,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                 key={l.id}
                 className={
                   l.kind === 'user' ? 'mt-2 whitespace-pre-wrap font-medium text-brand-700'
+                    : l.kind === 'past' ? 'mt-1 whitespace-pre-wrap text-ink-soft'
                     : l.kind === 'tool' ? 'truncate font-mono text-[11px] text-ink-muted'
                       : l.kind === 'checkpoint' ? 'mt-1 border-t border-dashed border-line pt-1 text-xs text-emerald-700'
                         : l.kind === 'error' ? 'whitespace-pre-wrap text-xs text-bad'
@@ -528,8 +587,11 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                             : 'whitespace-pre-wrap text-ink'
                 }
               >
-                {l.kind === 'user' ? '› ' : l.kind === 'tool' ? '· ' : ''}
+                {l.kind === 'user' || l.kind === 'past' ? '› ' : l.kind === 'tool' ? '· ' : ''}
                 {l.text}
+                {(l.kind === 'user' || l.kind === 'past') && l.at ? (
+                  <span className="ml-2 align-middle text-[10px] font-normal text-ink-muted">{l.kind === 'past' ? fmtDay(l.at) : fmtTime(l.at)}</span>
+                ) : null}
               </div>
             ))}
             {turnRunning && (
@@ -579,7 +641,7 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
                 </a>
               </>
             ) : session ? (
-              <span className="ml-auto">starting the preview…</span>
+              <span className="ml-auto">{compiling ? 'compiling the first page… (up to a minute)' : 'starting the preview…'}</span>
             ) : null}
           </div>
           {session && previewReady ? (
@@ -602,8 +664,11 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
               )}
             </div>
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
-              {session ? 'The preview appears here once it is up (about a minute).' : 'No session.'}
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-ink-muted">
+              {session && <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />}
+              {session
+                ? (compiling ? 'The preview server is up — compiling its first page so it opens instantly (up to a minute).' : 'Starting the preview server (about a minute).')
+                : 'No session.'}
             </div>
           )}
         </div>
