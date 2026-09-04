@@ -67,6 +67,9 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
   const [now, setNow] = useState(Date.now());
   const [parked, setParked] = useState(null);
   const [deployingId, setDeployingId] = useState(null);
+  // True from the moment a preview frame is (re)mounted until its onLoad fires.
+  const [frameLoading, setFrameLoading] = useState(true);
+  useEffect(() => { setFrameLoading(true); }, [previewNonce, previewReady]);
   const { images, imgErr, dragging, setDragging, addFiles, removeImage, reset: resetImages } = useImageAttachments();
 
   const pollRef = useRef(null); // AbortController of the running poll loop
@@ -580,13 +583,24 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
             ) : null}
           </div>
           {session && previewReady ? (
-            <iframe
-              key={previewNonce}
-              title="Live preview"
-              src={session.previewUrl}
-              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-              className="w-full flex-1 border-0"
-            />
+            <div className="relative flex-1">
+              <iframe
+                key={previewNonce}
+                title="Live preview"
+                src={session.previewUrl}
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+                className="absolute inset-0 h-full w-full border-0"
+                onLoad={() => setFrameLoading(false)}
+              />
+              {frameLoading && (
+                // The dev server answers "ready" before the first page is compiled; the very first
+                // load takes ~30 s of blank frame. Say so instead of showing nothing.
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white/85 text-sm text-ink-soft">
+                  <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+                  <span>Loading the preview… the first page takes up to half a minute to compile.</span>
+                </div>
+              )}
+            </div>
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">
               {session ? 'The preview appears here once it is up (about a minute).' : 'No session.'}
