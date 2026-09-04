@@ -115,7 +115,14 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
       setParked([]);
     }
   }, [orgId]);
-  useEffect(() => { if (!session) loadParked(); }, [session, loadParked]);
+  // While no session is open, keep the list fresh: a shipped entry's preview link appears a few
+  // minutes after Ship, and a merge on the card (or on GitHub) drops the entry.
+  useEffect(() => {
+    if (session) return undefined;
+    loadParked();
+    const t = setInterval(loadParked, 30_000);
+    return () => clearInterval(t);
+  }, [session, loadParked]);
 
   // status 0 = the box could not be reached at all (dead tunnel hostname, network). Callers
   // treat that as "re-resolve the console URL and try again", never as a silent no-op.
@@ -456,15 +463,23 @@ export default function ConsolePanel({ orgId, connected, balance = null, resume 
             )}
             {!session && Array.isArray(parked) && parked.length > 0 && (
               <div className="mt-2 rounded-lg border border-line p-2">
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">Resume unsent work</p>
-                <ul className="space-y-1">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-soft">Pick up where you left off</p>
+                <p className="mb-2 text-xs text-ink-soft">Shipped changes stay editable until they are deployed to testing. Unsent work is kept when a session times out.</p>
+                <ul className="space-y-1.5">
                   {parked.map((p) => (
                     <li key={p.id} className="flex flex-wrap items-center gap-2 text-xs">
                       <button type="button" onClick={() => openSession({ branch: p.branch })} disabled={creating || !connected} className="btn btn-outline btn-sm">
                         Resume
                       </button>
+                      <span className={`badge ${p.kind === 'shipped' ? 'badge-brand' : 'badge-warn'}`}>{p.kind === 'shipped' ? 'shipped' : 'unsent'}</span>
                       <span className="text-ink">{p.title || p.branch}</span>
-                      <span className="text-ink-soft">{p.turns} change{p.turns === 1 ? '' : 's'} · {p.owner || '—'} · {p.parkedAt ? new Date(p.parkedAt).toLocaleString() : ''}</span>
+                      <span className="text-ink-soft">{p.turns} change{p.turns === 1 ? '' : 's'} · {p.owner || '—'} · {p.at ? new Date(p.at).toLocaleString() : ''}</span>
+                      {p.kind === 'shipped' && (
+                        p.previewUrl
+                          ? <a href={p.previewUrl} target="_blank" rel="noreferrer" className="text-brand-700 hover:underline">Preview</a>
+                          : <span className="text-ink-muted">preview building…</span>
+                      )}
+                      {p.prUrl && <a href={p.prUrl} target="_blank" rel="noreferrer" className="text-ink-soft hover:underline">PR</a>}
                     </li>
                   ))}
                 </ul>

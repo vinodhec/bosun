@@ -30,6 +30,7 @@ import { signPayload } from '../utils/sourcing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { resolveOrgId } from '../utils/orgs.js';
 import { settleMetered } from '../utils/meter.js';
+import { getPrState } from '../utils/github.js';
 import { CONSOLE_MINUTE_PRICE_PAISE, priceForService } from '../shared/billing.js';
 
 const REGION = 'asia-south1';
@@ -297,7 +298,14 @@ export const consoleHook = onRequest({ region: REGION, cors: false }, async (req
   res.status(400).json({ error: 'unknown type' });
 });
 
-/** The org's parked sessions — unsent work an idle timeout put aside, resumable from the panel. */
+/**
+ * Everything the org can pick up again, for the panel's Resume list:
+ *   parked  — unsent work an idle / closed-browser end put aside (branch pushed, no PR).
+ *   shipped — a PR that is not merged yet (the card under "Fix something" carries the preview
+ *             and the deploy buttons; the branch stays editable until Deploy to testing merges it).
+ * A shipped branch whose PR turns out merged OUTSIDE Bosun (on GitHub by hand) is reconciled here:
+ * its card is marked deployedTesting so both lists let go of it.
+ */
 export const listMyConsoleSessions = onCall({ region: REGION }, async (request) => {
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError('unauthenticated', 'Please sign in.');
@@ -305,18 +313,64 @@ export const listMyConsoleSessions = onCall({ region: REGION }, async (request) 
   const userSnap = await db.collection('users').doc(uid).get();
   const orgId = resolveOrgId(userSnap.exists ? userSnap.data() : null, request.data?.orgId);
   if (!orgId) return { sessions: [] };
-  // Equality filters only (no composite index); sorted here — an org parks a handful, not thousands.
-  const snap = await db.collection(SESSIONS).where('orgId', '==', orgId).where('status', '==', 'parked').limit(50).get();
-  const sessions = snap.docs
-    .map((d) => {
-      const s = d.data();
-      return {
-        id: d.id, owner: s.owner || null, branch: s.branch || '', title: s.title || s.lastPrompt || '',
-        turns: s.turns || 0, minutes: s.minutes || 0, parkedAt: s.parkedAt || 0, createdAt: s.createdAt || 0,
-      };
-    })
-    .filter((s) => s.branch)
-    .sort((a, b) => b.parkedAt - a.parkedAt)
-    .slice(0, 20);
+
+  // Equality filters only (no composite index); sorted here — an org has a handful, not thousands.
+  const [parkedSnap, shippedSnap] = await Promise.all([
+    db.collection(SESSIONS).where('orgId', '==', orgId).where('status', '==', 'parked').limit(50).get(),
+    db.collection(SESSIONS).where('orgId', '==', orgId).where('status', '==', 'shipped').limit(50).get(),
+  ]);
+  const view = (d, kind) => {
+    const s = d.data();
+    return {
+      id: d.id, kind, owner: s.owner || null, branch: s.branch || '', title: s.shippedTitle || s.title || s.lastPrompt || '',
+      turns: s.turns || 0, minutes: s.minutes || 0, at: s.parkedAt || s.lastShipAt || s.createdAt || 0,
+      prUrl: Array.isArray(s.prUrls) && s.prUrls.length ? s.prUrls[s.prUrls.length - 1] : null, previewUrl: null,
+    };
+  };
+  const parked = parkedSnap.docs.map((d) => view(d, 'parked')).filter((s) => s.branch);
+
+  // Shipped: one entry per branch (the latest), dropped once its PR is merged.
+  const byBranch = new Map();
+  for (const d of shippedSnap.docs) {
+    const v = view(d, 'shipped');
+    if (!v.branch) continue;
+    const prev = byBranch.get(v.branch);
+    if (!prev || v.at > prev.at) byBranch.set(v.branch, v);
+  }
+  let token = null;
+  const shipped = [];
+  for (const v of byBranch.values()) {
+    const taskRef = db.collection('tasks').doc(taskIdForBranch(v.branch));
+    const taskSnap = await taskRef.get();
+    const t = taskSnap.exists ? taskSnap.data() : null;
+    if (t?.deployedTesting || t?.deployedProd) continue;
+    v.previewUrl = t?.previewUrl || null;
+    v.prUrl = t?.prUrl || v.prUrl;
+    // Merged on GitHub by hand? Then it is on main already: mark the card and let it go.
+    const prNum = v.prUrl ? Number(String(v.prUrl).split('/').pop()) : null;
+    if (prNum && t?.repoFullName) {
+      try {
+        if (token === null) {
+          const sec = await db.collection('orgSecrets').doc(orgId).get();
+          token = sec.exists ? (sec.data().githubToken || false) : false;
+        }
+        if (token) {
+          const st = await getPrState(t.repoFullName, prNum, token);
+          if (st?.merged) {
+            await taskRef.set({ deployedTesting: true, deployedTestingAt: FieldValue.serverTimestamp(), mergedOutsideBosun: true, previewActive: false, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+            await db.collection(SESSIONS).doc(v.id).set({ status: 'merged', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+            continue;
+          }
+          if (st && st.state === 'closed') {
+            await db.collection(SESSIONS).doc(v.id).set({ status: 'closed', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+            continue;
+          }
+        }
+      } catch (e) { console.warn('listMyConsoleSessions:prState', v.branch, e?.message || e); }
+    }
+    shipped.push(v);
+  }
+
+  const sessions = [...parked, ...shipped].sort((a, b) => b.at - a.at).slice(0, 20);
   return { sessions };
 });
