@@ -76,6 +76,10 @@ const CFG = {
   // Per-minute billing: an idle session costs money, so it is ended (and parked, see
   // destroySession) after 10 minutes without a turn, undo or ship.
   idleMs:      Number(process.env.IDLE_MINUTES || 10) * 60_000,
+  // Presence: the page long-polls continuously, so a session nobody has polled for this
+  // long has no browser on it (closed tab, sleeping laptop). It is parked and ended, so a
+  // closed window stops the meter within ~2 minutes instead of at the idle limit.
+  presenceMs:  Number(process.env.PRESENCE_SECONDS || 90) * 1000,
   maxAgeMs:    Number(process.env.MAX_AGE_HOURS || 6) * 3_600_000,
   maxTurns:    Number(process.env.MAX_TURNS || 40),
   prLabel:     process.env.PR_LABEL || 'needs-validation',
@@ -414,7 +418,7 @@ async function destroySession(sid, reason = 'ended') {
   // as it stands (checkpoints and all) and tells home it is PARKED, so the owner can resume
   // it later and carry on. Only an explicit End (or an errored turn-less session) discards.
   let parked = false;
-  if (s.turns.length && !s.busy && /^(idle|max age|out of credit)$/.test(reason)) {
+  if (s.turns.length && !s.busy && /^(idle|max age|out of credit|browser closed)$/.test(reason)) {
     try {
       await sh('git', ['-C', s.worktree, 'push', '--force-with-lease', '-u', 'origin', s.branch]);
       parked = true;
@@ -443,6 +447,13 @@ async function sweep() {
   for (const s of [...sessions.values()]) {
     if (s.busy) continue;
     if (now - s.createdAt > CFG.maxAgeMs) { await destroySession(s.id, 'max age'); continue; }
+    // No browser polling this session any more → it was closed. Park + end. (A session that
+    // has never been polled — just created, page still loading — is judged by idle time only.)
+    if (s.lastPoll && now - s.lastPoll > CFG.presenceMs) {
+      console.log(`session ${s.id.slice(0, 8)} has had no browser for ${Math.round((now - s.lastPoll) / 1000)}s — ending`);
+      await destroySession(s.id, 'browser closed');
+      continue;
+    }
     if (now - s.lastActivity > CFG.idleMs) {
       emit(s, { t: 'error', v: `idle ${Math.round(CFG.idleMs / 60_000)} min — session ended; start a new one to continue` });
       await destroySession(s.id, 'idle');
@@ -728,6 +739,7 @@ const server = http.createServer(async (req, res) => {
         // know the preview is up even when no `preview` event is in the window.
         const after = Number(u.searchParams.get('after') || 0);
         const waitMs = Math.min(25_000, Math.max(0, Number(u.searchParams.get('wait') || 20) * 1000));
+        s.lastPoll = Date.now();   // presence, see sweep()
         let evs = eventsAfter(s, after);
         if (!evs.length && waitMs) { await waitForEvent(s, waitMs); evs = eventsAfter(s, after); }
         return json({ events: evs, seq: s.seq || 0, started: s.started, busy: s.busy, turns: s.turns.length });
