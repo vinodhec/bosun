@@ -307,9 +307,26 @@ async function rebuildFromBranch(worktree) {
   return { base, turns };
 }
 
+// Claude Code asks for a trust decision the first time it runs in a folder and, headless,
+// prints "this workspace has not been trusted … ignoring N permissions.allow entries" to
+// stderr — which the page shows as an error. Every session is a new folder, so mark it
+// (and the main checkout) trusted in the console account's config before the first turn.
+function trustPath(...dirs) {
+  const file = CFG.claudeCfg ? path.join(CFG.claudeCfg, '.claude.json') : path.join(HOME, '.claude.json');
+  try {
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    cfg.projects ||= {};
+    for (const d of dirs) { cfg.projects[d] ||= {}; cfg.projects[d].hasTrustDialogAccepted = true; }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+  } catch (e) { console.warn('trustPath skipped:', e.message.split('\n')[0]); }
+}
+
 async function createSession(owner, orgId = null, resumeBranch = null) {
   const sid = randomBytes(16).toString('hex');
   const worktree = path.join(CFG.sessionsDir, sid);
+  trustPath(CFG.repo, worktree);
   const branch = resumeBranch || `chat/${sid.slice(0, 8)}`;
 
   await sh('git', ['-C', CFG.repo, 'fetch', 'origin', '--quiet']);
