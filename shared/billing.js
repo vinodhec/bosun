@@ -808,6 +808,31 @@ export const LEAD_BRIEF_COST_PAISE = 15;   // measured avg Gemini Flash cost per
 export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
 
 /**
+ * ── Website assistant (assistant_message) ──────────────────────────────────────────────────────
+ * The customer's PUBLIC website carries a Bosun-powered chat assistant: a visitor (or a signed-in
+ * owner) types in Tamil, English or Tanglish and the assistant searches live listings, captures an
+ * enquiry, files a buyer requirement when nothing matches, drafts a listing, and — for signed-in
+ * owners — reads back their own listings, leads and plan. The brain (Gemini Flash + tool loop,
+ * utils/assistant.js) runs on Bosun; the platform executes the tools against its own data and
+ * renders the reply. Metered PER ASSISTANT REPLY: one user message that ends in a delivered reply is
+ * one unit, however many tool hops it took. A degraded turn (model failure, fallback text) is FREE —
+ * the same "bill for a message we wrote, not an attempt" rule as sourcingCompose.
+ *
+ * COST, MEASURED (scripts/validate-assistant.mjs --live, 2026-09-04): a message is two Flash calls
+ * (tool pick + answer) at ~1.5k input / ~50 output tokens each on a fresh conversation ≈ $0.0012 ≈
+ * 12 paise GST-incl., rising toward ~25 paise as the history fills (MAX_HISTORY_CONTENTS). Call it
+ * 25 paise. The house 3× rule would put the unit at ₹0.60; it is set at a FLAT ₹1 per reply instead —
+ * a price the customer's owner can reason about ("one rupee an answer") and one that carries the
+ * per-conversation overhead (history storage, the cards, the daily-cap bookkeeping) that a per-token
+ * markup does not see. ~4× cost; per-org override via `pricing.assistant_message` (priceForService)
+ * for any customer that negotiates a different rate. Settled in-process on the final reply, accrued
+ * on the org as `assistantAccrualPaise`; idempotencyKey = `${conversationId}:${turn}`, so a retried
+ * delivery of the same turn is a charged:0 no-op.
+ */
+export const ASSISTANT_MESSAGE_COST_PAISE = 25;   // measured avg Gemini Flash cost per reply (GST-incl., with history)
+export const ASSISTANT_MESSAGE_PRICE_PAISE = 100; // ₹1.00 flat per delivered assistant reply (~4× cost)
+
+/**
  * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───
  * The customer's own staff raise defects from THEIR admin console; Bosun files them into the org's
  * GitHub repo, dedupes them, enriches them with evidence, and meters the lifecycle. A separate lane

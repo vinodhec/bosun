@@ -28,6 +28,7 @@ import {
   DEFECT_FIX_PRICE_PAISE,
   DEFECT_REGRESSION_TEST_PRICE_PAISE,
   DEFECT_SLA_REPORT_PRICE_PAISE,
+  ASSISTANT_MESSAGE_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
   priceForService,
@@ -95,6 +96,14 @@ export const SERVICE_DEFS = {
     accrualField: 'dmComposeAccrualPaise',
     kind: 'dm_compose',
     label: 'Phone-hunt DM composed',
+  },
+  // Settled in-process by assistantChat on every DELIVERED reply (a degraded/fallback reply is free);
+  // registered here so a ledger replay prices identically and dedupes on the same row.
+  assistant_message: {
+    pricePaise: ASSISTANT_MESSAGE_PRICE_PAISE,
+    accrualField: 'assistantAccrualPaise',
+    kind: 'assistant_message',
+    label: 'Website assistant — reply delivered',
   },
   // ── Defect tracking ───────────────────────────────────────────────────────────────────────────
   // `defect_triage` is settled in-process by defectIntake, and ONLY when the dedupe gate passes — a

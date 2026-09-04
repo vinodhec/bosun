@@ -135,6 +135,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Website-assistant transcripts (handlers/assistantChat.js). Written by Bosun, read back only
+    // through the HMAC-signed endpoint the customer's platform calls — never by a browser.
+    match /assistantConversations/{convId} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

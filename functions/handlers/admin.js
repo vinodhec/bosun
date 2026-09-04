@@ -7,7 +7,7 @@ import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
-import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE } from '../shared/billing.js';
+import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -676,6 +676,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     daily_plan: { label: 'Daily work plans', unit: 'plan-day', pricePaise: DAILY_PLAN_PRICE_PAISE },
     whatsapp_usage: { label: 'WhatsApp outreach', unit: 'event', pricePaise: null }, // mixed ₹1.65 / ₹3
     conversion_popup: { label: 'Popups opened', unit: 'popup', pricePaise: null }, // random ₹0.25–0.35 each
+    assistant_message: { label: 'Website assistant replies', unit: 'reply', pricePaise: ASSISTANT_MESSAGE_PRICE_PAISE },
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -713,7 +714,9 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let plannerAccrualPaise = 0;
   let waAccrualPaise = 0;
   let popupAccrualPaise = 0;
+  let assistantAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
+    assistantAccrualPaise += Number(o.data().assistantAccrualPaise) || 0;
     composeAccrualPaise += Number(o.data().composeAccrualPaise) || 0;
     autopostAccrualPaise += Number(o.data().autopostAccrualPaise) || 0;
     plannerAccrualPaise += Number(o.data().plannerAccrualPaise) || 0;
@@ -738,7 +741,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
         : kind === 'autopost_usage' ? autopostAccrualPaise / 100
         : kind === 'daily_plan' ? plannerAccrualPaise / 100
         : kind === 'whatsapp_usage' ? waAccrualPaise / 100
-        : kind === 'conversion_popup' ? popupAccrualPaise / 100 : 0,
+        : kind === 'conversion_popup' ? popupAccrualPaise / 100
+        : kind === 'assistant_message' ? assistantAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });

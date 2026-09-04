@@ -367,6 +367,52 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   ones accrue in paise on the org, so some earned revenue is always still held as `pendingAccrualInr`
   rather than debited.
 
+## The website assistant (a metered lane on the customer's PUBLIC site)
+
+A chat widget on the customer's own website — MaadiVeedu's visitors type "2 BHK for rent in
+Velachery under 20k" (English, Tamil or Tanglish) and the assistant searches live listings, shows
+them as cards, captures an enquiry, files a buyer requirement when nothing matches, drafts a listing
+for a seller, and reads a signed-in owner's own listings / leads / plan back to them. The BRAIN runs
+here; the DATA never leaves the platform.
+
+- **Split.** `utils/assistant.js` is the brain: persona (`buildSystemInstruction`), the tool
+  contract (`TOOL_DEFS`, nine tools with a deliberately small enum vocabulary), the Gemini Flash
+  step (`modelStep`, thinking off), reply parsing and card building. `handlers/assistantChat.js` is
+  the HMAC endpoint (same relay secret as every customer→Bosun call) with three actions: `message`,
+  `tool_results`, `history`. Bosun returns either a REPLY or a list of TOOL CALLS; the platform
+  executes the tools in the same request that holds the real signed-in user and posts the results
+  back. The exact Gemini `Content` history (model turns, thought signatures) is persisted on
+  `assistantConversations/{orgId}__{conversationId}` between hops because a functionResponse must
+  follow its functionCall verbatim. `MAX_TOOL_HOPS` = 4, then the model is forced to answer.
+- **Cards are never free-form.** The model names listings by id inside a `[[show:ID,ID]]` marker and
+  Bosun builds the card from the CACHED tool result (`rememberListings` / `cardsFor`) — it cannot
+  invent a price, a photo or a link. Ids leaking into prose are swapped for titles (`scrubIds`).
+  Every reply ends with a `[[suggest:a|b|c]]` line that becomes tap chips.
+- **Metered per DELIVERED reply**: `assistant_message`, `ASSISTANT_MESSAGE_PRICE_PAISE` = ₹1.00 flat
+  (measured COGS ≈ 12–25 paise; the 3× rule would say ₹0.60 — set flat at ₹1 as a price the owner can
+  reason about, per-org overridable via `pricing.assistant_message`). Settled through
+  `settleMetered` (utils/meter.js, `assistantAccrualPaise`) with idempotencyKey
+  `${conversationId}:${turn}`. Tool hops are free; a degraded (model-down) reply is FREE and says so.
+  The lane shows in `adminMetrics` as "Website assistant replies".
+- **Guards.** A NEGATIVE balance refuses the lane (402 `LOW_BALANCE`) — unlike the other metered
+  lanes, because a public widget is unbounded demand; waived when `assistant_message` or
+  `agent_work` is in `billingPaused`. Per-org daily cap (`org.assistant.dailyCap`, default 3000
+  replies, tracked in `assistantUsage/{orgId}:{day}`) and per-conversation daily cap (default 60);
+  `org.assistant.enabled === false` switches it off. The PLATFORM rate-limits per visitor in front
+  of all this — these are backstops.
+- **Validate** with `node scripts/validate-assistant.mjs` (pure) and
+  `VERTEX_PROJECT=bosun-76bba node scripts/validate-assistant.mjs --live` (a real Gemini loop
+  against a fake platform: guest search→enquire, Tamil member leads, seller draft, off-topic).
+  Re-run the live one after any change to the system instruction — a prompt regression shows up
+  there before it reaches a customer's site.
+- **Platform side** (maadiveedu-unified-platform): `web/src/app/api/assistant/chat/route.ts`
+  (rate limit, verified user, the hop loop), `web/src/lib/assistantTools.ts` (the nine tool
+  implementations), `assistantMappers.ts` (enum translation), `assistantAuth.ts` (Bearer ID token →
+  member, else guest), `components/assistant/AssistantWidget.tsx`, and `/admin/assistant` for the
+  owner's view. Env: `BOSUN_ASSISTANT_URL` + the existing `BOSUN_SOURCING_SECRET` / `BOSUN_ORG_ID`.
+- **TTL**: transcripts carry `expiresAt` (30 days) — activate once with
+  `gcloud firestore fields ttls update expiresAt --collection-group=assistantConversations --enable-ttl`.
+
 ## Frontend conventions
 
 - Vite aliases: `@` → `src/`, `@shared` → `shared/`. Use them in imports.

@@ -112,6 +112,13 @@ export { dmCompose } from './handlers/dmCompose.js';
 // replay daily_plan events — see SERVICE_DEFS in the handler.
 export { usageMeter } from './handlers/usageMeter.js';
 
+// HTTP (customer→Bosun, same HMAC): the WEBSITE ASSISTANT's turn endpoint. The customer's public
+// site mounts a chat widget; Bosun runs the brain (Gemini Flash + tool loop, utils/assistant.js),
+// hands tool calls back to the platform to execute as the real signed-in user, and meters ONE
+// `assistant_message` (₹1.20, shared/billing.js) per delivered reply — tool hops are free, a
+// degraded reply is free. Actions: message | tool_results | history.
+export { assistantChat } from './handlers/assistantChat.js';
+
 // HTTP (customer→Bosun, same HMAC): "source THIS place now". The platform's buyer queue names a
 // locality + intent and one targeted supply leg runs immediately — same pipeline, audit trail and
 // charge-on-delivery as a cron leg; leads reach the org through the ordinary webhook while the
