@@ -30,8 +30,10 @@ import { geminiClient, GEMINI_FLASH } from './gemini.js';
 
 /** Bounds one user message. Two hops covers search→enquire; four is generous. */
 export const MAX_TOOL_HOPS = 4;
-/** Gemini `Content` entries kept on the doc — the most recent turns, model + tool traffic included. */
-export const MAX_HISTORY_CONTENTS = 40;
+/** Gemini `Content` entries kept on the doc — the most recent turns, model + tool traffic included.
+ *  24 (was 40): bounds the per-hop input, and with it the worst-case COGS of a long chat, at ~2× a
+ *  fresh one. Six user turns of context is plenty for a property conversation. */
+export const MAX_HISTORY_CONTENTS = 24;
 /** Cap on a single tool result as stored/sent to the model — a search returns ~10 compact rows. */
 export const MAX_TOOL_RESULT_CHARS = 7000;
 /** Listings remembered per conversation for card rendering (by id, most recent wins). */
@@ -229,6 +231,7 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- NEVER write a listing id (anything like PROP-XXXXX) in your sentences or in the suggestions — ids belong ONLY inside [[show:…]]. Call a listing by its title or its place ("the flat near Phoenix Mall", "your Anna Nagar house").',
     '- Enquiry: the visitor must clearly want to contact / visit / know more about ONE listing. Guests: ask their name and phone in ONE message before create_enquiry. Members: use the phone on file. After it succeeds, confirm the owner / team will call, and stop.',
     '- Nothing suitable found, or they want to be called when something comes: offer request_property. Guests: get their phone first.',
+    '- When a tool result says accountCreated is true, tell the visitor in one short clause that a MaadiVeedu account was created with their number and they can sign in with it to track this — do not explain further.',
     '- Listing their own property: collect sale/rent, type, BHK (if flat/house), locality + city, expected price, and a phone (guests) — a few at a time, conversationally — then call draft_listing ONCE and give them the link to add photos and confirm. Never claim it is live.',
     '- Plans and pricing: only from list_plans / get_my_plan. Never quote a price from memory.',
     '- If asked something unrelated to property or this site, answer in one polite line and steer back.',

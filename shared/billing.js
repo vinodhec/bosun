@@ -820,17 +820,27 @@ export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
  *
  * COST, MEASURED (scripts/validate-assistant.mjs --live, 2026-09-04): a message is two Flash calls
  * (tool pick + answer) at ~1.5k input / ~50 output tokens each on a fresh conversation ≈ $0.0012 ≈
- * 12 paise GST-incl., rising toward ~25 paise as the history fills (MAX_HISTORY_CONTENTS). Call it
- * 25 paise. The house 3× rule would put the unit at ₹0.60; it is set at a FLAT ₹1 per reply instead —
- * a price the customer's owner can reason about ("one rupee an answer") and one that carries the
- * per-conversation overhead (history storage, the cards, the daily-cap bookkeeping) that a per-token
- * markup does not see. ~4× cost; per-org override via `pricing.assistant_message` (priceForService)
- * for any customer that negotiates a different rate. Settled in-process on the final reply, accrued
- * on the org as `assistantAccrualPaise`; idempotencyKey = `${conversationId}:${turn}`, so a retried
- * delivery of the same turn is a charged:0 no-op.
+ * 12 paise GST-incl., rising toward ~25 paise as the history fills (MAX_HISTORY_CONTENTS, trimmed
+ * to 24 entries on 2026-09-05 so a long chat cannot climb past that). Call it 20 paise.
+ *
+ * PRICED AT ₹0.50 PER REPLY (operator decision 2026-09-05, down from the ₹1 it launched at): 2.5×
+ * cost, the same rate as an auto-posted listing and twice the WhatsApp message line — a chat reply
+ * is the same kind of work as a composed WhatsApp message and must not be four times its price.
+ * Per-org override via `pricing.assistant_message` (priceForService). Settled in-process on the
+ * final reply, accrued on the org as `assistantAccrualPaise`; idempotencyKey =
+ * `${conversationId}:${turn}`, so a retried delivery of the same turn is a charged:0 no-op.
+ *
+ * PLUS A SUCCESS FEE ON OUTCOMES (assistant_outcome, ₹5 flat): charged once per CAPTURE the
+ * assistant makes — an enquiry sent to an owner, a buyer requirement filed, a listing drafted —
+ * and only when the platform reports the capture as NEW (`captured:true` on the tool result; a
+ * repeat enquiry from the same visitor is not a second capture). The owner pays most when the chat
+ * did something for the business, which is the part of the bill that is easy to defend; it also
+ * lets the per-reply rate stay low without the lane depending on chatter. idempotencyKey =
+ * `${conversationId}:${turn}:${tool}`. Accrued on the org as `assistantOutcomeAccrualPaise`.
  */
-export const ASSISTANT_MESSAGE_COST_PAISE = 25;   // measured avg Gemini Flash cost per reply (GST-incl., with history)
-export const ASSISTANT_MESSAGE_PRICE_PAISE = 100; // ₹1.00 flat per delivered assistant reply (~4× cost)
+export const ASSISTANT_MESSAGE_COST_PAISE = 20;   // measured avg Gemini Flash cost per reply (GST-incl., 24-entry history)
+export const ASSISTANT_MESSAGE_PRICE_PAISE = 50;  // ₹0.50 per delivered assistant reply (2.5× cost; was ₹1.00 at launch)
+export const ASSISTANT_OUTCOME_PRICE_PAISE = 500; // ₹5 per NEW capture (enquiry / requirement / listing draft)
 
 /**
  * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───

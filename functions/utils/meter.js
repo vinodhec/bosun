@@ -29,6 +29,7 @@ import {
   DEFECT_REGRESSION_TEST_PRICE_PAISE,
   DEFECT_SLA_REPORT_PRICE_PAISE,
   ASSISTANT_MESSAGE_PRICE_PAISE,
+  ASSISTANT_OUTCOME_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
@@ -105,6 +106,14 @@ export const SERVICE_DEFS = {
     accrualField: 'assistantAccrualPaise',
     kind: 'assistant_message',
     label: 'Website assistant — reply delivered',
+  },
+  // Settled in-process by assistantChat once per NEW capture the assistant makes in a turn (the
+  // platform marks the tool result `captured:true`); a repeat by the same visitor is not a capture.
+  assistant_outcome: {
+    pricePaise: ASSISTANT_OUTCOME_PRICE_PAISE,
+    accrualField: 'assistantOutcomeAccrualPaise',
+    kind: 'assistant_outcome',
+    label: 'Website assistant — enquiry / requirement / listing captured',
   },
   // ── Defect tracking ───────────────────────────────────────────────────────────────────────────
   // `defect_triage` is settled in-process by defectIntake, and ONLY when the dedupe gate passes — a

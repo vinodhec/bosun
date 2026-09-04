@@ -7,7 +7,9 @@
  * platform, which executes it against its own data as the real signed-in user and posts the result;
  * when the model has what it needs it writes the reply, Bosun turns the `[[show:…]]` marker into
  * listing cards from the cached tool results, and meters ONE `assistant_message` for the delivered
- * reply. Tool hops within a message are not units; a degraded (fallback) reply is free.
+ * reply plus ONE `assistant_outcome` per NEW capture the turn made (enquiry / requirement / draft —
+ * the platform marks the tool result `captured:true`). Tool hops within a message are not units; a
+ * degraded (fallback) reply is free.
  *
  * Three actions, one endpoint, same HMAC (the org's relay secret from the vault — the scheme every
  * customer→Bosun call uses, see utils/customerAuth.js):
@@ -66,6 +68,9 @@ export const DEFAULT_CONVERSATION_DAILY_CAP = 60;
 const MAX_TRANSCRIPT = 80;
 /** Longest user message we accept — anything past this is not a property question. */
 const MAX_MESSAGE_CHARS = 1500;
+/** The tools whose NEW captures carry the success fee (assistant_outcome). */
+const OUTCOME_TOOLS = new Set(['create_enquiry', 'request_property', 'draft_listing']);
+const OUTCOME_LABELS = { create_enquiry: 'enquiry sent', request_property: 'requirement filed', draft_listing: 'listing drafted' };
 
 function istDayKey(nowMs = Date.now()) {
   return new Date(nowMs + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
@@ -139,7 +144,17 @@ export const assistantChat = onRequest(
     }
 
     const db = getFirestore();
-    const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+    const t0 = Date.now();
+    // Every doc this turn needs is known up front — fetch them together (one round trip, not four).
+    const dayKey = istDayKey();
+    const usageRef = db.collection(USAGE).doc(`${orgId}:${dayKey}`);
+    const convRef = db.collection(CONVERSATIONS).doc(convDocId(orgId, conversationId || db.collection(CONVERSATIONS).doc().id));
+    const [secretSnap, orgSnap, usageSnap, convSnap] = await Promise.all([
+      db.collection('orgSecrets').doc(orgId).get(),
+      db.collection('organisations').doc(orgId).get(),
+      usageRef.get(),
+      convRef.get(),
+    ]);
     const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
     if (!secret) {
       logReject('assistantChat', { orgId, status: 403, reason: 'org-has-no-sourcing-secret', extra: {} });
@@ -156,14 +171,12 @@ export const assistantChat = onRequest(
     try {
       if (action === 'history') {
         if (!conversationId) { res.status(400).json({ error: 'conversationId required' }); return; }
-        const snap = await db.collection(CONVERSATIONS).doc(convDocId(orgId, conversationId)).get();
-        const d = snap.exists ? snap.data() : null;
+        const d = convSnap.exists ? convSnap.data() : null;
         ok(res, { conversationId, transcript: d ? (d.transcript || []).slice(-MAX_TRANSCRIPT) : [], turn: d?.turn || 0 });
         return;
       }
 
       // ── Org-level gates (message + tool_results alike) ──────────────────────────────────────
-      const orgSnap = await db.collection('organisations').doc(orgId).get();
       if (!orgSnap.exists) { res.status(403).json({ error: 'unknown org' }); return; }
       const org = orgSnap.data();
       if (org.assistant?.enabled === false) {
@@ -177,10 +190,7 @@ export const assistantChat = onRequest(
         res.status(402).json({ error: 'LOW_BALANCE' });
         return;
       }
-      const dayKey = istDayKey();
       const orgCap = Number(org.assistant?.dailyCap) > 0 ? Number(org.assistant.dailyCap) : DEFAULT_ORG_DAILY_CAP;
-      const usageRef = db.collection(USAGE).doc(`${orgId}:${dayKey}`);
-      const usageSnap = await usageRef.get();
       const usedToday = usageSnap.exists ? Number(usageSnap.data().replies) || 0 : 0;
       if (usedToday >= orgCap) {
         logReject('assistantChat', { orgId, status: 429, reason: 'org-daily-cap', extra: { usedToday, orgCap } });
@@ -188,9 +198,7 @@ export const assistantChat = onRequest(
         return;
       }
 
-      const convRef = db.collection(CONVERSATIONS).doc(convDocId(orgId, conversationId || db.collection(CONVERSATIONS).doc().id));
       const convId = convRef.id.slice(orgId.length + 2);
-      const convSnap = await convRef.get();
       const conv = convSnap.exists ? convSnap.data() : null;
       const ctx = liveContext(conv?.context, body.context);
       const convCap = Number(org.assistant?.conversationDailyCap) > 0 ? Number(org.assistant.conversationDailyCap) : DEFAULT_CONVERSATION_DAILY_CAP;
@@ -254,7 +262,9 @@ export const assistantChat = onRequest(
           const call = pending.calls.find((c) => c.id === String(r?.id));
           if (!call) continue;
           const succeeded = r.result && typeof r.result === 'object' && r.result.ok !== false && !r.error;
-          turnEvents.tools.push({ name: call.name, ok: !!succeeded });
+          // `captured` is the platform saying "this was a NEW enquiry / requirement / draft" — the
+          // success-fee unit. A repeat by the same visitor comes back ok:true, captured:false.
+          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true });
           if (succeeded) remembered = rememberListings(remembered, listingsFromToolResult(call.name, r.result));
         }
         contents = [...contents, toolResultsContent(pending.calls, results)];
@@ -285,7 +295,7 @@ export const assistantChat = onRequest(
         const calls = step.calls.map((c) => ({ id: c.id, name: c.name, args: c.args }));
         pending = { calls, contentIndex: contents.length - 1, turn };
         await convRef.set({ contents, remembered, pending, hop: hop + 1, turnEvents, lastAt: FieldValue.serverTimestamp() }, { merge: true });
-        console.log('assistantChat:tool_calls', orgId, JSON.stringify({ conversationId: convId, turn, hop: hop + 1, tools: calls.map((c) => c.name), usage: step.usage }));
+        console.log('assistantChat:tool_calls', orgId, JSON.stringify({ conversationId: convId, turn, hop: hop + 1, tools: calls.map((c) => c.name), usage: step.usage, ms: Date.now() - t0 }));
         ok(res, { kind: 'tool_calls', conversationId: convId, turn, calls });
         return;
       }
@@ -307,6 +317,7 @@ export const assistantChat = onRequest(
         suggestions: parsed.suggestions.map((s) => scrubIds(s, remembered).slice(0, 48)),
       };
       const events = turnEvents.tools.filter((t) => t.ok).map((t) => t.name);
+      const captures = turnEvents.tools.filter((t) => t.captured && OUTCOME_TOOLS.has(t.name)).map((t) => t.name);
 
       transcript = [...transcript, { role: 'assistant', text: reply.text, cards, suggestions: reply.suggestions, at: Date.now() }].slice(-MAX_TRANSCRIPT);
 
@@ -321,6 +332,16 @@ export const assistantChat = onRequest(
         });
         charged = settled.charged;
         waivedNow = settled.waived;
+        // The success fee: one unit per NEW capture this turn (shared/billing.js, assistant_outcome).
+        for (const tool of captures) {
+          const outcome = await settleMetered({
+            db, orgId, service: 'assistant_outcome',
+            idempotencyKey: `${convId}:${turn}:${tool}`,
+            description: `Website assistant capture — ${OUTCOME_LABELS[tool]} (${convId.slice(0, 8)}…#${turn})`,
+            extra: { conversationId: convId, turn, tool, signedIn, locale: ctx.locale },
+          });
+          charged += outcome.charged;
+        }
       } catch (e) {
         // The reply is already written; a billing hiccup must not turn into a blank widget. Loud.
         console.error('assistantChat:bill:err', orgId, convId, turn, e?.message || e);
@@ -341,8 +362,8 @@ export const assistantChat = onRequest(
         usageRef.set({ orgId, dayKey, replies: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
       ]);
 
-      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, events, charged, waived: waivedNow, usage: step.usage }));
-      ok(res, { kind: 'reply', conversationId: convId, turn, reply, events, charged });
+      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, events, captures, charged, waived: waivedNow, usage: step.usage, ms: Date.now() - t0 }));
+      ok(res, { kind: 'reply', conversationId: convId, turn, reply, events, captures, charged });
     } catch (e) {
       console.error('assistantChat:err', orgId, action, e?.message || e);
       res.status(500).json({ error: 'assistant failed — retry' });
