@@ -123,7 +123,7 @@ function panel(ctx) {
   ctx.fillText(COPY.header[0], 122, 168);
   ctx.fillStyle = '#6b7280';
   ctx.font = `22px ${famFor(COPY.header[1])}`;
-  ctx.fillText(COPY.header[1], 122, 202);
+  ctx.fillText(wrapLines(ctx, COPY.header[1], REEL_W - 24 - 122 - 24, 1)[0], 122, 202);
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 2;
   ctx.beginPath();
