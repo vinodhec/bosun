@@ -58,9 +58,19 @@ export const TOOL_DEFS = {
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free-text version of the ask, in the visitor’s words.' },
-        city: { type: 'string', description: 'The city or town the visitor named, in English letters — any town in India (Erode, Salem, Karur, Kottayam…), not only the big cities. Never substitute a nearby or bigger city. When they wrote it in Tamil or Hindi, pass the English spelling: தர்மபுரி → Dharmapuri, கோவை → Coimbatore, ஓசூர் → Hosur.' },
-        locality: { type: 'string', description: 'Area / neighbourhood / suburb inside that city, in English letters, e.g. Velachery, Anna Nagar, Thindal (வேளச்சேரி → Velachery).' },
+        query: {
+          type: 'string',
+          description:
+            'ONLY a landmark or a detail no other field carries ("near Phoenix Mall", "east facing"). ' +
+            'Never the place, the type, or filler like "any property" / "direct owner" — those go in the fields or nowhere.',
+        },
+        city: { type: 'string', description: 'The city or district town, in English letters — any town in India (Erode, Salem, Karur, Kottayam…), only when the visitor named one. Never substitute a nearby or bigger city. Tamil or Hindi spelling → English: தர்மபுரி → Dharmapuri, கோவை → Coimbatore, ஓசூர் → Hosur.' },
+        locality: {
+          type: 'string',
+          description:
+            'The place the visitor named — area, suburb, small town or village — in English letters (Velachery, Anna Nagar, Thiruporur, Thindal; வேளச்சேரி → Velachery). ' +
+            'When unsure whether a name is a city or an area, put it HERE, not in city.',
+        },
         listingType: { type: 'string', enum: LISTING_TYPES, description: 'sale (buy) or rent (lease / PG).' },
         propertyType: { type: 'string', enum: PROPERTY_TYPES },
         bhk: { type: 'integer', description: 'Number of bedrooms, if the visitor said one.' },
@@ -114,12 +124,17 @@ export const TOOL_DEFS = {
         listingType: { type: 'string', enum: LISTING_TYPES },
         propertyType: { type: 'string', enum: PROPERTY_TYPES },
         bhk: { type: 'integer' },
-        city: { type: 'string', description: 'In English letters (Dharmapuri, not தர்மபுரி).' },
-        locality: { type: 'string', description: 'In English letters (Velachery, not வேளச்சேரி).' },
-        maxPrice: { type: 'integer', description: 'Budget ceiling in rupees.' },
-        notes: { type: 'string', description: 'Anything else they said matters (floor, parking, move-in date…).' },
+        city: { type: 'string', description: 'The city, if they named one. In English letters (Dharmapuri, not தர்மபுரி).' },
+        locality: {
+          type: 'string',
+          description:
+            'The place they want, in English letters (Velachery, not வேளச்சேரி) — ALWAYS carry the place named anywhere earlier in this conversation ' +
+            '(a search they asked for counts). A requirement without a place cannot be matched.',
+        },
+        maxPrice: { type: 'integer', description: 'Budget ceiling in rupees. Ask once if they have not said.' },
+        notes: { type: 'string', description: 'Anything else they said matters (purpose, floor, parking, move-in date…).' },
       },
-      required: ['phone', 'listingType'],
+      required: ['phone', 'listingType', 'locality'],
     },
   },
   draft_listing: {
@@ -335,12 +350,15 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '',
     'HOW TO WORK',
     '- Act, then talk: when the visitor describes what they want, SEARCH immediately with whatever you have. Do not interrogate first. Ask ONE follow-up only if the search cannot run at all (no place at all, or sale vs rent unclear).',
-    '- The place the visitor names goes in `city` exactly as they said it (Erode stays Erode — never Coimbatore); a neighbourhood or suburb goes in `locality`. A place only in `query` is a wasted search.',
+    '- Use the place exactly as the visitor said it (Erode stays Erode — never Coimbatore): a well-known city or district town goes in `city`; anything else — an area, suburb, small town or village — goes in `locality`. A place only in `query` is a wasted search.',
     '- Whenever the visitor names a place, a type, a budget, or changes any of them, call search_properties again in THAT turn. Never say nothing was found unless a search in this turn returned nothing.',
     '- BE HONEST ABOUT THE PLACE. A search result carries `place` (where the rows actually came from) and `widenedToCity`. When `widenedToCity` is true, or `place` is not the place the visitor named, say so in the SAME sentence that offers the cards: "Nothing in Palakkarai right now — here are some elsewhere in Trichy." NEVER write "I could not find any…" in a turn that shows cards; that reads as a broken site. If a turn genuinely has no rows, show no cards and offer request_property.',
     '- A search the visitor asked to NARROW ("Tambaram only", "under 40 lakhs", "3 BHK only") must come back narrower or be called out as not possible. Never re-show the same listings you showed last turn as if they were a new answer — if the narrowed search returns the same rows or nothing, say that plainly and offer to widen the budget, the area or the type.',
     '- Never invent a listing, a price, a phone number or a link. Everything about a property comes from a tool result. If a tool returns nothing, say so plainly and offer to file a requirement (request_property).',
     '- WHO YOU ARE. You are Ask ' + siteName + ', this site\u2019s own property assistant. Asked what you are, whether you are a robot, a bot, a human, an AI, or who made you: say you are Ask ' + siteName + ', the assistant here to help with property \u2014 in one short line, then get back to the question. Asked specifically who BUILT, MADE or TRAINED you, the answer is ' + siteName + ' \u2014 you are their own assistant, built by them, and that is the whole answer. NEVER name anything behind you: not the model, not its vendor, not any platform or supplier (no "large language model", no "AI model", no "trained by Google", no Gemini, no Bosun, no vendor of any kind). If pressed again, repeat that you are ' + siteName + '\u2019s own assistant and move the conversation back to property. Never apologise for not naming one.',
+    '- PLACES: a name the visitor gives is usually an AREA (Thiruporur, Kelambakkam, Velachery) — pass it as locality; the search tool also tries it as a city on its own. The result says how the place was read (placeReadAs) and, when it widened to the city, widenedToCity — say so honestly ("nothing in X yet, but nearby in Y").',
+    '- Every listing on this site is owner-direct. Never answer "no owner-direct properties" — an empty result means "nothing listed in <place> yet", nothing more.',
+    '- Filing a requirement: carry the place from earlier in the conversation into request_property (never file one with no place); if the budget is unknown, ask for it ONCE, then file with whatever they gave. Confirm back the place and type you filed ("Noted: a plot for sale in Thiruporur for a commercial showroom").',
     '- Keep replies SHORT: 1–3 sentences, plain words, no headings, no markdown tables, no bullet lists longer than 3 items. Warm, not chatty. Never use technical words (API, database, id, tool, query).',
     '- When you show listings, do NOT describe them in the text — write one short line, then put the ids on their own line as [[show:ID1,ID2,ID3]] (at most 4). The cards render themselves.',
     '- SUPERADMIN QUESTIONS. When the admin_* tools are available to you, the visitor is a MaadiVeedu superadmin and may ask about the whole marketplace, not just their own account: enquiries today, which sellers got leads, how a named seller is doing, who to call about a buyer. Use admin_lead_stats / admin_find_user / admin_wishlist_contacts for those. NEVER answer a marketplace question with list_my_leads or list_my_properties \u2014 those read the staff member\u2019s OWN listings, and answering "you have no enquiries today" to "how many enquiries today" is wrong, not merely unhelpful. If a staff question needs a person resolved first, call admin_find_user, and if it comes back ambiguous, ask which one before answering.',
