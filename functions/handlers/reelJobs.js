@@ -6,7 +6,7 @@
  * 1–3 minutes), uploads it, meters ONE `reel_photo` / `reel_animated` unit on the DELIVERED file,
  * and the widget polls `status` until it can play it.
  *
- *   action:'create'  { orgId, conversationId?, style:'photo'|'animated', locale, listing:{…}, requestedBy?, site }
+ *   action:'create'  { orgId, conversationId?, style:'photo'|'animated', locale, listing:{…}, requestedBy?, site, force? }
  *                    → { ok, jobId, status, style, etaSeconds, existing?, videoUrl?, posterUrl?, listingId, title }
  *   action:'status'  { orgId, jobId } → { ok, jobId, status, style, styleDelivered, videoUrl, posterUrl, durationSec, listingId, title, listingUrl, error? }
  *
@@ -176,9 +176,11 @@ export const reelJobs = onRequest(
       }
 
       // A reel already made for this listing + style today is the answer — no second render.
+      // `force:true` (the platform's admin console, after new photos or a price change) skips the
+      // reuse and renders again — a NEW job, billed again.
       const latestRef = db.collection(LATEST).doc(latestId(orgId, listing.id, style));
-      const latest = await latestRef.get();
-      if (latest.exists) {
+      const latest = body.force === true ? null : await latestRef.get();
+      if (latest && latest.exists) {
         const p = latest.data();
         const fresh = Number(p.atMs) > Date.now() - REUSE_MS;
         if (fresh && ['queued', 'running', 'ready'].includes(p.status) && p.jobId) {
@@ -230,7 +232,7 @@ export const reelJobs = onRequest(
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
       await batch.commit();
-      console.log('reelJobs:create', orgId, JSON.stringify({ jobId: jobRef.id, listingId: listing.id, style, locale, photos: listing.images.length, signedIn: !!rb, conversationId }));
+      console.log('reelJobs:create', orgId, JSON.stringify({ jobId: jobRef.id, listingId: listing.id, style, locale, photos: listing.images.length, signedIn: !!rb, conversationId, force: body.force === true }));
       res.status(200).json({ ok: true, existing: false, ...publicJob(jobRef.id, job) });
     } catch (e) {
       console.error('reelJobs:err', orgId, action, e?.message || e);
