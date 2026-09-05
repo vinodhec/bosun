@@ -51,9 +51,9 @@ GlobalFonts.registerFromPath(path.join(FONT_DIR, 'NotoSans-Bold.ttf'), 'Noto San
 GlobalFonts.registerFromPath(path.join(FONT_DIR, 'NotoSans-Regular.ttf'), 'Noto Sans');
 // Tamil-first for Tamil strings (so a cluster shapes inside one font); Latin-first otherwise — the
 // Tamil face is bold-only, and Latin-first keeps digits in a regular-weight line regular.
-const FAMILY_TA = '"Noto Sans Tamil", "Noto Sans"';
-const FAMILY_EN = '"Noto Sans", "Noto Sans Tamil"';
-const famFor = (text) => (hasTamil(text) ? FAMILY_TA : FAMILY_EN);
+export const FAMILY_TA = '"Noto Sans Tamil", "Noto Sans"';
+export const FAMILY_EN = '"Noto Sans", "Noto Sans Tamil"';
+export const famFor = (text) => (hasTamil(text) ? FAMILY_TA : FAMILY_EN);
 
 export const REEL_W = 720;
 export const REEL_H = 1280;
@@ -78,7 +78,7 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 // ── Small helpers ────────────────────────────────────────────────────────────────────────────────
 
 /** Word-wrap by MEASURED width (script-agnostic — Tamil glyphs are wide, digits narrow). */
-function wrapLines(ctx, text, maxWidth, maxLines) {
+export function wrapLines(ctx, text, maxWidth, maxLines) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean);
   const lines = [];
   let cur = '';
@@ -102,11 +102,11 @@ function wrapLines(ctx, text, maxWidth, maxLines) {
   return lines;
 }
 
-function hasTamil(s) {
+export function hasTamil(s) {
   return /[\u0B80-\u0BFF]/.test(String(s || ''));
 }
 
-function roundRect(ctx, x, y, w, h, r) {
+export function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -406,14 +406,14 @@ export function endCardPng({ listingUrl, siteName = 'MaadiVeedu', siteHost = 'ma
 
 // ── 3. Render ────────────────────────────────────────────────────────────────────────────────────
 
-const X264 = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-an'];
+export const X264 = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-an'];
 
 /**
  * One photo → one segment: the photo fitted into 9:16 over a blurred, darkened copy of itself
  * (listing photos are landscape; a hard crop would lose the room), upscaled ×2 so the Ken-Burns
  * zoom has pixels to work with, then zoompan + the caption overlay + a short fade.
  */
-async function photoSegment({ photoPath, overlayPng, out, seconds, index }) {
+export async function photoSegment({ photoPath, overlayPng, out, seconds, index }) {
   const frames = Math.round(seconds * FPS);
   const zoomIn = index % 2 === 0;
   const step = (0.18 / frames).toFixed(6); // reach ×1.18 exactly at the last frame, however long the hold
@@ -428,7 +428,7 @@ async function photoSegment({ photoPath, overlayPng, out, seconds, index }) {
   await ffmpeg(['-i', photoPath, '-i', overlayPng, '-filter_complex', filter, '-map', '[o]', '-t', String(seconds), ...X264, out]);
 }
 
-async function heroSegment({ clipPath, overlayPng, out, seconds }) {
+export async function heroSegment({ clipPath, overlayPng, out, seconds }) {
   const fadeOut = Math.max(0, seconds - 0.35).toFixed(2);
   const filter =
     `[0:v]scale=${REEL_W}:${REEL_H}:force_original_aspect_ratio=increase,crop=${REEL_W}:${REEL_H},fps=${FPS}[v];` +
@@ -436,7 +436,7 @@ async function heroSegment({ clipPath, overlayPng, out, seconds }) {
   await ffmpeg(['-i', clipPath, '-i', overlayPng, '-filter_complex', filter, '-map', '[o]', '-t', String(seconds), ...X264, out]);
 }
 
-async function stillSegment({ png, out, seconds }) {
+export async function stillSegment({ png, out, seconds }) {
   await ffmpeg(['-loop', '1', '-framerate', String(FPS), '-i', png, '-t', String(seconds), '-vf', `fade=t=in:st=0:d=0.4,format=yuv420p`, ...X264, out]);
 }
 
@@ -445,7 +445,7 @@ async function stillSegment({ png, out, seconds }) {
  * explicitly (`-t` + `apad=whole_dur`): an open-ended apad with `-shortest` on a copied video stream
  * never signals the end and ffmpeg sits at 100% CPU forever — measured, not theoretical.
  */
-async function concatWithVoice({ segments, voice, out, dir, totalSeconds }) {
+export async function concatWithVoice({ segments, voice, out, dir, totalSeconds }) {
   const list = path.join(dir, 'list.txt');
   await fs.writeFile(list, segments.map((s) => `file '${s.replace(/'/g, "'\\''")}'`).join('\n'));
   if (voice) {
@@ -462,7 +462,7 @@ async function concatWithVoice({ segments, voice, out, dir, totalSeconds }) {
   }
 }
 
-async function probeDuration(file) {
+export async function probeDuration(file) {
   try {
     const { stderr } = await execFileP(ffmpegPath, ['-hide_banner', '-i', file], { maxBuffer: 1024 * 1024 }).catch((e) => e);
     const m = String(stderr || '').match(/Duration:\s*(\d+):(\d+):(\d+\.?\d*)/);
