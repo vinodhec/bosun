@@ -859,12 +859,18 @@ export const ASSISTANT_OUTCOME_PRICE_PAISE = 500; // ₹5 per NEW capture (enqui
  * Both settle in-process by the reel worker on a DELIVERED video (a job that fails bills nothing),
  * idempotent on the job id, accrued on the org as `reelPhotoAccrualPaise` /
  * `reelAnimatedAccrualPaise`; a reel already made for the same listing + style in the last 24 h is
- * handed back without a new job or charge. Demo prices (2026-09-05): ₹15 is ~8× cost — the photo
- * reel is priced as a growth unit, not a cost-plus one; ₹149 is ~4× and sits under the fix cap.
- * Per-org override via `pricing.reel_photo` / `pricing.reel_animated` (priceForService).
+ * handed back without a new job or charge.
+ *
+ * PRICED AT ₹55 / ₹90 (operator decision 2026-09-05, replacing the ₹15 / ₹149 the demo launched
+ * with): the owner chose two round numbers close together so the product reads as "a video for
+ * under ₹100" rather than a cheap tier and a dear one. Against COGS that is ~27× on the photo reel
+ * (its cost is a voice line and a minute of CPU) and ~2.6× on the animated one — below the house 3×,
+ * knowingly: the animated line is the showcase, and a Veo refusal degrades the job to a photo reel
+ * billed at ₹55, which more than covers the wasted Veo attempt. Per-org override via
+ * `pricing.reel_photo` / `pricing.reel_animated` (priceForService).
  */
-export const REEL_PHOTO_PRICE_PAISE = 1500;     // ₹15 per delivered photo reel
-export const REEL_ANIMATED_PRICE_PAISE = 14900; // ₹149 per delivered animated reel
+export const REEL_PHOTO_PRICE_PAISE = 5500;    // ₹55 per delivered photo reel (was ₹15 at demo launch)
+export const REEL_ANIMATED_PRICE_PAISE = 9000;  // ₹90 per delivered animated reel (was ₹149 at demo launch)
 
 /**
  * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───

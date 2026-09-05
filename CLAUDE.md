@@ -447,7 +447,7 @@ clip is a camera move over the real cover photo, and text-to-video is not used.
   `@napi-rs/canvas` (Skia shapes Tamil correctly) using the bundled Noto fonts in `functions/assets/fonts`.
   The final mux passes an explicit `-t` + `apad=whole_dur` — an open-ended `apad` with `-shortest`
   on a stream-copied video never ends. Every segment uses identical x264 settings so concat is a copy.
-- **Metered** as `reel_photo` (₹15) / `reel_animated` (₹149) in `shared/billing.js`, settled by the
+- **Metered** as `reel_photo` (₹55) / `reel_animated` (₹90, operator-set 2026-09-05; launched at ₹15 / ₹149) in `shared/billing.js`, settled by the
   worker through `settleMetered` on a DELIVERED video only, idempotent on the job id; a failed job
   bills nothing and an animated job that Veo refused **degrades to photo and bills reel_photo**
   (`styleDelivered`, `fallbackReason` on the job). Guards: `org.reel.enabled`, the negative-balance
