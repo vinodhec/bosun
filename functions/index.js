@@ -119,6 +119,12 @@ export { usageMeter } from './handlers/usageMeter.js';
 // degraded reply is free. Actions: message | tool_results | history.
 export { assistantChat } from './handlers/assistantChat.js';
 
+// HTTP (customer→Bosun, same HMAC) + Firestore worker: listing REELS made from inside the website
+// assistant (`make_reel`). `reelJobs` takes the listing and answers with a job id; `processReelJob`
+// renders the 9:16 video (photos + voice-over, optionally a Veo hero shot), uploads it and meters
+// ONE reel_photo / reel_animated on delivery. See utils/reel.js and shared/billing.js.
+export { reelJobs, processReelJob } from './handlers/reelJobs.js';
+
 // HTTP (customer→Bosun, same HMAC): "source THIS place now". The platform's buyer queue names a
 // locality + intent and one targeted supply leg runs immediately — same pipeline, audit trail and
 // charge-on-delivery as a cron leg; leads reach the org through the ordinary webhook while the

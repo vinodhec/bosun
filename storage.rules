@@ -29,6 +29,12 @@ service firebase.storage {
       allow read, write: if false;
     }
 
+    // reels/{orgId}/{jobId}/... — listing reels made by the website assistant (utils/reel.js).
+    // Admin SDK writes; served via download-token URLs. No direct client access.
+    match /reels/{allPaths=**} {
+      allow read, write: if false;
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

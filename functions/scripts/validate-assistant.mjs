@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import {
   TOOL_DEFS, toolsFor, buildSystemInstruction, parseReply, listingsFromToolResult,
   rememberListings, cardsFor, boundToolResult, toolResultsContent, trimHistory, modelStep,
+  reelFromToolResult, rememberReel, reelFor,
   MAX_HISTORY_CONTENTS, MAX_TOOL_RESULT_CHARS,
 } from '../utils/assistant.js';
 
@@ -34,6 +35,22 @@ check('guests never see member-only tools', () => {
   assert.ok(!names.includes('list_my_properties'));
   assert.ok(!names.includes('list_my_leads'));
   assert.ok(!names.includes('get_my_plan'));
+});
+
+check('make_reel is offered to guests too (the animated gate is the platform\'s), and parses its marker', () => {
+  const names = toolsFor({ capabilities: [], signedIn: false }).map((t) => t.name);
+  assert.ok(names.includes('make_reel'));
+  const r = parseReply('Making your video now — it will appear here in about a minute.\n[[reel:abc123XYZ]]\n[[suggest:Share on WhatsApp|Show more homes]]');
+  assert.equal(r.reelId, 'abc123XYZ');
+  assert.ok(!/\[\[/.test(r.text));
+  assert.deepEqual(r.suggestions, ['Share on WhatsApp', 'Show more homes']);
+  const reel = reelFromToolResult('make_reel', { ok: true, jobId: 'abc123XYZ', status: 'queued', style: 'animated', etaSeconds: 180, listingId: 'PROP-1', title: 'Villa', videoUrl: '' });
+  assert.equal(reel.style, 'animated');
+  const remembered = rememberReel([], reel);
+  assert.equal(reelFor('abc123XYZ', remembered).jobId, 'abc123XYZ');
+  assert.equal(reelFor('', remembered, ['abc123XYZ']).jobId, 'abc123XYZ', 'a forgotten marker still attaches this turn\'s reel');
+  assert.equal(reelFor('nope', remembered), null);
+  assert.equal(reelFromToolResult('make_reel', { ok: false, error: 'no_photos' }), null);
 });
 
 check('members see everything the platform declares, and nothing it does not', () => {

@@ -141,6 +141,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Listing-reel jobs (handlers/reelJobs.js) — the video job a visitor starts from the website
+    // assistant, plus the per-listing pointer and the daily counters. Backend-only; the platform reads
+    // status through the HMAC endpoint and the video itself is a download-token Storage URL.
+    match /reelJobs/{jobId} {
+      allow read, write: if false;
+    }
+    match /reelLatest/{key} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

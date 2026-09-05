@@ -843,6 +843,30 @@ export const ASSISTANT_MESSAGE_PRICE_PAISE = 50;  // ₹0.50 per delivered assis
 export const ASSISTANT_OUTCOME_PRICE_PAISE = 500; // ₹5 per NEW capture (enquiry / requirement / listing draft)
 
 /**
+ * ── Listing reels (reel_photo / reel_animated) — made from inside the website assistant ──────────
+ * A visitor asks Ask MaadiVeedu for a video of a listing and Bosun makes a 9:16 reel for WhatsApp
+ * status / Instagram: the listing's own photos with a slow Ken-Burns move, captions, a voice-over in
+ * the visitor's language, and an "Ask MaadiVeedu" end card with a QR to the listing — so every
+ * shared reel advertises the assistant (utils/reel.js, handlers/reelJobs.js).
+ *
+ *   reel_photo    — the photos-only reel. Any visitor. COGS ≈ ₹1–2 (one flash-lite script call,
+ *                   ~20 s of Gemini TTS, ~60 s of function CPU, a few MB of storage).
+ *   reel_animated — the same reel opening on a Veo 3.1 Lite image-to-video hero shot made FROM the
+ *                   cover photo (6 s × $0.05/s ≈ ₹27, plus the odd retry). Signed-in members only:
+ *                   the sign-in is the hook that pulls people into the assistant. COGS ≈ ₹30–40.
+ *                   If Veo refuses the image the job DEGRADES to a photo reel and bills reel_photo.
+ *
+ * Both settle in-process by the reel worker on a DELIVERED video (a job that fails bills nothing),
+ * idempotent on the job id, accrued on the org as `reelPhotoAccrualPaise` /
+ * `reelAnimatedAccrualPaise`; a reel already made for the same listing + style in the last 24 h is
+ * handed back without a new job or charge. Demo prices (2026-09-05): ₹15 is ~8× cost — the photo
+ * reel is priced as a growth unit, not a cost-plus one; ₹149 is ~4× and sits under the fix cap.
+ * Per-org override via `pricing.reel_photo` / `pricing.reel_animated` (priceForService).
+ */
+export const REEL_PHOTO_PRICE_PAISE = 1500;     // ₹15 per delivered photo reel
+export const REEL_ANIMATED_PRICE_PAISE = 14900; // ₹149 per delivered animated reel
+
+/**
  * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───
  * The customer's own staff raise defects from THEIR admin console; Bosun files them into the org's
  * GitHub repo, dedupes them, enriches them with evidence, and meters the lifecycle. A separate lane

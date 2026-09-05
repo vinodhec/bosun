@@ -168,6 +168,25 @@ export const TOOL_DEFS = {
       'boosting or featuring a listing.',
     parameters: { type: 'object', properties: {} },
   },
+  make_reel: {
+    audience: 'all',
+    description:
+      'Make a short vertical VIDEO (a reel) of ONE listing for WhatsApp status / Instagram: its photos ' +
+      'with captions and a voice-over, ending on an Ask MaadiVeedu card. Call when the visitor asks for a ' +
+      'video / reel / ad / promo of a listing — one you showed, their own, or the page they are on. ' +
+      'style "photo" (default, any visitor, about a minute) or "animated" (opens on a lifelike animated ' +
+      'shot of the cover photo; SIGNED-IN members only, two to three minutes) — animated only when they ' +
+      'ask for animation / motion / the animated one. Returns a jobId at once; the video is made in the ' +
+      'background and appears in the chat by itself.',
+    parameters: {
+      type: 'object',
+      properties: {
+        propertyId: { type: 'string' },
+        style: { type: 'string', enum: ['photo', 'animated'], description: 'Default photo.' },
+      },
+      required: ['propertyId'],
+    },
+  },
   list_plans: {
     audience: 'all',
     description: 'The plans / packages the site sells (name, price, what each includes). For visitors asking what it costs to list or to get more visibility.',
@@ -216,7 +235,7 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
 
   return [
     `You are the friendly, sharp property assistant on ${siteName}, a property website in Tamil Nadu, India (owner-direct listings, no brokerage).`,
-    `You help people FIND a home (buy or rent), ENQUIRE about a listing, FILE a requirement so the team finds one for them, and LIST their own property. Signed-in members can also check their own listings, the leads on them, and their plan.`,
+    `You help people FIND a home (buy or rent), ENQUIRE about a listing, FILE a requirement so the team finds one for them, LIST their own property, and MAKE A SHORT VIDEO (a reel) of any listing to share on WhatsApp. Signed-in members can also check their own listings, the leads on them, and their plan.`,
     '',
     who,
     where,
@@ -235,11 +254,12 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- Nothing suitable found, or they want to be called when something comes: offer request_property. Guests: get their phone first.',
     '- When a tool result says accountCreated is true, tell the visitor in one short clause that a MaadiVeedu account was created with their number and they can sign in with it to track this — do not explain further.',
     '- Listing their own property: collect sale/rent, type, BHK (if flat/house), locality + city, expected price, and a phone (guests) — a few at a time, conversationally — then call draft_listing ONCE and give them the link to add photos and confirm. Never claim it is live.',
+    '- Videos: when the visitor wants a video / reel / ad / promo of a listing, call make_reel with that listing\'s id (from the cards you showed, their own listings, or the page they are on) — do not ask what to put in it. Default style is photo. Use animated only if they ask for it AND they are signed in; a guest who wants the animated one gets the photo reel now (call make_reel with photo) plus ONE short line that the animated version is for signed-in members. When the tool returns a jobId, say in one line that the video is being made (about a minute; animated: two to three), that it will appear right here, and that they can share it on WhatsApp — then put [[reel:JOBID]] on its own line. If it returns existing:true, say the video is ready and use the same marker. Never describe what is in the video. If it fails (not_found / no_photos), say so in one line.',
     '- Plans and pricing: only from list_plans / get_my_plan. Never quote a price from memory.',
     '- If asked something unrelated to property or this site, answer in one polite line and steer back.',
-    '- Always end with a suggestions line: [[suggest:short option 1|short option 2|short option 3]] — 2 or 3 things the visitor might tap next, each under 6 words, in the visitor’s language. Never suggest something you just did.',
+    '- Always end with a suggestions line: [[suggest:short option 1|short option 2|short option 3]] — 2 or 3 things the visitor might tap next, each under 6 words, in the visitor’s language. Never suggest something you just did. After showing listings (or a member\'s own listings), one suggestion should be a video of one of them, e.g. "Make a video of the Velachery flat".',
     '',
-    'FORMAT OF EVERY REPLY: the sentence(s) for the visitor, then optionally one [[show:…]] line, then the [[suggest:…]] line. Nothing after that.',
+    'FORMAT OF EVERY REPLY: the sentence(s) for the visitor, then optionally one [[show:…]] line or one [[reel:…]] line, then the [[suggest:…]] line. Nothing after that.',
   ].filter(Boolean).join('\n');
 }
 
@@ -247,12 +267,19 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
 
 const SHOW_RE = /\[\[\s*show\s*:\s*([^\]]+?)\s*\]\]/gi;
 const SUGGEST_RE = /\[\[\s*suggest\s*:\s*([^\]]+?)\s*\]\]/gi;
+const REEL_RE = /\[\[\s*reel\s*:\s*([^\]]+?)\s*\]\]/gi;
 
-/** Split the model's final text into { text, showIds, suggestions } and strip the markers. */
+/** Split the model's final text into { text, showIds, reelId, suggestions } and strip the markers. */
 export function parseReply(rawText) {
   let text = String(rawText || '');
   const showIds = [];
   const suggestions = [];
+  let reelId = '';
+  text = text.replace(REEL_RE, (_, id) => {
+    const clean = String(id).trim().replace(/[^A-Za-z0-9_-]/g, '');
+    if (clean && !reelId) reelId = clean;
+    return '';
+  });
   text = text.replace(SHOW_RE, (_, ids) => {
     for (const id of String(ids).split(/[,\s]+/)) {
       const clean = id.trim().replace(/[^A-Za-z0-9_:.-]/g, '');
@@ -273,7 +300,7 @@ export function parseReply(rawText) {
     .replace(/^#+\s*/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  return { text, showIds: showIds.slice(0, 4), suggestions: suggestions.slice(0, 3) };
+  return { text, showIds: showIds.slice(0, 4), reelId, suggestions: suggestions.slice(0, 3) };
 }
 
 /**
@@ -332,6 +359,55 @@ export function rememberListings(existing, fresh) {
 export function cardsFor(showIds, remembered) {
   const byId = new Map((remembered || []).map((l) => [l.id, l]));
   return showIds.map((id) => byId.get(id)).filter(Boolean).map(({ fromTool, ...card }) => card);
+}
+
+/** Reel jobs remembered per conversation (by jobId) so a `[[reel:…]]` marker resolves to real fields. */
+export const MAX_REMEMBERED_REELS = 10;
+
+/** The reel a successful make_reel result describes — every field bounded, nothing model-authored. */
+export function reelFromToolResult(name, result) {
+  if (name !== 'make_reel' || !result || typeof result !== 'object' || result.ok === false || !result.jobId) return null;
+  const status = ['queued', 'running', 'ready', 'failed'].includes(result.status) ? result.status : 'queued';
+  return {
+    jobId: String(result.jobId).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64),
+    style: result.style === 'animated' ? 'animated' : 'photo',
+    status,
+    etaSeconds: Number(result.etaSeconds) || (result.style === 'animated' ? 180 : 75),
+    listingId: String(result.listingId || '').slice(0, 80),
+    title: String(result.title || '').slice(0, 140),
+    listingUrl: String(result.listingUrl || '').slice(0, 400),
+    videoUrl: String(result.videoUrl || '').slice(0, 600),
+    posterUrl: String(result.posterUrl || '').slice(0, 600),
+    existing: result.existing === true,
+    at: Date.now(),
+  };
+}
+
+export function rememberReel(existing, reel) {
+  const list = (Array.isArray(existing) ? existing : []).filter((r) => r && r.jobId !== reel.jobId);
+  list.push(reel);
+  return list.slice(Math.max(0, list.length - MAX_REMEMBERED_REELS));
+}
+
+/**
+ * The reel to attach to a reply: the one the model marked, else — when make_reel succeeded this
+ * turn and Flash forgot the marker — the newest from this turn. The widget needs the jobId to poll;
+ * a reel the visitor asked for must never be lost to a missing marker.
+ */
+export function reelFor(reelId, remembered, turnJobIds = []) {
+  const list = Array.isArray(remembered) ? remembered : [];
+  const byId = (id) => list.find((r) => r.jobId === id);
+  const hit = reelId ? byId(reelId) : null;
+  if (hit) return stripReel(hit);
+  for (let i = turnJobIds.length - 1; i >= 0; i--) {
+    const r = byId(turnJobIds[i]);
+    if (r) return stripReel(r);
+  }
+  return null;
+}
+
+function stripReel({ at, existing, ...reel }) {
+  return reel;
 }
 
 // ── Tool-result hygiene ──────────────────────────────────────────────────────────────────────────

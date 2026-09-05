@@ -31,6 +31,8 @@ import {
   ASSISTANT_MESSAGE_PRICE_PAISE,
   ASSISTANT_OUTCOME_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
+  REEL_PHOTO_PRICE_PAISE,
+  REEL_ANIMATED_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
   priceForService,
@@ -144,6 +146,21 @@ export const SERVICE_DEFS = {
     accrualField: 'defectReportAccrualPaise',
     kind: 'defect_sla_report',
     label: 'Weekly defect SLA report',
+  },
+  // Listing reels made from inside the website assistant (handlers/reelJobs.js). Settled in-process
+  // by the reel worker on a DELIVERED video only — a failed job bills nothing, an animated job that
+  // had to fall back to photos bills reel_photo. Idempotent on the job id.
+  reel_photo: {
+    pricePaise: REEL_PHOTO_PRICE_PAISE,
+    accrualField: 'reelPhotoAccrualPaise',
+    kind: 'reel_photo',
+    label: 'Listing reel — photos + voice-over',
+  },
+  reel_animated: {
+    pricePaise: REEL_ANIMATED_PRICE_PAISE,
+    accrualField: 'reelAnimatedAccrualPaise',
+    kind: 'reel_animated',
+    label: 'Listing reel — animated hero shot',
   },
   // Chat & code: reported by Bosun's OWN console box (handlers/consoleTasks.js#consoleHook), one
   // event per minute a session is live — minute 1 at session start. Time, not work, is the unit.

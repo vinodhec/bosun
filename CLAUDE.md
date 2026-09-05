@@ -418,6 +418,49 @@ here; the DATA never leaves the platform.
 - **TTL**: transcripts carry `expiresAt` (30 days) — activate once with
   `gcloud firestore fields ttls update expiresAt --collection-group=assistantConversations --enable-ttl`.
 
+## Listing reels (a video lane inside the website assistant)
+
+"Make a video of the Velachery flat" in Ask MaadiVeedu → Bosun renders a 9:16 reel for WhatsApp
+status / Instagram: the listing's own photos with a slow Ken-Burns move, captions + price overlaid, a
+voice-over in the visitor's language, and an **"Ask MaadiVeedu" end card with a QR to the listing** —
+every shared reel advertises the assistant, which is the point. Two styles: `photo` (any visitor) and
+`animated` (opens on a 6 s **Veo 3.1 Lite** image-to-video clip made FROM the cover photo; **signed-in
+members only** — the sign-in is the hook). Generative video never imagines the property: the hero
+clip is a camera move over the real cover photo, and text-to-video is not used.
+
+- **Split.** `utils/reel.js` makes the file (flash-lite script with a deterministic fallback →
+  Gemini TTS `gemini-2.5-flash-preview-tts` → optional Veo → canvas overlays → ffmpeg segments →
+  stream-copy concat → Storage `reels/{orgId}/{jobId}/` via download-token URLs). It has no Firestore
+  and no billing. `handlers/reelJobs.js` is the HMAC endpoint (`create` / `status`, same relay secret
+  as every customer→Bosun call) plus `processReelJob`, a Firestore `onDocumentCreated` worker on
+  `reelJobs/{id}` (2 vCPU, 540 s) — generation takes 1–3 minutes and a Cloud Run instance has no CPU
+  after it answers, so the request only queues. The worker claims the job in a transaction (a
+  redelivered event cannot render twice). `reelLatest/{org__listing__style}` points at the newest
+  job so a second ask within 24 h gets the same video free (no composite index).
+- **Assistant wiring.** `make_reel` is the tenth tool in `TOOL_DEFS`; the platform runs it (gathers
+  photos, enforces "animated needs a member", POSTs `create`) and returns the job id; the model marks
+  the reply `[[reel:JOBID]]` and Bosun attaches `reply.reel` from the CACHED tool result
+  (`reelFromToolResult` / `reelFor` — if Flash forgets the marker the turn's reel is attached anyway).
+  The widget polls the platform's `/api/assistant/reel`, which polls `status`.
+- **Rendering rules learned the hard way.** ffmpeg-static (7.0) has NO drawtext (needs harfbuzz),
+  and resvg drew Tamil vowel signs in the wrong place — so captions and the end card are drawn with
+  `@napi-rs/canvas` (Skia shapes Tamil correctly) using the bundled Noto fonts in `functions/assets/fonts`.
+  The final mux passes an explicit `-t` + `apad=whole_dur` — an open-ended `apad` with `-shortest`
+  on a stream-copied video never ends. Every segment uses identical x264 settings so concat is a copy.
+- **Metered** as `reel_photo` (₹15) / `reel_animated` (₹149) in `shared/billing.js`, settled by the
+  worker through `settleMetered` on a DELIVERED video only, idempotent on the job id; a failed job
+  bills nothing and an animated job that Veo refused **degrades to photo and bills reel_photo**
+  (`styleDelivered`, `fallbackReason` on the job). Guards: `org.reel.enabled`, the negative-balance
+  gate (waived by `reel_photo` / `agent_work` in `billingPaused`), `org.reel.dailyCap` (40),
+  `animatedDailyCap` (10), `conversationDailyCap` (3). COGS: photo ≈ ₹1–2, animated ≈ ₹30–40.
+- **Validate** with `node scripts/validate-reel.mjs` (pure: synthetic photos, no model, pins the
+  ffmpeg/canvas path), `VERTEX_PROJECT=bosun-76bba node scripts/validate-reel.mjs --live [--animated]`,
+  and `scripts/make-reel.mjs listing.json --out reel.mp4` to hand-make one for a demo. `reelJobs`
+  TTL: `gcloud firestore fields ttls update expiresAt --collection-group=reelJobs --enable-ttl`.
+- **Platform side**: `web/src/lib/assistantReel.ts` (client), `make_reel` in `assistantTools.ts`
+  (`listingPhotos` in the mappers), `/api/assistant/reel/route.ts`, and the `ReelCard` in
+  `AssistantWidget.tsx` (poll → play → Share on WhatsApp / Download, "Made with Ask MaadiVeedu").
+
 ## Frontend conventions
 
 - Vite aliases: `@` → `src/`, `@shared` → `shared/`. Use them in imports.

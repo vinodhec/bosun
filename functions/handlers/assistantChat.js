@@ -4,7 +4,8 @@
  * The customer's platform mounts a chat widget on its public site and proxies every message here.
  * Bosun runs the brain (utils/assistant.js): it decides whether the message needs a TOOL (search,
  * enquiry, requirement, draft listing, my-listings, my-leads, my-plan) and hands the call back to the
- * platform, which executes it against its own data as the real signed-in user and posts the result;
+ * platform, which executes it against its own data as the real signed-in user and posts the result
+ * (a `make_reel` result is a job id the widget polls — the reel rides on the reply as `reply.reel`);
  * when the model has what it needs it writes the reply, Bosun turns the `[[show:…]]` marker into
  * listing cards from the cached tool results, and meters ONE `assistant_message` for the delivered
  * reply plus ONE `assistant_outcome` per NEW capture the turn made (enquiry / requirement / draft —
@@ -47,6 +48,9 @@ import {
   listingsFromToolResult,
   rememberListings,
   cardsFor,
+  reelFromToolResult,
+  rememberReel,
+  reelFor,
   scrubIds,
   toolResultsContent,
   trimHistory,
@@ -205,6 +209,7 @@ export const assistantChat = onRequest(
 
       let contents = Array.isArray(conv?.contents) ? conv.contents : [];
       let remembered = Array.isArray(conv?.remembered) ? conv.remembered : [];
+      let reels = Array.isArray(conv?.reels) ? conv.reels : [];
       let transcript = Array.isArray(conv?.transcript) ? conv.transcript : [];
       let turn = Number(conv?.turn) || 0;
       let hop = 0;
@@ -264,8 +269,10 @@ export const assistantChat = onRequest(
           const succeeded = r.result && typeof r.result === 'object' && r.result.ok !== false && !r.error;
           // `captured` is the platform saying "this was a NEW enquiry / requirement / draft" — the
           // success-fee unit. A repeat by the same visitor comes back ok:true, captured:false.
-          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true });
+          const reel = succeeded ? reelFromToolResult(call.name, r.result) : null;
+          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true, ...(reel ? { jobId: reel.jobId } : {}) });
           if (succeeded) remembered = rememberListings(remembered, listingsFromToolResult(call.name, r.result));
+          if (reel) reels = rememberReel(reels, reel);
         }
         contents = [...contents, toolResultsContent(pending.calls, results)];
         pending = null;
@@ -294,7 +301,7 @@ export const assistantChat = onRequest(
       if (step.kind === 'tool_calls') {
         const calls = step.calls.map((c) => ({ id: c.id, name: c.name, args: c.args }));
         pending = { calls, contentIndex: contents.length - 1, turn };
-        await convRef.set({ contents, remembered, pending, hop: hop + 1, turnEvents, lastAt: FieldValue.serverTimestamp() }, { merge: true });
+        await convRef.set({ contents, remembered, reels, pending, hop: hop + 1, turnEvents, lastAt: FieldValue.serverTimestamp() }, { merge: true });
         console.log('assistantChat:tool_calls', orgId, JSON.stringify({ conversationId: convId, turn, hop: hop + 1, tools: calls.map((c) => c.name), usage: step.usage, ms: Date.now() - t0 }));
         ok(res, { kind: 'tool_calls', conversationId: convId, turn, calls });
         return;
@@ -311,15 +318,19 @@ export const assistantChat = onRequest(
           cards = remembered.filter((l) => l.fromTool === 'search_properties').slice(-4).map(({ fromTool, ...c }) => c);
         }
       }
+      // The reel this turn made (or the one the model pointed back at) rides on the reply so the
+      // widget can poll it — built from the cached tool result, never from the model's words.
+      const reel = reelFor(parsed.reelId, reels, turnEvents.tools.filter((t) => t.jobId).map((t) => t.jobId));
       const reply = {
         text: scrubIds(parsed.text, remembered) || degradedReply(ctx.locale),
         cards,
         suggestions: parsed.suggestions.map((s) => scrubIds(s, remembered).slice(0, 48)),
+        ...(reel ? { reel } : {}),
       };
       const events = turnEvents.tools.filter((t) => t.ok).map((t) => t.name);
       const captures = turnEvents.tools.filter((t) => t.captured && OUTCOME_TOOLS.has(t.name)).map((t) => t.name);
 
-      transcript = [...transcript, { role: 'assistant', text: reply.text, cards, suggestions: reply.suggestions, at: Date.now() }].slice(-MAX_TRANSCRIPT);
+      transcript = [...transcript, { role: 'assistant', text: reply.text, cards, suggestions: reply.suggestions, ...(reel ? { reel } : {}), at: Date.now() }].slice(-MAX_TRANSCRIPT);
 
       let charged = 0;
       let waivedNow = false;
@@ -349,7 +360,7 @@ export const assistantChat = onRequest(
 
       await Promise.all([
         convRef.set({
-          contents: trimHistory(contents), transcript, remembered, pending: null, hop: 0, turnEvents,
+          contents: trimHistory(contents), transcript, remembered, reels, pending: null, hop: 0, turnEvents,
           lastReply: reply, lastAt: FieldValue.serverTimestamp(),
           stats: {
             replies: FieldValue.increment(1),
@@ -357,12 +368,13 @@ export const assistantChat = onRequest(
             enquiries: FieldValue.increment(events.filter((n) => n === 'create_enquiry').length),
             requirements: FieldValue.increment(events.filter((n) => n === 'request_property').length),
             drafts: FieldValue.increment(events.filter((n) => n === 'draft_listing').length),
+            reels: FieldValue.increment(events.filter((n) => n === 'make_reel').length),
           },
         }, { merge: true }),
         usageRef.set({ orgId, dayKey, replies: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
       ]);
 
-      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, events, captures, charged, waived: waivedNow, usage: step.usage, ms: Date.now() - t0 }));
+      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, reel: reel?.jobId || null, events, captures, charged, waived: waivedNow, usage: step.usage, ms: Date.now() - t0 }));
       ok(res, { kind: 'reply', conversationId: convId, turn, reply, events, captures, charged });
     } catch (e) {
       console.error('assistantChat:err', orgId, action, e?.message || e);
