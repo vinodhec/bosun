@@ -2,7 +2,8 @@
 /**
  * make-promo.mjs — a 9:16 promo reel for ASK MAADIVEEDU itself (the assistant, not a listing).
  *
- *   VERTEX_PROJECT=bosun-76bba node scripts/make-promo.mjs --out promo-en.mp4 [--locale ta] [--listing listing.json]
+ *   VERTEX_PROJECT=bosun-76bba node scripts/make-promo.mjs --out promo-en.mp4 [--locale ta] [--voice ta] [--listing listing.json]
+ *   --locale sets the on-screen language; --voice the voice-over language (defaults to --locale).
  *
  * A mock chat, drawn frame by frame with the same canvas + ffmpeg pieces utils/reel.js uses: the
  * visitor asks for a home, the assistant shows real listing cards, sends the enquiry, makes a
@@ -26,7 +27,8 @@ const execFileP = promisify(execFile);
 const argv = process.argv.slice(2);
 const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : ''; };
 const locale = opt('--locale') === 'ta' ? 'ta' : 'en';
-const out = path.resolve(opt('--out') || `promo-ask-maadiveedu-${locale}.mp4`);
+const voiceLocale = opt('--voice') ? (opt('--voice') === 'ta' ? 'ta' : 'en') : locale;
+const out = path.resolve(opt('--out') || `promo-ask-maadiveedu-${locale}${voiceLocale !== locale ? '-voice-' + voiceLocale : ''}.mp4`);
 const listing = opt('--listing')
   ? JSON.parse(await fs.readFile(opt('--listing'), 'utf8'))
   : {
@@ -41,7 +43,7 @@ const listing = opt('--listing')
     };
 
 // ── Copy (hand-written: a promo is marketing, and the words are the operator's) ─────────────────
-const COPY = {
+const COPY_ALL = {
   en: {
     title: ['Ask MaadiVeedu', 'Your property helper. Just ask.'],
     q1: `${listing.bhk} BHK house for sale in ${listing.locality} under ₹90 L`,
@@ -82,7 +84,9 @@ const COPY = {
     cta: 'maadiveedu.com-ல் இலவசமாக',
     hook: 'தேடு · விசாரி · பதிவு செய் · பகிர்',
   },
-}[locale];
+};
+const COPY = COPY_ALL[locale];
+const VOICE = COPY_ALL[voiceLocale].voice;
 
 // ── Drawing ─────────────────────────────────────────────────────────────────────────────────────
 const GREEN = '#0f766e';
@@ -334,7 +338,7 @@ await fs.writeFile(endPng, endCardPng({ listingUrl: 'https://www.maadiveedu.com/
 scenes.push({ name: 'end', seconds: 4, png: endPng });
 
 // ── Voice, timing, render ───────────────────────────────────────────────────────────────────────
-const voice = await synthVoice(COPY.voice, locale);
+const voice = await synthVoice(VOICE, voiceLocale);
 const voiceSec = voice ? voice.pcm.length / (voice.sampleRate * 2) : 0;
 const planned = scenes.reduce((a, s) => a + s.seconds, 0);
 const target = Math.max(planned, Math.min(29.5, voiceSec + 1.5));
@@ -353,5 +357,6 @@ await concatWithVoice({ segments: segs, voice, out: video, dir, totalSeconds });
 await execFileP(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '1', '-i', video, '-frames:v', '1', '-q:v', '4', path.join(dir, 'poster.jpg')]);
 await fs.copyFile(video, out);
 await fs.copyFile(path.join(dir, 'poster.jpg'), out.replace(/\.mp4$/, '') + '-poster.jpg');
-console.log(`promo ${locale}: ${(await probeDuration(video)).toFixed(1)}s, voiced=${!!voice}`);
+console.log(`promo text:${locale} voice:${voiceLocale}: ${(await probeDuration(video)).toFixed(1)}s, voiced=${!!voice}`);
+console.log('transcript:', VOICE);
 console.log('video:', out);
