@@ -331,13 +331,16 @@ export const assistantChat = onRequest(
       };
       const events = turnEvents.tools.filter((t) => t.ok).map((t) => t.name);
       const captures = turnEvents.tools.filter((t) => t.captured && OUTCOME_TOOLS.has(t.name)).map((t) => t.name);
-      // A NEW member account is worth the same as any other capture — but it is created inside the
-      // capture tools, so on a normal enquiry it is the SAME moment we already charged for and must
-      // not be billed twice. The gap it closes is draft_listing's wizard fallback: it cannot pre-fill,
-      // returns captured:false, and still leaves the seller with an account. That turn earned ₹0.50
-      // for work that produced a member. (operator decision 2026-09-08)
+      // A NEW member account is its OWN ₹5 capture, on top of whatever else the turn captured
+      // (operator decision 2026-09-08): one chat that creates the account, sends an enquiry and
+      // drafts a listing bills ₹15. Turning a stranger into a member is a distinct outcome and is
+      // priced as one, even though it happens inside the capture tools.
+      //
+      // The key below is scoped to the CONVERSATION, not the turn: an account is created once per
+      // visitor, so this fee can only ever land once per chat no matter which tool reports it or how
+      // many times a delivery is retried.
       const accountCaptures = turnEvents.tools
-        .filter((t) => t.accountCreated && !t.captured && OUTCOME_TOOLS.has(t.name))
+        .filter((t) => t.accountCreated && OUTCOME_TOOLS.has(t.name))
         .map((t) => t.name);
 
       transcript = [...transcript, { role: 'assistant', text: reply.text, cards, suggestions: reply.suggestions, ...(reel ? { reel } : {}), at: Date.now() }].slice(-MAX_TRANSCRIPT);
@@ -363,12 +366,12 @@ export const assistantChat = onRequest(
           });
           charged += outcome.charged;
         }
-        // Separate idempotency suffix so this can never collide with the capture fee for the same
-        // (turn, tool) — a retried delivery stays a charged:0 no-op on both lines.
-        for (const tool of accountCaptures) {
+        // Conversation-scoped key: at most ONE account fee per chat, and it can never collide with
+        // the capture fee for the same (turn, tool). A retried delivery stays a charged:0 no-op.
+        for (const tool of accountCaptures.slice(0, 1)) {
           const outcome = await settleMetered({
             db, orgId, service: 'assistant_outcome',
-            idempotencyKey: `${convId}:${turn}:${tool}:account`,
+            idempotencyKey: `${convId}:account`,
             description: `Website assistant capture — member account created (${convId.slice(0, 8)}…#${turn})`,
             extra: { conversationId: convId, turn, tool, kind: 'account', signedIn, locale: ctx.locale },
           });
