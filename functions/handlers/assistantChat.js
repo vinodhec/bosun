@@ -270,7 +270,9 @@ export const assistantChat = onRequest(
           // `captured` is the platform saying "this was a NEW enquiry / requirement / draft" — the
           // success-fee unit. A repeat by the same visitor comes back ok:true, captured:false.
           const reel = succeeded ? reelFromToolResult(call.name, r.result) : null;
-          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true, ...(reel ? { jobId: reel.jobId } : {}) });
+          // `accountCreated` rides along for the success fee below: the three capture tools all call
+          // ensureAccount, so a guest who hands over a phone becomes a member INSIDE the same tool.
+          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true, accountCreated: !!succeeded && r.result.accountCreated === true, ...(reel ? { jobId: reel.jobId } : {}) });
           if (succeeded) remembered = rememberListings(remembered, listingsFromToolResult(call.name, r.result));
           if (reel) reels = rememberReel(reels, reel);
         }
@@ -329,6 +331,14 @@ export const assistantChat = onRequest(
       };
       const events = turnEvents.tools.filter((t) => t.ok).map((t) => t.name);
       const captures = turnEvents.tools.filter((t) => t.captured && OUTCOME_TOOLS.has(t.name)).map((t) => t.name);
+      // A NEW member account is worth the same as any other capture — but it is created inside the
+      // capture tools, so on a normal enquiry it is the SAME moment we already charged for and must
+      // not be billed twice. The gap it closes is draft_listing's wizard fallback: it cannot pre-fill,
+      // returns captured:false, and still leaves the seller with an account. That turn earned ₹0.50
+      // for work that produced a member. (operator decision 2026-09-08)
+      const accountCaptures = turnEvents.tools
+        .filter((t) => t.accountCreated && !t.captured && OUTCOME_TOOLS.has(t.name))
+        .map((t) => t.name);
 
       transcript = [...transcript, { role: 'assistant', text: reply.text, cards, suggestions: reply.suggestions, ...(reel ? { reel } : {}), at: Date.now() }].slice(-MAX_TRANSCRIPT);
 
@@ -353,6 +363,17 @@ export const assistantChat = onRequest(
           });
           charged += outcome.charged;
         }
+        // Separate idempotency suffix so this can never collide with the capture fee for the same
+        // (turn, tool) — a retried delivery stays a charged:0 no-op on both lines.
+        for (const tool of accountCaptures) {
+          const outcome = await settleMetered({
+            db, orgId, service: 'assistant_outcome',
+            idempotencyKey: `${convId}:${turn}:${tool}:account`,
+            description: `Website assistant capture — member account created (${convId.slice(0, 8)}…#${turn})`,
+            extra: { conversationId: convId, turn, tool, kind: 'account', signedIn, locale: ctx.locale },
+          });
+          charged += outcome.charged;
+        }
       } catch (e) {
         // The reply is already written; a billing hiccup must not turn into a blank widget. Loud.
         console.error('assistantChat:bill:err', orgId, convId, turn, e?.message || e);
@@ -374,7 +395,7 @@ export const assistantChat = onRequest(
         usageRef.set({ orgId, dayKey, replies: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
       ]);
 
-      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, reel: reel?.jobId || null, events, captures, charged, waived: waivedNow, usage: step.usage, ms: Date.now() - t0 }));
+      console.log('assistantChat:reply', orgId, JSON.stringify({ conversationId: convId, turn, hop, cards: cards.length, reel: reel?.jobId || null, events, captures, accountCaptures, charged, waived: waivedNow, usage: step.usage, ms: Date.now() - t0 }));
       ok(res, { kind: 'reply', conversationId: convId, turn, reply, events, captures, charged });
     } catch (e) {
       console.error('assistantChat:err', orgId, action, e?.message || e);

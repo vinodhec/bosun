@@ -837,6 +837,18 @@ export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
  * did something for the business, which is the part of the bill that is easy to defend; it also
  * lets the per-reply rate stay low without the lane depending on chatter. idempotencyKey =
  * `${conversationId}:${turn}:${tool}`. Accrued on the org as `assistantOutcomeAccrualPaise`.
+ *
+ * A NEW MEMBER ACCOUNT is the same unit at the same ₹5 (operator decision 2026-09-08), on the
+ * idempotencyKey `${conversationId}:${turn}:${tool}:account`. It is deliberately NOT a fourth
+ * capture tool: all three capture tools call the platform's `ensureAccount`, so a guest who hands
+ * over a phone becomes a member INSIDE the enquiry we already charged for — billing it there would
+ * be ₹10 for one moment. It is charged only on a turn that created an account and did NOT bill a
+ * capture (`accountCreated && !captured`), which in practice is exactly one case: draft_listing's
+ * wizard fallback, which cannot pre-fill the form, returns captured:false, and still leaves the
+ * seller with an account. That turn used to earn ₹0.50 for work that produced a member.
+ *
+ * The per-reply line is unconditional: every delivered reply is ₹0.50 whether or not the turn
+ * converted. The outcome fee is a BONUS on top, never a replacement.
  */
 export const ASSISTANT_MESSAGE_COST_PAISE = 20;   // measured avg Gemini Flash cost per reply (GST-incl., 24-entry history)
 export const ASSISTANT_MESSAGE_PRICE_PAISE = 50;  // ₹0.50 per delivered assistant reply (2.5× cost; was ₹1.00 at launch)
