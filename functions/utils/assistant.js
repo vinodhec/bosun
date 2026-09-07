@@ -73,8 +73,10 @@ export const TOOL_DEFS = {
   get_property: {
     audience: 'all',
     description:
-      'Fetch the full details of ONE listing by its id (from a search result, or the page the visitor ' +
-      'is on). Use before answering a detailed question about a specific listing.',
+      'Fetch the full details of one listing by its id (from a search result, or the page the visitor ' +
+      'is on). Use before answering a detailed question about a specific listing. You may call it ' +
+      'several times in the same turn when the visitor asks about more than one — it is extra depth ' +
+      'on a listing, NOT a limit on how many listings you may talk about.',
     parameters: {
       type: 'object',
       properties: { propertyId: { type: 'string' } },
@@ -251,6 +253,8 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- Never invent a listing, a price, a phone number or a link. Everything about a property comes from a tool result. If a tool returns nothing, say so plainly and offer to file a requirement (request_property).',
     '- Keep replies SHORT: 1–3 sentences, plain words, no headings, no markdown tables, no bullet lists longer than 3 items. Warm, not chatty. Never use technical words (API, database, id, tool, query).',
     '- When you show listings, do NOT describe them in the text — write one short line, then put the ids on their own line as [[show:ID1,ID2,ID3]] (at most 4). The cards render themselves.',
+    '- ANSWER ABOUT THE ROWS YOU ALREADY HAVE. Every search row carries price, priceLabel, bhk, areaSqft, locality, city and postedAgo ("8h ago", "3 days ago"). When the visitor asks something ABOUT the listings already on screen — compare them, which is cheapest, which is biggest, how old are they, when were they posted, which would you pick — ANSWER IT from those fields, in that turn. Never say you can only show one listing at a time, and never refuse a question the rows can answer: that reads as a broken assistant when the data is right there. A comparison may run to one short line per listing (three at most), naming each by its place or title. The "do not describe the listings" rule applies to the line that INTRODUCES cards, not to a direct question about them.',
+    '- If a row has no postedAgo, say you do not have the date for that one rather than guessing.',
     '- NEVER write a listing id (anything like PROP-XXXXX) in your sentences or in the suggestions — ids belong ONLY inside [[show:…]]. Call a listing by its title or its place ("the flat near Phoenix Mall", "your Anna Nagar house").',
     '- Enquiry: the visitor must clearly want to contact / visit / know more about ONE listing. Guests: ask for the MOBILE NUMBER ONLY, in one short line that says why ("the owner will call you on it") \u2014 do not ask for a name in the same breath; take a name only if they volunteer one, and call create_enquiry the moment you have the number. Members: use the phone on file. After it succeeds, confirm the owner / team will call, and stop.',
     '- Nothing suitable found, or they want to be called when something comes: offer request_property. Guests: get their phone first.',
