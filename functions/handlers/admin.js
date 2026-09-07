@@ -7,7 +7,7 @@ import { requireAdmin } from '../utils/admin.js';
 import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
-import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE } from '../shared/billing.js';
+import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE, REEL_PHOTO_PRICE_PAISE, REEL_ANIMATED_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -483,8 +483,18 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     //   autopost_usage  — customer's sweep auto-published a Bosun lead (₹0.50, accrued)
     //   daily_plan      — nightly admin work-queue plan (₹200/plan-day flat, accrued)
     //   whatsapp_usage  — outreach-bot delivered messages (₹1.65) + accepted postings (₹3), accrued
+    //   assistant_*     — website assistant replies (₹0.50, accrued) and captures (₹5 flat)
+    //   reel_*          — listing reels made from inside the assistant (₹55 photo / ₹90 animated)
+    //
+    // KEEP THIS LIST AND `LANES` IN STEP. They were allowed to drift once: assistant_message and
+    // assistant_outcome were added to LANES but not here, so both lanes rendered a confident ₹0
+    // across every window while 108 debits sat in `transactions` earning quietly (2026-09-07).
+    // A lane missing from this filter does not read as broken — it reads as "we earn nothing here".
     db.collection('transactions')
-      .where('kind', 'in', ['sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage', 'conversion_popup'])
+      .where('kind', 'in', [
+        'sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage',
+        'conversion_popup', 'assistant_message', 'assistant_outcome', 'reel_photo', 'reel_animated',
+      ])
       .get(),
     // Waived meter events (testing / goodwill pause): recorded but never debited — the reconcilable
     // "what we chose not to charge" figure. Single-field filter (auto-indexed).
@@ -678,6 +688,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     conversion_popup: { label: 'Popups opened', unit: 'popup', pricePaise: null }, // random ₹0.25–0.35 each
     assistant_message: { label: 'Website assistant replies', unit: 'reply', pricePaise: ASSISTANT_MESSAGE_PRICE_PAISE },
     assistant_outcome: { label: 'Website assistant captures', unit: 'capture', pricePaise: ASSISTANT_OUTCOME_PRICE_PAISE },
+    reel_photo: { label: 'Listing reels — photo', unit: 'reel', pricePaise: REEL_PHOTO_PRICE_PAISE },
+    reel_animated: { label: 'Listing reels — animated', unit: 'reel', pricePaise: REEL_ANIMATED_PRICE_PAISE },
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -717,7 +729,11 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let popupAccrualPaise = 0;
   let assistantAccrualPaise = 0;
   let assistantOutcomeAccrualPaise = 0;
+  let reelPhotoAccrualPaise = 0;
+  let reelAnimatedAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
+    reelPhotoAccrualPaise += Number(o.data().reelPhotoAccrualPaise) || 0;
+    reelAnimatedAccrualPaise += Number(o.data().reelAnimatedAccrualPaise) || 0;
     assistantAccrualPaise += Number(o.data().assistantAccrualPaise) || 0;
     assistantOutcomeAccrualPaise += Number(o.data().assistantOutcomeAccrualPaise) || 0;
     composeAccrualPaise += Number(o.data().composeAccrualPaise) || 0;
@@ -746,14 +762,19 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
         : kind === 'whatsapp_usage' ? waAccrualPaise / 100
         : kind === 'conversion_popup' ? popupAccrualPaise / 100
         : kind === 'assistant_message' ? assistantAccrualPaise / 100
-        : kind === 'assistant_outcome' ? assistantOutcomeAccrualPaise / 100 : 0,
+        : kind === 'assistant_outcome' ? assistantOutcomeAccrualPaise / 100
+        : kind === 'reel_photo' ? reelPhotoAccrualPaise / 100
+        : kind === 'reel_animated' ? reelAnimatedAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });
 
-  // Whole property business = the three lanes together. Apify (estimated per relayed lead) is the
-  // only COGS across them — compose/auto-post COGS is a Gemini Flash call and a webhook, both
-  // rounding error against ₹0.25/₹0.50.
+  // Whole property business = every lane above, added up. Apify (estimated per relayed lead) is the
+  // only COGS modelled here — compose/auto-post/assistant COGS is a Gemini Flash call and a webhook,
+  // rounding error against ₹0.25/₹0.50. The reel lanes are the exception worth remembering when
+  // reading the margin: a photo reel costs ₹1–2 to make against ₹55, but an ANIMATED one costs
+  // ₹30–40 (Veo) against ₹90, so a month heavy in animated reels is materially thinner than this
+  // number suggests.
   const laneRevenue = lanes.reduce((n, l) => n + l.revenueInr, 0);
   const propertyTotal = {
     revenueInr: laneRevenue,
