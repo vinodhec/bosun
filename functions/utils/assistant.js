@@ -252,11 +252,65 @@ function fmtInr(n) {
   return `₹${Math.round(v).toLocaleString('en-IN')}`;
 }
 
+/** Tamil script. Its presence in a message is unambiguous — nothing else uses this block. */
+const TAMIL_SCRIPT_RE = /[\u0B80-\u0BFF]/;
+const LATIN_LETTER_RE = /[A-Za-z]/;
+/**
+ * Tamil words as people actually type them in English letters ("car parking iruka", "vadagai evlo").
+ * Deliberately high-precision: every entry is a word a Tamil speaker uses in a property chat and
+ * that English prose does not, so an English sentence never trips it. Missing a rarer Tanglish word
+ * costs an English reply to a Tanglish visitor; a false hit would answer an English visitor in
+ * half-Tamil, which is worse — hence the short list.
+ */
+const TANGLISH_RE = /\b(iruka|irukka|irukku|irukkuma|illa|illai|illaya|illaia|venum|vendum|vena|enna|yenna|epdi|eppadi|seri|sari|sollu|sollunga|solunga|kaattu|kaatunga|katunga|veedu|veetu|veedugal|vaadagai|vadagai|vaadaga|kudi|kudiyiruppu|panra|pannunga|pannuveenga|romba|konjam|nalla|evlo|evvalavu|enaku|enakku|naan|neenga|ungaluku|ungalukku|thevai|adhu|idhu|inda|indha|ipo|ippo|apparam|mudiyuma|mudiyum|kedaikuma|kedaikkuma|kedaikkum|paakanum|paarkanum|vanakkam|nandri)\b/i;
+
+/**
+ * The most recent thing the VISITOR actually wrote, skipping tool results (which also ride on the
+ * `user` role) and skipping messages with no letters at all — a bare phone number or "9876543210"
+ * is not a language signal, and letting it read as "English" would flip a Tamil chat mid-enquiry.
+ */
+export function lastVisitorText(contents) {
+  for (let i = (contents || []).length - 1; i >= 0; i--) {
+    const c = contents[i];
+    if (!c || c.role !== 'user') continue;
+    const text = (c.parts || []).map((p) => (typeof p?.text === 'string' ? p.text : '')).join(' ').trim();
+    if (!text) continue;
+    if (TAMIL_SCRIPT_RE.test(text) || LATIN_LETTER_RE.test(text)) return text;
+  }
+  return '';
+}
+
+/** 'ta' | 'tanglish' | 'en' — the language of one message, or '' when it carries no signal. */
+export function visitorLanguage(text) {
+  const t = String(text || '');
+  if (TAMIL_SCRIPT_RE.test(t)) return 'ta';
+  if (!LATIN_LETTER_RE.test(t)) return '';
+  return TANGLISH_RE.test(t) ? 'tanglish' : 'en';
+}
+
+/**
+ * The language rule for THIS turn, decided from the visitor's latest message rather than left to
+ * the model to infer. Flash reads a long Tamil history as "this is a Tamil chat" and keeps writing
+ * Tamil script even after the visitor switches to English (2026-09-08: "any wedding hall in
+ * tambaram" came back in Tamil, six Tamil turns deep), so the instruction names the language
+ * outright and says the history does not carry over. `locale` (the widget's EN/தமிழ் toggle) is
+ * only the tie-break for the opening message, before the visitor has written anything.
+ */
+export function languageRule(lastMessage, locale = 'en') {
+  const lang = visitorLanguage(lastMessage) || (locale === 'ta' ? 'ta' : 'en');
+  const said = lang === 'ta'
+    ? 'in TAMIL SCRIPT. Write this whole reply — every sentence AND every suggestion — in Tamil script.'
+    : lang === 'tanglish'
+      ? 'in TANGLISH (Tamil typed in English letters, like "car parking iruka"). Write this whole reply — every sentence AND every suggestion — in Tanglish: Tamil words in English letters, never Tamil script.'
+      : 'in ENGLISH. Write this whole reply — every sentence AND every suggestion — in English, and do NOT use Tamil script.';
+  return `LANGUAGE: the visitor's latest message is ${said} Decide this fresh on EVERY turn from their latest message alone; the language of earlier messages in this chat does not carry over, and a visitor who switches language mid-chat gets the new one immediately.`;
+}
+
 /**
  * The system instruction. Kept tight: Flash follows short, concrete rules far better than essays,
  * and every token here is paid on every hop of every message.
  */
-export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale = 'en' }) {
+export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale = 'en', lastMessage = '' }) {
   const siteName = String(site.name || 'this property site').slice(0, 80);
   const cities = Array.isArray(site.cities) && site.cities.length ? site.cities.slice(0, 20).join(', ') : '';
   const signedIn = !!user.id;
@@ -268,9 +322,7 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
   const where = page.propertyId
     ? `They are currently viewing listing id ${String(page.propertyId).slice(0, 80)} — "it" / "this one" means that listing.`
     : page.path ? `They are on the page ${String(page.path).slice(0, 160)}.` : '';
-  const lang = locale === 'ta'
-    ? 'The site is being read in TAMIL. Reply in Tamil (Tamil script) unless the visitor writes in English.'
-    : 'Reply in the language the visitor writes in: English, Tamil (Tamil script) or Tanglish (Tamil in Latin letters) — mirror them exactly.';
+  const lang = languageRule(lastMessage, locale);
 
   return [
     `You are the friendly, sharp property assistant on ${siteName}, a property website in Tamil Nadu, India (owner-direct listings, no brokerage).`,

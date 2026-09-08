@@ -43,6 +43,7 @@ import {
   MAX_TOOL_HOPS,
   toolsFor,
   buildSystemInstruction,
+  lastVisitorText,
   modelStep,
   parseReply,
   listingsFromToolResult,
@@ -284,7 +285,9 @@ export const assistantChat = onRequest(
       const signedIn = !!ctx.user?.id;
       const forceAnswer = hop >= MAX_TOOL_HOPS;
       const tools = forceAnswer ? [] : toolsFor({ capabilities: ctx.capabilities, signedIn });
-      const systemInstruction = buildSystemInstruction({ site: ctx.site, user: ctx.user || {}, page: ctx.page, locale: ctx.locale });
+      // The reply language is decided from the visitor's latest message, not from the chat's
+      // history — on a tool hop that is still the message that started this turn.
+      const systemInstruction = buildSystemInstruction({ site: ctx.site, user: ctx.user || {}, page: ctx.page, locale: ctx.locale, lastMessage: lastVisitorText(contents) });
       const step = await modelStep({ contents, systemInstruction, tools });
 
       if (!step) {

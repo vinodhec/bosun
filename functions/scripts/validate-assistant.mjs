@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import {
   TOOL_DEFS, toolsFor, buildSystemInstruction, parseReply, listingsFromToolResult,
   rememberListings, cardsFor, boundToolResult, toolResultsContent, trimHistory, modelStep,
+  visitorLanguage, lastVisitorText, languageRule,
   reelFromToolResult, rememberReel, reelFor,
   MAX_HISTORY_CONTENTS, MAX_TOOL_RESULT_CHARS,
 } from '../utils/assistant.js';
@@ -75,6 +76,42 @@ check('system instruction adapts to guest vs member and to the page', () => {
   assert.match(member, /phone on file/);
   assert.match(member, /listing id PROP-1/);
   assert.match(member, /TAMIL/);
+});
+
+check('the reply language follows the visitor\'s LATEST message, not the chat history', () => {
+  assert.equal(visitorLanguage('any wedding hall in tambaram'), 'en');
+  assert.equal(visitorLanguage('வீடியோ காட்டு'), 'ta');
+  assert.equal(visitorLanguage('car parking iruka'), 'tanglish');
+  assert.equal(visitorLanguage('cAR PARKING ILLAYA'), 'tanglish');
+  assert.equal(visitorLanguage('2 BHK for rent in Velachery under 20k'), 'en');
+  assert.equal(visitorLanguage('9876543210'), ''); // no letters — not a language signal
+  // The regression this exists for: six Tamil turns, then an English question.
+  const contents = [
+    { role: 'user', parts: [{ text: 'வீடியோ காட்டு' }] },
+    { role: 'model', parts: [{ text: 'எந்த வீட்டின் வீடியோ வேண்டும்?' }] },
+    { role: 'user', parts: [{ text: 'any wedding hall in tambaram' }] },
+  ];
+  assert.equal(lastVisitorText(contents), 'any wedding hall in tambaram');
+  const si = buildSystemInstruction({ site: {}, user: {}, page: {}, locale: 'ta', lastMessage: lastVisitorText(contents) });
+  assert.match(si, /latest message is in ENGLISH/);
+  assert.match(si, /do NOT use Tamil script/);
+});
+
+check('a tool result or a bare phone number never flips the language', () => {
+  const contents = [
+    { role: 'user', parts: [{ text: 'வேலச்சேரியில் 2 BHK' }] },
+    { role: 'model', parts: [{ functionCall: { name: 'search_properties', args: {} } }] },
+    { role: 'user', parts: [{ functionResponse: { name: 'search_properties', response: { ok: true, items: [] } } }] },
+    { role: 'user', parts: [{ text: '9876543210' }] },
+  ];
+  assert.equal(lastVisitorText(contents), 'வேலச்சேரியில் 2 BHK');
+  assert.match(languageRule(lastVisitorText(contents), 'en'), /TAMIL SCRIPT/);
+});
+
+check('Tanglish is answered in Tanglish, never in Tamil script', () => {
+  const rule = languageRule('vadagai evlo iruku', 'en');
+  assert.match(rule, /TANGLISH/);
+  assert.match(rule, /never Tamil script/);
 });
 
 check('parseReply strips markers and returns ids + chips', () => {
