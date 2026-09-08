@@ -632,16 +632,17 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
  * settled directly by planDailyTasks on the platform's ingest ack (registered in usageMeter too so
  * a ledger replay/backfill prices identically). Accrued on the org as `plannerAccrualPaise`.
  *
- * PRICED AT ₹200/plan-day (operator decision 2026-08-05, ending the ₹10 adoption hold set
- * 2026-08-03): the feature set is complete (demand-first ranking, 40-task floor, inline call card,
- * owner scoreboard), so the line is billed at its worth rather than at a token rate. ₹200/day is
- * where the per-seat candidate model landed anyway — ₹40/admin-day × the customer's current 5
- * seats — taken flat, because flat is what the whole line is priced on (see above) and a flat
- * price doesn't move when the customer's roster churns. COGS ≈ ₹0.25–0.30/night (5 Flash briefings
- * + function runtime; the heavy work-state/demand/reconcile compute runs on the customer's own
+ * PRICED AT ₹300/plan-day (operator decision 2026-09-08, repriced from the ₹200 set 2026-08-05,
+ * which itself ended the ₹10 adoption hold of 2026-08-03). The line has kept growing since it was
+ * last priced — demand-first ranking, the 40-task floor, the inline call card, the owner
+ * scoreboard, phone-hunt and buyer lanes — and it is what decides where five admins spend their
+ * day. On the per-seat candidate model ₹300/day is ₹60/admin-day at the customer's current 5
+ * seats; taken flat, because flat is what the whole line is priced on (see above) and a flat price
+ * doesn't move when the customer's roster churns. COGS ≈ ₹0.25–0.30/night (5 Flash briefings +
+ * function runtime; the heavy work-state/demand/reconcile compute runs on the customer's own
  * infra), so this line is margin, not cost recovery.
  */
-export const DAILY_PLAN_PRICE_PAISE = 20000; // ₹200 per plan-day, flat (repriced from ₹10, 2026-08-05)
+export const DAILY_PLAN_PRICE_PAISE = 30000; // ₹300 per plan-day, flat (repriced from ₹200, 2026-09-08)
 
 /**
  * ── EOD WhatsApp team summary (eod_summary) ────────────────────────────────────────────────────

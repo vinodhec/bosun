@@ -481,7 +481,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     //   sourcing        — one row per run batch,  count = leads relayed
     //   selfpost_compose— WhatsApp message composed for an owner (₹0.25, accrued)
     //   autopost_usage  — customer's sweep auto-published a Bosun lead (₹0.50, accrued)
-    //   daily_plan      — nightly admin work-queue plan (₹200/plan-day flat, accrued)
+    //   daily_plan      — nightly admin work-queue plan (₹300/plan-day flat, accrued)
     //   whatsapp_usage  — outreach-bot delivered messages (₹1.65) + accepted postings (₹3), accrued
     //   assistant_*     — website assistant replies (₹0.50, accrued) and captures (₹5 flat)
     //   reel_*          — listing reels made from inside the assistant (₹55 photo / ₹90 animated)
