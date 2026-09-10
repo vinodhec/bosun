@@ -32,8 +32,14 @@ import { buildSourcingQueries } from './queryGen.js';
 export const PROBE_POSTS_DEFAULT = 30;
 export const PROBE_POSTS_MIN = 10;
 export const PROBE_POSTS_MAX = 60;
-/** Groups read per probe. Two covers "the town group" + "the district group"; more is just cost. */
+/** DISCOVERED groups read per probe. Two covers "the town group" + "the district group"; more is just cost. */
 export const PROBE_MAX_GROUPS = 2;
+/**
+ * CONFIGURED groups read per probe — a whole-city ask ("all of Erode", town left blank) should read
+ * every group the operator curated for that city, not two of six. Bounded so a runaway config can't
+ * turn one click into a scrape bill.
+ */
+export const PROBE_MAX_CONFIGURED_GROUPS = 10;
 /** A place with no public group is re-discovered only after this long. */
 export const DISCOVERY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const SOURCING_GROUPS = 'sourcingGroups';
@@ -100,7 +106,7 @@ function configuredGroupsFor(cfg, locality, city) {
  */
 export async function resolveGroups(db, { apifyToken, orgId, cfg, locality, city, force = false }) {
   const configured = configuredGroupsFor(cfg, locality, city);
-  if (configured.length) return { groups: configured.slice(0, PROBE_MAX_GROUPS), source: 'configured', discovered: false };
+  if (configured.length) return { groups: configured.slice(0, PROBE_MAX_CONFIGURED_GROUPS), source: 'configured', discovered: false };
 
   const ref = db.collection('organisations').doc(orgId).collection(SOURCING_GROUPS).doc(placeSlug(locality, city));
   const snap = await ref.get();
