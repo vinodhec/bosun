@@ -18,16 +18,25 @@
  * What does gate it: a per-org cooldown (below), because every call costs real Apify credit and
  * the org wallet is debited per relayed lead.
  *
- * Request  { orgId, locality, city, listingType?: 'Sale'|'Rent'|'Lease', propertyType?, requestId? }
+ * Request  { orgId, locality, city, listingType?: 'Sale'|'Rent'|'Lease', propertyType?, requestId?,
+ *            mode?: 'supply' | 'buyer', posts?, forceDiscovery? }
  *          headers: x-bosun-signature: sha256=…, x-bosun-timestamp: <ms>
  * Response { ok, runId, relayed, amountInr, examined?, note? } — the same summary shape the
  *          operator's run-now buttons return; 429 with retryAfterSeconds while cooling down.
+ *
+ * mode:'buyer' (2026-09-10) is the DEMAND twin — "find buyers for Mettupalayam, now", for a seller
+ * in a town the scheduled buyer lane's metro groups never see. It reads the town's own Facebook
+ * group once (found through a cached one-time discovery, see utils/buyerProbe.js) through the
+ * buyer-mode pipeline, and falls back to the demand SERP queries when the town has no public
+ * group. Same auth, same cooldown, same run panel (trigger 'platform-on-demand-buyer'); the
+ * response adds `source` ('groups'|'serp'), `groups`, `groupSource` and `discovered`.
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
 import { runForOrg } from './runSourcingJobs.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
+import { probeBuyersForPlace } from '../utils/buyerProbe.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
@@ -65,6 +74,7 @@ export const sourceOnDemand = onRequest(
     const city = String(body.city || '').trim();
     const listingType = String(body.listingType || '').trim();
     const propertyType = String(body.propertyType || '').trim();
+    const buyerMode = body.mode === 'buyer';
     if (!orgId || (!locality && !city)) {
       res.status(400).json({ error: 'orgId and a locality or city are required' });
       return;
@@ -118,6 +128,31 @@ export const sourceOnDemand = onRequest(
         return;
       }
       throw e;
+    }
+
+    // BUYER: one place, one group read, one relay pass — see utils/buyerProbe.js.
+    if (buyerMode) {
+      const run = startRun(db, orgId, 'platform-on-demand-buyer');
+      try {
+        const r = await probeBuyersForPlace(db, {
+          apifyToken: process.env.APIFY_TOKEN, orgId, cfg, run, runForOrg,
+          locality, city, propertyType, listingType,
+          posts: body.posts, force: body.forceDiscovery === true,
+        });
+        await run.finish();
+        console.log('sourceOnDemand:buyer:done', orgId, JSON.stringify({ runId: run.id, locality, city, listingType, propertyType, source: r.source, groupSource: r.groupSource, groups: r.groups?.length || 0, relayed: r.relayed || 0, amountInr: r.amountInr || 0 }));
+        res.status(200).json({
+          ok: true, runId: run.id, mode: 'buyer',
+          relayed: r.relayed || 0, amountInr: r.amountInr || 0,
+          ...(r.examined != null ? { examined: r.examined } : {}),
+          source: r.source, groupSource: r.groupSource, discovered: r.discovered, groups: r.groups, postsPerGroup: r.postsPerGroup,
+        });
+      } catch (e) {
+        await run.finish({ status: 'error', error: e?.message || String(e) });
+        console.error('sourceOnDemand:buyer:err', orgId, e?.message || e);
+        res.status(502).json({ error: 'buyer probe failed', detail: e?.message || String(e) });
+      }
+      return;
     }
 
     // From here this is exactly one cron leg: same query builder, same gate pipeline, same audit
