@@ -271,6 +271,22 @@ export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 
 
   const run = startRun(db, orgId, trigger);
   try {
+    // Owner posts in these feeds relay only when the org opted in (sourcing.groupSupplyLeads, set
+    // 2026-09-10). This lane never pulled the platform matrix, so it never saw the pending-cap
+    // PAUSE the SERP lanes honour — fine while it relayed only the rare buyer post, not fine once
+    // six metro feeds of owner posts ride along. One dry, single-target matrix pull is the cheapest
+    // way to ask "is the queue full?": paused → this visit keeps its buyers and drops the by-catch
+    // as before (retryable), so the backlog can't grow from here. No matrixUrl → no gate, as before.
+    let harvestSupply = cfg.groupSupplyLeads === true;
+    if (harvestSupply && cfg.matrixUrl) {
+      const secretSnap = await db.collection('orgSecrets').doc(orgId).get();
+      const secret = secretSnap.exists ? secretSnap.data()?.sourcing?.secret : null;
+      const gate = secret ? await fetchQueryMatrix({ matrixUrl: cfg.matrixUrl, secret, limit: 1, maxTargets: 1, dryRun: true, runId: run.id }) : null;
+      if (gate?.pauseSourcing) {
+        harvestSupply = false;
+        run.note(`platform queue at cap (${gate.pendingBacklog ?? '?'} pending ≥ ${gate.pendingCap ?? '?'}) — owner posts dropped this visit, buyers still relayed`);
+      }
+    }
     // One leg per CITY, not per group — the city is the classify target, and 40 single-group legs
     // would make the run panel unreadable while telling the operator nothing a per-lead `query`
     // row (group:<url>) doesn't already say.
@@ -299,8 +315,7 @@ export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 
         target,
         leg,
         mode: 'buyer',
-        // Owner posts in these feeds relay only when the org opted in — see keepSupplyByCatch.
-        harvestSupply: cfg.groupSupplyLeads === true,
+        harvestSupply,
       });
       relayed += r.relayed || 0;
       amountInr += r.amountInr || 0;
