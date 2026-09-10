@@ -14,8 +14,10 @@
  *      is cached too (`noGroup`), and re-discovered only after DISCOVERY_TTL_MS.
  *   2. Read it once.  `fetchGroupFeed` pulls the newest N posts (billed per post) and the ordinary
  *      pipeline runs in buyer mode: seeking posts only, age gate, dedup, relay-on-2xx billing —
- *      exactly the group lane, with the place as the classify target. The group is NOT added to
- *      the twice-a-day rotation; the visit is the whole cost.
+ *      exactly the group lane, with the place as the classify target — except that the OWNER posts
+ *      in the feed are kept too (`harvestSupply`): a town we probe on request is one the supply lane
+ *      has no target for, so that by-catch is inventory nobody else will fetch. The group is NOT
+ *      added to the twice-a-day rotation; the visit is the whole cost.
  *   3. No group at all → fall back to the demand SERP queries (`buildSourcingQueries` buyer mode),
  *      the retired lane's path: staler, but better than telling the seller nothing was tried.
  *
@@ -177,6 +179,9 @@ export async function probeBuyersForPlace(db, {
       target,
       leg,
       mode: 'buyer',
+      // A town we probe on request is one the supply lane has no target for, so the owner posts in
+      // its group are inventory nobody else will fetch — keep them (one shot, so no flood risk).
+      harvestSupply: true,
     });
   } else {
     // No public group for the place: the demand SERP is the only remaining source. Staler
@@ -189,7 +194,7 @@ export async function probeBuyersForPlace(db, {
       leg.done({ note: 'no group found and query generation produced nothing' });
       result = { relayed: 0, amountInr: 0 };
     } else {
-      result = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, leg, mode: 'buyer' });
+      result = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, leg, mode: 'buyer', harvestSupply: true });
     }
   }
 

@@ -204,7 +204,9 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
   // re-enables that cron's retired demand-ranked SERP leg (off by default since 2026-09-03 — it
   // bought the same lead at ~4x the fetch spend, see runBuyerSourcingJobs); `buyerLeads` /
   // `offTargetLeads` are the by-product harvests inside a supply run.
-  for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads']) {
+  // `groupSupplyLeads` lets the twice-daily GROUP lane keep the owner posts it reads past (default
+  // off: six metro feeds of supply by-catch with no pending-cap backpressure is a flood).
+  for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads', 'groupSupplyLeads']) {
     if (request.data?.[k] != null) patch[`sourcing.${k}`] = request.data[k] === true;
   }
   // Numbers. 0 is MEANINGFUL for buyerMaxPerRun (uncapped) so it must survive the parse.

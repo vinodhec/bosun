@@ -299,6 +299,8 @@ export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 
         target,
         leg,
         mode: 'buyer',
+        // Owner posts in these feeds relay only when the org opted in — see keepSupplyByCatch.
+        harvestSupply: cfg.groupSupplyLeads === true,
       });
       relayed += r.relayed || 0;
       amountInr += r.amountInr || 0;
@@ -320,7 +322,7 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG, mode = 'supply' } = {},
+  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG, mode = 'supply', harvestSupply = false } = {},
 ) {
   // SUPPLY (the default) sources inventory and treats a buyer post as salvage. BUYER inverts it:
   // the queries asked for demand (queryGen.js), so a 'seeking' post IS the product and an 'offering'
@@ -460,6 +462,12 @@ export async function runForOrg(
   // IS the opt-in. Off-target salvage is supply-only either way: a wrong-locality lead is inventory
   // we can still sell, whereas a buyer looking somewhere else is nothing to us.
   const harvestBuyers = classifying && (buyerMode || !!cfg.buyerLeads);
+  // The mirror image, for a BUYER run: an on-target owner post is inventory the supply lane may never
+  // reach (a small-town group it has no target for). Off by default because the metro group cron
+  // runs in buyer mode twice a day with no pending-cap backpressure — flipping it there would relay
+  // every owner post in six Chennai feeds. The one-shot place probe turns it on (see buyerProbe.js);
+  // the cron honours `sourcing.groupSupplyLeads` (adminSetSourcingLanes).
+  const keepSupplyByCatch = classifying && buyerMode && harvestSupply === true;
   const salvageOffTarget = classifying && !buyerMode && !!cfg.offTargetLeads;
   // Only a CONFIDENT off-target reject is dead — never enrich it again. Four rejects are deliberately
   // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
@@ -565,9 +573,10 @@ export async function runForOrg(
             return;
           }
           c.listing.leadType = 'buyer';
-        } else if (buyerMode) {
+        } else if (buyerMode && !keepSupplyByCatch) {
           // By-catch of a demand query: a real listing, but this run was asked for buyers. Dropped
-          // retryably so the supply lane can still find and sell it.
+          // retryably so the supply lane can still find and sell it — unless the caller asked to
+          // keep it, in which case it relays as an ordinary supply lead.
           c.drop = true;
           c.dropReason = 'supply-post';
           return;
@@ -611,9 +620,10 @@ export async function runForOrg(
     // In BUYER mode the buyer lane IS the inventory, so it leads; in supply mode it stays behind the
     // on-target listings it must never displace. (With the lane's own budget below this only orders
     // the pool now — it no longer decides who gets squeezed out.)
+    // A supply by-catch kept by a BUYER run sits behind the buyers it was asked for (rank 2).
     const laneRank = (c) => (c.listing.leadType === 'off-target' ? 3
       : c.listing.leadType === 'buyer' ? (buyerMode ? 0 : 2)
-      : c.localityPending ? 1 : 0);
+      : c.localityPending ? 1 : (buyerMode ? 2 : 0));
     kept.sort((a, b) => laneRank(a) - laneRank(b));
     leg.count('localityPending', kept.filter((c) => c.localityPending).length);
     console.log('runSourcingJobs:classify', orgId, JSON.stringify({
@@ -765,7 +775,7 @@ export async function runForOrg(
               return;
             }
             c.listing.leadType = 'buyer';
-          } else if (buyerMode) {
+          } else if (buyerMode && !keepSupplyByCatch) {
             c.drop = true;
             c.dropReason = 'supply-post';
             return;
