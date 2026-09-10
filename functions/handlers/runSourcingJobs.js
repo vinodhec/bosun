@@ -1075,7 +1075,8 @@ export async function runForOrg(
   }
   console.log('runSourcingJobs:done', orgId, JSON.stringify({ relayed, amountInr }));
   leg.done({ relayed, amountInr });
-  return { relayed, amountInr };
+  // `buyerRelayed` of `relayed` were seeking posts; the rest are owner listings (supply by-catch in a buyer run).
+  return { relayed, amountInr, buyerRelayed };
 }
 
 // Source the org's top demand-ranked target(s) from the platform matrix — the SMART path shared by

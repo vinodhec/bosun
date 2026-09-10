@@ -143,7 +143,7 @@ export const sourceOnDemand = onRequest(
         console.log('sourceOnDemand:buyer:done', orgId, JSON.stringify({ runId: run.id, locality, city, listingType, propertyType, source: r.source, groupSource: r.groupSource, groups: r.groups?.length || 0, relayed: r.relayed || 0, amountInr: r.amountInr || 0 }));
         res.status(200).json({
           ok: true, runId: run.id, mode: 'buyer',
-          relayed: r.relayed || 0, amountInr: r.amountInr || 0,
+          relayed: r.relayed || 0, buyers: r.buyers || 0, owners: r.owners || 0, amountInr: r.amountInr || 0,
           ...(r.examined != null ? { examined: r.examined } : {}),
           source: r.source, groupSource: r.groupSource, discovered: r.discovered, groups: r.groups, postsPerGroup: r.postsPerGroup,
         });

@@ -210,6 +210,8 @@ export async function probeBuyersForPlace(db, {
   });
   return {
     ...result,
+    buyers: Number(result.buyerRelayed) || 0,
+    owners: Math.max(0, (Number(result.relayed) || 0) - (Number(result.buyerRelayed) || 0)),
     source,
     groupSource: resolved.source,
     discovered: !!resolved.discovered,
