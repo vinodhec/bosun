@@ -641,6 +641,13 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
  * doesn't move when the customer's roster churns. COGS ≈ ₹0.25–0.30/night (5 Flash briefings +
  * function runtime; the heavy work-state/demand/reconcile compute runs on the customer's own
  * infra), so this line is margin, not cost recovery.
+ *
+ * REPRICING IS A DEPLOY SET, NOT A COMMIT. Each function bundles its own copy of this file, so a
+ * new price only reaches the functions redeployed after it — including TRANSITIVE importers.
+ * The 2026-09-08 reprice redeployed planDailyTasks/sourcingPlanNow/usageMeter and missed
+ * adminPlanNow (adminSourcing.js → planDailyTasks.js → here), which billed the old ₹200 for the
+ * hand-triggered plan of 2026-09-12 (corrected in the ledger by hand). After changing any price:
+ *   node scripts/stale-functions.mjs shared/billing.js   → prints the exact --only list to deploy.
  */
 export const DAILY_PLAN_PRICE_PAISE = 30000; // ₹300 per plan-day, flat (repriced from ₹200, 2026-09-08)
 

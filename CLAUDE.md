@@ -25,6 +25,7 @@ npm run build && firebase deploy            # hosting + functions + rules + inde
 cd functions && npm run deploy              # functions only
 firebase deploy --only hosting              # SPA only
 firebase deploy --only firestore:rules      # rules only
+node scripts/stale-functions.mjs shared/billing.js   # functions still bundling an OLD copy of a file — run after any price change, deploy what it lists
 
 # Validate the fix engine against the real Managed Agents API (no Firebase, no UI)
 cd functions && ANTHROPIC_API_KEY=... node ../scripts/create-agent.mjs        # one-time
