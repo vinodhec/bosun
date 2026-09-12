@@ -57,15 +57,59 @@ const withDemand = (c, base) => {
   const d = buyersWaiting(c);
   return d ? `${d} · ${base}` : base;
 };
+
+// The WhatsApp bot's story with this owner, when there is one — the platform's work-state carries
+// `waState` / `waColdReason` / `waStalledFrom` / `waConfirmedPrice` (lib/dailyTasks
+// WorkStateCandidate, lockstep). Until 2026-09-12 every one of these read "Fresh lead, never
+// called", so the caller opened cold on an owner who had already said "yes" to us on WhatsApp and
+// stopped at the price question. The card should hand them that opening line.
+const WA_STEP = {
+  CONFIRM_AVAILABILITY: 'the "still available?" question',
+  CONFIRM_PRICE: 'the price check',
+  OFFER_UPLOAD: 'the photo link',
+  COLLECT_FIELDS: 'the last few details',
+};
+export function whatsappStory(c) {
+  const state = String(c.waState || '');
+  if (!state || state === 'QUEUED') return '';
+  const price = c.waConfirmedPrice ? ` · confirmed ${c.waConfirmedPrice} in chat` : '';
+  if (state === 'COLD') {
+    switch (String(c.waColdReason || '')) {
+      case 'timeout':
+        return 'No reply to our WhatsApp (3 days)';
+      case 'stalled':
+        return `Replied on WhatsApp, went quiet at ${WA_STEP[c.waStalledFrom] || 'a later step'}${price}`;
+      case 'auto_reply':
+        return 'WhatsApp hit a business auto-reply — likely a broker';
+      case 'refused':
+        return 'Said no on WhatsApp — confirm before pitching';
+      case 'stop':
+        return 'Opted out of WhatsApp — voice only';
+      default:
+        return 'WhatsApp went cold';
+    }
+  }
+  if (state === 'WARM_DONE') return `Completed on WhatsApp${price} — listing pending`;
+  if (state === 'AWAITING_FIRST_REPLY') return 'WhatsApp sent, no reply yet';
+  if (WA_STEP[state]) return `On WhatsApp now — at ${WA_STEP[state]}${price}; pick up, don't re-ask`;
+  return '';
+}
+const withStory = (c, base) => {
+  const w = whatsappStory(c);
+  return w ? `${w} · ${base}` : base;
+};
 const WHY = {
   callback_due: (c) => {
     const at = c.callbackAtMs ? new Date(c.callbackAtMs + 5.5 * 3600 * 1000) : null;
     const hh = at ? `${String(at.getUTCHours()).padStart(2, '0')}:${String(at.getUTCMinutes()).padStart(2, '0')}` : '';
-    return withDemand(c, at ? `Callback promised · ${hh} IST` : 'Callback promised');
+    return withDemand(c, withStory(c, at ? `Callback promised · ${hh} IST` : 'Callback promised'));
   },
   untouched_lead: (c) =>
-    withDemand(c, c.freshnessTag === 'stale-fallback' ? 'Never called (older post — verify first)' : 'Fresh lead, never called'),
-  rnr_retry: (c) => withDemand(c, `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`),
+    withDemand(
+      c,
+      withStory(c, c.freshnessTag === 'stale-fallback' ? 'Never called (older post — verify first)' : 'Fresh lead, never called'),
+    ),
+  rnr_retry: (c) => withDemand(c, withStory(c, `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`)),
   buyer_followup: () => 'Buyer waiting — match inventory & reply',
   freshness_check: () => 'Published listing past its freshness window — confirm still available',
 };
