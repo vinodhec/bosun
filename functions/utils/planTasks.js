@@ -37,13 +37,22 @@
 // Category order IS the priority order. Keys match the platform's TASK_TYPES exactly — LOCKSTEP
 // with web/src/lib/dailyTasks.ts TASK_TYPES in the platform repo: buyer_followup ranks ABOVE the
 // seller cold-call lanes (operator 2026-08-09: buyer demand is priority #1, leads are scarce).
+//
+// Buyer bank (2026-09-14): `buyer_request` (a Priority seller's "any buyers for this?", a paid promise)
+// ranks right under callbacks; `buyer_qualify` (the cleanup call for a buyer grandfathered into the
+// bank) ranks under live buyer follow-ups — the backlog must never displace today's demand.
 export const CATEGORY_ORDER = [
   'callback_due',
+  'buyer_request',
   'buyer_followup',
+  'buyer_qualify',
   'untouched_lead',
   'rnr_retry',
   'freshness_check',
 ];
+
+// Task types worked on a buyer card — only admins with the buyer-leads grant may take them.
+const BUYER_TYPES = new Set(['buyer_followup', 'buyer_qualify', 'buyer_request']);
 
 // Why-lines are composed here (not by Gemini) so every card's justification is deterministic and
 // grounded — the briefing may summarise, but per-task copy never hallucinates. A candidate with
@@ -111,6 +120,11 @@ const WHY = {
     ),
   rnr_retry: (c) => withDemand(c, withStory(c, `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`)),
   buyer_followup: () => 'Buyer waiting — match inventory & reply',
+  buyer_request: () => 'Priority seller asked for buyers — deliver matches or say none right now',
+  buyer_qualify: (c) =>
+    c.attempts > 0
+      ? `In the buyer bank — no answer ×${c.attempts}, try again to confirm or remove`
+      : 'In the buyer bank from past demand — confirm still looking, or remove',
   freshness_check: () => 'Published listing past its freshness window — confirm still available',
 };
 
@@ -131,6 +145,8 @@ export const TASK_SKILL = {
   untouched_lead: 'consent_calls',
   rnr_retry: 'consent_calls',
   buyer_followup: 'buyer_followup',
+  buyer_qualify: 'buyer_followup',
+  buyer_request: 'buyer_followup',
   freshness_check: 'freshness_check',
 };
 
@@ -168,7 +184,7 @@ const MAX_CARDS_PER_PLAN = 400;
 function eligible(admin, task, { ignoreQuota = false } = {}) {
   if (admin.assigned.length >= MAX_CARDS_PER_PLAN) return false;
   if (!ignoreQuota && admin.quota <= admin.units) return false;
-  if (task.type === 'buyer_followup' && !admin.canAccessBuyerLeads) return false;
+  if (BUYER_TYPES.has(task.type) && !admin.canAccessBuyerLeads) return false;
   // Skills/responsibilities: null = full-skill admin; an array must cover the task's skill.
   const skill = TASK_SKILL[task.type];
   if (skill && Array.isArray(admin.skills) && !admin.skills.includes(skill)) return false;
