@@ -319,9 +319,22 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
       `${user.phone ? ` (phone on file: ${String(user.phone).slice(0, 16)} — never ask for it, never repeat it back)` : ''}` +
       `${user.role ? `, role: ${String(user.role).slice(0, 24)}` : ''}.`
     : 'The visitor is NOT signed in (a guest). You cannot see their listings, leads or plan; if they ask for those, tell them to sign in first (one short line) — do not call those tools.';
+  // A /tools/* page is OUR OWN calculator or converter. The path alone used to be inert background,
+  // so the model fell back to the capability list above and DENIED the very thing the page does:
+  // a visitor who searched for "property tax indore", landed on our property-tax calculator and
+  // asked "Property rax indore" was told "I can help you find properties, not calculate property
+  // tax" — on the calculator page itself (session-1789540602177-yj4e2njbc, 2026-09-16). Scope is
+  // unchanged: still property-only, still no number from the model. It just stops contradicting
+  // the page it is standing on, and turns the dead end into a property question.
+  const onToolPage = typeof page.path === 'string' && page.path.startsWith('/tools/');
   const where = page.propertyId
     ? `They are currently viewing listing id ${String(page.propertyId).slice(0, 80)} — "it" / "this one" means that listing.`
-    : page.path ? `They are on the page ${String(page.path).slice(0, 160)}.` : '';
+    : page.path
+      ? `They are on the page ${String(page.path).slice(0, 160)}.` +
+        (onToolPage
+          ? ' This page is OUR OWN calculator/converter. NEVER tell them you cannot do what this page does — they are standing on the tool. If they ask about it, say in ONE short line that the tool right here works it out, then bring the reply back to property (offer listings in the place they named). Do NOT do the calculation yourself and never quote a number or a rate.'
+          : '')
+      : '';
   const lang = languageRule(lastMessage, locale);
 
   return [
