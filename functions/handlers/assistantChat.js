@@ -285,7 +285,10 @@ export const assistantChat = onRequest(
           const reel = succeeded ? reelFromToolResult(call.name, r.result) : null;
           // `accountCreated` rides along for the success fee below: the three capture tools all call
           // ensureAccount, so a guest who hands over a phone becomes a member INSIDE the same tool.
-          turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true, accountCreated: !!succeeded && r.result.accountCreated === true, ...(reel ? { jobId: reel.jobId } : {}) });
+          // The platform's search says when nothing meets the ask and the requirement should be
+          // taken now (`nextStep`). Remembered on the tool event so the model step below can insist.
+          const owesRequirement = succeeded && call.name === 'search_properties' && typeof r.result.nextStep === 'string' && Number(r.result.fitCount) === 0;
+          turnEvents.tools.push({ name: call.name, ok: !!succeeded, ...(owesRequirement ? { owesRequirement: true } : {}), captured: !!succeeded && r.result.captured === true, accountCreated: !!succeeded && r.result.accountCreated === true, ...(reel ? { jobId: reel.jobId } : {}) });
           if (succeeded) remembered = rememberListings(remembered, listingsFromToolResult(call.name, r.result));
           if (reel) reels = rememberReel(reels, reel);
         }
@@ -300,7 +303,26 @@ export const assistantChat = onRequest(
       // The reply language is decided from the visitor's latest message, not from the chat's
       // history — on a tool hop that is still the message that started this turn.
       const systemInstruction = buildSystemInstruction({ site: ctx.site, user: ctx.user || {}, page: ctx.page, locale: ctx.locale, lastMessage: lastVisitorText(contents) });
-      const step = await modelStep({ contents, systemInstruction, tools });
+      // A signed-in member whose search found nothing that fits is owed a requirement in THIS turn:
+      // their phone is on file, so there is nothing to ask. Left to the prompt alone the model
+      // wrote "our team will call you" without filing anything (replay of c9Fem7lE8q34mx1XUqKk) —
+      // a promise nobody would keep. So the next step is forced to be that one call, once.
+      const owed = signedIn && !forceAnswer
+        && turnEvents.tools.some((t) => t.owesRequirement)
+        && !turnEvents.tools.some((t) => t.name === 'request_property')
+        && tools.some((t) => t.name === 'request_property');
+      let step = await modelStep({ contents, systemInstruction, tools, ...(owed ? { forceTool: 'request_property' } : {}) });
+      // The other half of the same promise: a reply that tells a member "our team will check / look
+      // / call" while no requirement exists anywhere in this chat is a promise with nothing behind
+      // it. That reply is dropped and the step re-run as the filing; the model then writes its
+      // sentence again with the requirement actually on the team's list.
+      if (step && step.kind === 'reply' && signedIn && !forceAnswer && !owed
+        && tools.some((t) => t.name === 'request_property')
+        && /\b(our|the) team (will|can|would|shall)\b/i.test(step.text)
+        && !contents.some((c) => (c.parts || []).some((p) => p.functionCall?.name === 'request_property'))) {
+        const forced = await modelStep({ contents, systemInstruction, tools, forceTool: 'request_property' });
+        if (forced && forced.kind === 'tool_calls') step = forced;
+      }
 
       if (!step) {
         // Model unavailable: a free, honest fallback. The user turn stays in history so a retry
@@ -334,6 +356,14 @@ export const assistantChat = onRequest(
         if (searched && !parsed.text.trim().endsWith('?')) {
           cards = remembered.filter((l) => l.fromTool === 'search_properties').slice(-4).map(({ fromTool, ...c }) => c);
         }
+      }
+      // The same cards twice in a row, with no search in between, is the assistant repeating itself
+      // at a visitor who just said "not these" (Eswar, 2026-09-17: three identical sets, then "why
+      // are you showing again again and again"). The words still go out; the repeat does not.
+      const searchedNow = turnEvents.tools.some((t) => t.name === 'search_properties');
+      const lastShown = [...transcript].reverse().find((m) => m.role === 'assistant' && Array.isArray(m.cards) && m.cards.length);
+      if (cards.length && !searchedNow && lastShown && lastShown.cards.map((c) => c.id).join() === cards.map((c) => c.id).join()) {
+        cards = [];
       }
       // The reel this turn made (or the one the model pointed back at) rides on the reply so the
       // widget can poll it — built from the cached tool result, never from the model's words.

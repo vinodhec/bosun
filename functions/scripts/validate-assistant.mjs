@@ -220,13 +220,17 @@ if (process.argv.includes('--live')) {
     for (const message of turns) {
       console.log(`  > ${message}`);
       contents.push({ role: 'user', parts: [{ text: message }] });
+      let turnOwes = false;
+      let turnFiled = false;
       for (let hop = 0; hop < 5; hop++) {
-        const step = await modelStep({ contents, systemInstruction, tools: hop >= 4 ? [] : tools });
+        const owed = signedIn && turnOwes && !turnFiled;
+        const step = await modelStep({ contents, systemInstruction, tools: hop >= 4 ? [] : tools, ...(owed ? { forceTool: 'request_property' } : {}) });
         assert.ok(step, 'model returned null');
         contents.push(step.content);
         if (step.kind === 'tool_calls') {
           console.log(`    tools: ${step.calls.map((c) => `${c.name}(${JSON.stringify(c.args)})`).join(', ')}`);
           const results = step.calls.map((c) => ({ id: c.id, name: c.name, result: FAKE[c.name] ? FAKE[c.name](c.args) : { ok: false, error: 'unknown tool' } }));
+          for (const r of results) { if (r.name === 'search_properties' && r.result.nextStep && r.result.fitCount === 0) turnOwes = true; if (r.name === 'request_property') turnFiled = true; }
           for (const r of results) remembered = rememberListings(remembered, listingsFromToolResult(r.name, r.result));
           contents.push(toolResultsContent(step.calls, results));
           continue;
@@ -240,6 +244,29 @@ if (process.argv.includes('--live')) {
         break;
       }
     }
+  }
+
+  // Eswar, 2026-09-17 (c9Fem7lE8q34mx1XUqKk): three towns, a budget and a size in one message; he got
+  // one town, Kerala look-alikes, "match your criteria", the same cards three times, and no callback.
+  if (process.argv.includes('--eswar')) {
+    const plot = (id, place, price, sqft, fits, misses) => ({ id, title: `Plot / Land in ${place}`, price, priceLabel: `₹${price / 1e5} L`, listingType: 'sale', propertyType: 'plot', area: sqft ? `${sqft} SqFt` : '', areaSqft: sqft || null, ratePerSqft: sqft ? Math.round(price / sqft) : null, locality: place, city: place, url: `https://maadiveedu.com/property/x--${id}`, askedPlace: place, fits, ...(misses ? { misses } : {}) });
+    FAKE.search_properties = (args) => {
+      const places = [args.locality, args.city, ...(Array.isArray(args.places) ? args.places : [])].filter(Boolean);
+      const sized = args.areaSqft || args.minAreaSqft || args.maxAreaSqft;
+      if (args.propertyType === 'farmland') return { ok: true, total: 0, fitCount: 0, items: [], nextStep: 'Nothing meets the full ask. Call request_property NOW with this place, type, budget and size (phone is on file — do not ask), then tell them the team will look and call.' };
+      const items = [plot('PROP-ARK1', 'Arakkonam', 1920000, 1200, true), plot('PROP-TRT1', 'Tiruttani', 900000, 3757, false, ['under_budget', 'too_big']), plot('PROP-TRT2', 'Tiruttani', 1750000, 0, !sized, sized ? ['size_unknown'] : undefined)];
+      return { ok: true, total: 3, fitCount: items.filter((i) => i.fits).length, checkedAgainst: { minPrice: args.minPrice, maxPrice: args.maxPrice }, perPlace: places.map((p) => ({ asked: p, found: /shol/i.test(p) ? 0 : 2, fits: /arak/i.test(p) ? 1 : 0 })), items };
+    };
+    await converse('member: three towns + budget + size, then an unfilterable wish, then farm land', {
+      user: { id: 'u9', name: 'Eswar', phone: '+919800000001', role: 'buyer' },
+      turns: [
+        'I am looking for an investment purpose plot area 1200 square feet budget minimum 15 lakhs maximum 20 lakh location Arakkonam Thiruthani sholingar',
+        'I need the plot area nearby surrounding with houses',
+        'Search in Tiruttani',
+        'Nanjai land budget 30 Lakhs per acre in between chennai to trichy from bypass inside road 3 km',
+      ],
+    });
+    process.exit(process.exitCode || 0);
   }
 
   await converse('guest: search → enquire (must ask for phone first)', {

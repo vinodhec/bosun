@@ -45,7 +45,7 @@ export const MAX_REMEMBERED_LISTINGS = 60;
 // suggestion engine, the platform is the authority.
 
 const LISTING_TYPES = ['sale', 'rent'];
-const PROPERTY_TYPES = ['apartment', 'house', 'villa', 'plot', 'commercial', 'pg', 'other'];
+const PROPERTY_TYPES = ['apartment', 'house', 'villa', 'plot', 'farmland', 'commercial', 'pg', 'other'];
 
 export const TOOL_DEFS = {
   search_properties: {
@@ -54,7 +54,10 @@ export const TOOL_DEFS = {
       'Search the live property listings. Call this whenever the visitor describes what they want ' +
       '(place, sale or rent, BHK, budget, type). Returns up to `limit` matching listings with an id, ' +
       'title, price, BHK, locality, city and a link. Prefer a locality over a city when the visitor ' +
-      'names one. Budget is in whole rupees (20k → 20000, 45 lakhs → 4500000, 1.2 crore → 12000000).',
+      'names one. Budget is in whole rupees (20k → 20000, 45 lakhs → 4500000, 1.2 crore → 12000000). ' +
+      'SEVERAL PLACES in one ask ("Arakkonam, Thiruthani or Sholingur") → put ALL of them in `places`, one call. ' +
+      'A SIZE ("1200 sq ft", "3 cents", "half an acre") → minAreaSqft / maxAreaSqft, or areaSqft for "about that". ' +
+      'Every row comes back with `fits` (true = meets the budget AND size asked) and `misses`; the result carries `fitCount`.',
     parameters: {
       type: 'object',
       properties: {
@@ -71,11 +74,24 @@ export const TOOL_DEFS = {
             'The place the visitor named — area, suburb, small town or village — in English letters (Velachery, Anna Nagar, Thiruporur, Thindal; வேளச்சேரி → Velachery). ' +
             'When unsure whether a name is a city or an area, put it HERE, not in city.',
         },
+        places: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'EVERY place the visitor named when they named more than one, in English letters with the usual spelling ' +
+            '("shoringer" → Sholingur, "Thiruthani" → Tiruttani). Up to 4. Each is searched; the result reports each one in `perPlace`. ' +
+            'Never put a second place in `query`.',
+        },
         listingType: { type: 'string', enum: LISTING_TYPES, description: 'sale (buy) or rent (lease / PG).' },
-        propertyType: { type: 'string', enum: PROPERTY_TYPES },
+        propertyType: { type: 'string', enum: PROPERTY_TYPES, description: 'plot = a house plot / site in a layout. farmland = agricultural land (nanjai, punjai, thottam, farm, acres of land).' },
         bhk: { type: 'integer', description: 'Number of bedrooms, if the visitor said one.' },
-        minPrice: { type: 'integer', description: 'Lower budget bound in rupees.' },
-        maxPrice: { type: 'integer', description: 'Upper budget bound in rupees.' },
+        minPrice: { type: 'integer', description: 'Lower budget bound in rupees — the TOTAL price. Carry it forward from earlier in the chat until the visitor changes it.' },
+        maxPrice: { type: 'integer', description: 'Upper budget bound in rupees — the TOTAL price. Carry it forward from earlier in the chat until the visitor changes it. Never put a per-acre or per-sq-ft rate here.' },
+        areaSqft: { type: 'integer', description: 'The size they want, in square feet, when they gave ONE figure ("1200 sq ft plot") — searched as about that size. Convert: 1 cent = 436, 1 ground = 2400, 1 acre = 43560.' },
+        minAreaSqft: { type: 'integer', description: 'Smallest size in square feet, when they gave a range or "at least".' },
+        maxAreaSqft: { type: 'integer', description: 'Largest size in square feet, when they gave a range or "at most".' },
+        maxRatePerAcre: { type: 'integer', description: 'Farm land budget given PER ACRE, in rupees ("30 lakhs per acre" → 3000000). Use with propertyType farmland.' },
+        landKind: { type: 'string', description: 'For farmland only: the kind the visitor named — nanjai, punjai, thottam, coconut, mango.' },
         limit: { type: 'integer', description: 'How many to return, 1–10. Default 6.' },
       },
     },
@@ -131,7 +147,11 @@ export const TOOL_DEFS = {
             'The place they want, in English letters (Velachery, not வேளச்சேரி) — ALWAYS carry the place named anywhere earlier in this conversation ' +
             '(a search they asked for counts). A requirement without a place cannot be matched.',
         },
-        maxPrice: { type: 'integer', description: 'Budget ceiling in rupees. Ask once if they have not said.' },
+        places: { type: 'array', items: { type: 'string' }, description: 'Every OTHER place they are open to, when they named more than one.' },
+        maxPrice: { type: 'integer', description: 'Budget ceiling in rupees for the WHOLE property. Ask once if they have not said. A per-acre or per-sq-ft rate is NOT this — write it in notes ("₹30 lakhs per acre").' },
+        minPrice: { type: 'integer', description: 'Budget floor in rupees, if they gave one.' },
+        minAreaSqft: { type: 'integer', description: 'Smallest size wanted, in square feet.' },
+        maxAreaSqft: { type: 'integer', description: 'Largest size wanted, in square feet.' },
         notes: { type: 'string', description: 'Anything else they said matters (purpose, floor, parking, move-in date…).' },
       },
       required: ['phone', 'listingType', 'locality'],
@@ -362,6 +382,13 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- Act, then talk: when the visitor describes what they want, SEARCH immediately with whatever you have. Do not interrogate first. Ask ONE follow-up only if the search cannot run at all (no place at all, or sale vs rent unclear).',
     '- Use the place exactly as the visitor said it (Erode stays Erode — never Coimbatore): a well-known city or district town goes in `city`; anything else — an area, suburb, small town or village — goes in `locality`. A place only in `query` is a wasted search.',
     '- Whenever the visitor names a place, a type, a budget, or changes any of them, call search_properties again in THAT turn. Never say nothing was found unless a search in this turn returned nothing.',
+    '- SEVERAL PLACES, ONE SEARCH. When the visitor names more than one place ("Arakkonam, Thiruthani, Sholingur"), pass them ALL in `places` in one search_properties call — never search only the first, never ask which one, never offer other cities when they already told you where. The result lists each place in `perPlace` (found / fits): say it in one line ("4 in Tiruttani, 2 in Arakkonam, nothing in Sholingur yet"). A place marked spellingGuess has no listings under that exact name — the rows are from similarly spelt places, so name where they really are.',
+    '- THE ASK IS STICKY. Budget, size, type and places the visitor gave earlier in this chat stay in force on EVERY later search until they change them. "Search in Tiruttani" after "15 to 20 lakhs, 1200 sq ft" is a Tiruttani search WITH that budget and size — never a bare one.',
+    '- SIZE AND RATE. Rows carry `area` (the owner\u2019s own figure: "3 Cents", "2 Acres"), `areaSqft` (converted), `ratePerSqft`, and for bigger land `ratePerAcre`. A visitor who gives a size gets it passed as areaSqft (or min/max). Agricultural asks — nanjai, punjai, thottam, farm land, "per acre" — are propertyType farmland, with the per-acre budget in maxRatePerAcre and the kind in landKind; search them in the district or towns they named. If they named a stretch ("between Chennai and Trichy") instead of a town, search the towns on that stretch they are likeliest to mean (up to 4 in `places`, e.g. Chengalpattu, Tindivanam, Villupuram, Perambalur) and say which you searched.',
+    '- "MATCH" MUST BE TRUE. Read `fitCount` before you write. fitCount > 0 → show the rows with fits:true first and you may say they match. fitCount = 0 with rows → NEVER say "match your criteria"; say plainly what is off, from `misses` ("nothing at 15–20 lakhs for 1200 sq ft in Arakkonam right now — the closest are a bit bigger") and show at most 3. Rows whose only miss is size_unknown: say the size is not stated on those.',
+    '- WHAT YOU CANNOT FILTER IS STILL A LEAD. "Surrounded by houses", "near the bypass", "corner plot", "good water", "inside a developed area" are things no search field carries — do NOT answer with a list of what you can and cannot filter, and never repeat that refusal twice. In ONE line say the listings do not state that, so the team will check it with the owners — then file request_property straight away with their places, budget, size, and that wish word-for-word in notes. For a signed-in member do this WITHOUT asking permission (the phone is on file); for a guest ask for the mobile number in that same line.',
+    '- DO NOT LET A SERIOUS BUYER LEAVE EMPTY-HANDED. Once the visitor has given a place, a type and a budget, and either (a) a search comes back with fitCount 0, or (b) they say the results are wrong / repeated / not what they asked, or (c) this is the second search that shows them nothing new — file request_property in that same turn (members: silently, phone on file; guests: ask for the number) and tell them in one line that the team will look for it and call. One filing per ask: when the visitor later asks for something DIFFERENT (another type — farm land after house plots — or another region) and that also finds nothing, file request_property again for the new ask in that turn. An empty farm-land or per-acre search ALWAYS ends with the requirement filed (members) or the number asked for (guests), never with a bare "could not find".',
+    '- NEVER RE-SHOW WITHOUT RE-SEARCHING. A [[show:…]] line is only for rows from a search made in THIS turn (or a direct question about rows already shown). If the visitor repeats or sharpens the ask, search again with everything they have said; if that returns the same rows, say so honestly and take the requirement instead of showing them a third time.',
     '- BE HONEST ABOUT THE PLACE. A search result carries `place` (where the rows actually came from) and `widenedToCity`. When `widenedToCity` is true, or `place` is not the place the visitor named, say so in the SAME sentence that offers the cards: "Nothing in Palakkarai right now — here are some elsewhere in Trichy." NEVER write "I could not find any…" in a turn that shows cards; that reads as a broken site. If a turn genuinely has no rows, show no cards and offer request_property.',
     '- A search the visitor asked to NARROW ("Tambaram only", "under 40 lakhs", "3 BHK only") must come back narrower or be called out as not possible. Never re-show the same listings you showed last turn as if they were a new answer — if the narrowed search returns the same rows or nothing, say that plainly and offer to widen the budget, the area or the type.',
     '- Never invent a listing, a price, a phone number or a link. Everything about a property comes from a tool result. If a tool returns nothing, say so plainly and offer to file a requirement (request_property).',
@@ -374,7 +401,7 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- SUPERADMIN QUESTIONS. When the admin_* tools are available to you, the visitor is a MaadiVeedu superadmin and may ask about the whole marketplace, not just their own account: enquiries today, which sellers got leads, how a named seller is doing, who to call about a buyer. Use admin_lead_stats / admin_find_user / admin_wishlist_contacts for those. NEVER answer a marketplace question with list_my_leads or list_my_properties \u2014 those read the staff member\u2019s OWN listings, and answering "you have no enquiries today" to "how many enquiries today" is wrong, not merely unhelpful. If a staff question needs a person resolved first, call admin_find_user, and if it comes back ambiguous, ask which one before answering.',
     '- Superadmin answers may include phone numbers that came from an admin_* tool result \u2014 that is what they asked for. This is the ONLY case where you give out a number you were not given by the visitor. Never do it for a visitor who is not staff, and never invent one.',
     '- When admin_lead_stats returns capped:true, the window held more than the tool could read: say the number is at least that many rather than presenting it as exact.',
-    '- ANSWER ABOUT THE ROWS YOU ALREADY HAVE. Every search row carries price, priceLabel, bhk, areaSqft, locality, city and postedAgo ("8h ago", "3 days ago"). When the visitor asks something ABOUT the listings already on screen — compare them, which is cheapest, which is biggest, how old are they, when were they posted, which would you pick — ANSWER IT from those fields, in that turn. Never say you can only show one listing at a time, and never refuse a question the rows can answer: that reads as a broken assistant when the data is right there. A comparison may run to one short line per listing (three at most), naming each by its place or title. The "do not describe the listings" rule applies to the line that INTRODUCES cards, not to a direct question about them.',
+    '- ANSWER ABOUT THE ROWS YOU ALREADY HAVE. Every search row carries price, priceLabel, bhk, area, areaSqft, ratePerSqft, ratePerAcre, locality, city and postedAgo ("8h ago", "3 days ago"). When the visitor asks something ABOUT the listings already on screen — compare them, which is cheapest, which is biggest, how old are they, when were they posted, which would you pick — ANSWER IT from those fields, in that turn. Never say you can only show one listing at a time, and never refuse a question the rows can answer: that reads as a broken assistant when the data is right there. A comparison may run to one short line per listing (three at most), naming each by its place or title. The "do not describe the listings" rule applies to the line that INTRODUCES cards, not to a direct question about them.',
     '- If a row has no postedAgo, say you do not have the date for that one rather than guessing.',
     '- NEVER write a listing id (anything like PROP-XXXXX) in your sentences or in the suggestions — ids belong ONLY inside [[show:…]]. Call a listing by its title or its place ("the flat near Phoenix Mall", "your Anna Nagar house").',
     '- Enquiry: the visitor must clearly want to contact / visit / know more about ONE listing. Guests: ask for the MOBILE NUMBER ONLY, in one short line that says why ("the owner will call you on it") \u2014 do not ask for a name in the same breath; take a name only if they volunteer one, and call create_enquiry the moment you have the number. Members: use the phone on file. After it succeeds, confirm the owner / team will call, and stop.',
@@ -471,6 +498,9 @@ export function listingsFromToolResult(name, result) {
       propertyType: r.propertyType ? String(r.propertyType).slice(0, 24) : '',
       bhk: Number(r.bhk) || null,
       areaSqft: Number(r.areaSqft) || null,
+      area: r.area ? String(r.area).slice(0, 24) : '',
+      ratePerSqft: Number(r.ratePerSqft) || null,
+      ratePerAcre: Number(r.ratePerAcre) || null,
       locality: String(r.locality || '').slice(0, 80),
       city: String(r.city || '').slice(0, 60),
       url: String(r.url || '').slice(0, 300),
@@ -568,7 +598,7 @@ export function boundToolResult(result) {
  *         | { kind:'tool_calls', calls:[{id,name,args}], content:object, usage:object }
  *         | null}   null on any model failure — the caller degrades (and charges nothing).
  */
-export async function modelStep({ contents, systemInstruction, tools, model = GEMINI_FLASH }) {
+export async function modelStep({ contents, systemInstruction, tools, model = GEMINI_FLASH, forceTool = '' }) {
   const ai = geminiClient();
   if (!ai) return null;
   const MAX_ATTEMPTS = 2;
@@ -580,6 +610,8 @@ export async function modelStep({ contents, systemInstruction, tools, model = GE
         config: {
           systemInstruction,
           ...(tools.length ? { tools: [{ functionDeclarations: tools }] } : {}),
+          // `forceTool`: this step MUST be a call to that one tool (the handler decides when).
+          ...(forceTool && tools.length ? { toolConfig: { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: [forceTool] } } } : {}),
           // Tool selection + a two-line answer: reasoning tokens buy nothing here and cost seconds
           // (see the model note in utils/gemini.js).
           thinkingConfig: { thinkingBudget: 0 },
