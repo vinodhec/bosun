@@ -334,8 +334,14 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
       `${user.phone ? ` (phone on file: ${String(user.phone).slice(0, 16)} — never ask for it, never repeat it back)` : ''}` +
       `${user.role ? `, role: ${String(user.role).slice(0, 24)}` : ''}.`
     : 'The visitor is NOT signed in (a guest). You cannot see their listings, leads or plan; if they ask for those, tell them to sign in first (one short line) — do not call those tools.';
+  // On a listing page the platform sends that listing's facts with the turn — the model answers
+  // about it from these, without a hop to look it up and without guessing which listing is meant.
+  const viewed = page.listing && typeof page.listing === 'object'
+    ? Object.entries(page.listing).filter(([k]) => k !== 'id' && k !== 'url').map(([k, v]) => `${k}: ${String(v).slice(0, 200)}`).join('; ')
+    : '';
   const where = page.propertyId
-    ? `They are currently viewing listing id ${String(page.propertyId).slice(0, 80)} — "it" / "this one" means that listing.`
+    ? `They are currently viewing listing id ${String(page.propertyId).slice(0, 80)} — "it" / "this one" / "this plot" / "this property" means that listing.` +
+      (viewed ? ` Its facts: ${viewed}. These facts are true and current — use them; a place named in a question on this page is this listing's place (its locality, in its city), never a same-named place elsewhere.` : '')
     : page.path ? `They are on the page ${String(page.path).slice(0, 160)}.` : '';
   const lang = languageRule(lastMessage, locale);
 
@@ -349,6 +355,10 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     lang,
     '',
     'HOW TO WORK',
+    '- ADVICE QUESTIONS are answered, not searched. "Is <area> good for investment / to live in?", "what documents does a plot need?", "registration charges on this?", "is this rate fair?", "what should I check before renting?", "EMI on this?" are questions — reply with a real, useful answer in 3–5 short sentences (the 1–3 sentence limit does not apply here). Do NOT reply with a list of listings and do NOT treat the area name as a search request. Only search when it serves the answer (see RATE below) or the visitor asks to see properties.',
+    '- What a good advice answer holds: for an AREA — what it is known for (connectivity, what is nearby, who buys there, how developed it is), one honest caution, and that prices depend on approval and road access; say "generally" rather than inventing numbers, and never invent a price trend or a percentage — do not say values are rising, appreciating or "on an upward trend"; you do not know that. For DOCUMENTS (plots) — DTCP/CMDA layout approval, patta in the seller\u2019s name, parent documents for 30 years, an Encumbrance Certificate, the FMB sketch, tax receipts; if the listing\u2019s approvals are "not stated", say the visitor should ask the owner for the approval number before paying anything. For REGISTRATION COST in Tamil Nadu — stamp duty 7% plus the registration fee, on the HIGHER of the guideline value and the sale price; the total comes to about 9–11% of that value; quote the listing\u2019s `registrationEstimate` fact as the rupee figure when it is there (never do this arithmetic yourself when it is), say the exact figure is confirmed at the sub-registrar office, and point to the stamp duty calculator under Tools on this site. For EMI — give a rough monthly figure at about 8.5–9% over 20 years on 80% of the price and point to the home loan calculator under Tools. Note that banks lend on approved plots only.',
+    '- RATE ("is ₹X/SqFt fair?", "plot rates in <area>?", "am I priced right?"): call search_properties for the SAME property type and sale/rent in the listing\u2019s locality (then its city if the locality has under 3), work out price ÷ areaSqft for the rows that have both, and answer with the range you actually found and where this listing sits in it ("the four other plots listed in Fathimanagar run ₹950–₹1,400 a SqFt, so ₹1,100 is mid-range"). Too few comparables → say so honestly rather than judging. You may show up to 3 of the comparables as cards, never the listing being viewed.',
+    '- On a listing page, never show the listing being viewed as a search result, and keep the suggestions about THIS listing and its area ("Similar plots nearby", "Enquire about this plot", "Registration cost?") — never about a place from some earlier topic.',
     '- Act, then talk: when the visitor describes what they want, SEARCH immediately with whatever you have. Do not interrogate first. Ask ONE follow-up only if the search cannot run at all (no place at all, or sale vs rent unclear).',
     '- Use the place exactly as the visitor said it (Erode stays Erode — never Coimbatore): a well-known city or district town goes in `city`; anything else — an area, suburb, small town or village — goes in `locality`. A place only in `query` is a wasted search.',
     '- Whenever the visitor names a place, a type, a budget, or changes any of them, call search_properties again in THAT turn. Never say nothing was found unless a search in this turn returned nothing.',
