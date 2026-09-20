@@ -85,6 +85,18 @@ function convDocId(orgId, conversationId) {
   return `${orgId}__${conversationId}`;
 }
 
+/** The viewed listing's brief, as the platform sent it: flat, short scalars only, bounded. */
+function pageListing(l) {
+  if (!l || typeof l !== 'object') return null;
+  const out = {};
+  for (const [k, v] of Object.entries(l).slice(0, 24)) {
+    if (typeof v === 'string' && v) out[String(k).slice(0, 24)] = v.slice(0, 300);
+    else if (typeof v === 'number' && Number.isFinite(v)) out[String(k).slice(0, 24)] = v;
+    else if (v === true) out[String(k).slice(0, 24)] = true;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** The non-secret slice of the platform's context we keep on the doc. Phone never lands here. */
 function storableContext(ctx) {
   const c = ctx && typeof ctx === 'object' ? ctx : {};
@@ -95,7 +107,7 @@ function storableContext(ctx) {
       cities: Array.isArray(c.site?.cities) ? c.site.cities.slice(0, 20).map((x) => String(x).slice(0, 40)) : [],
     },
     user: u ? { id: String(u.id).slice(0, 128), role: String(u.role || 'user').slice(0, 24), name: String(u.name || '').slice(0, 60) } : null,
-    page: { path: String(c.page?.path || '').slice(0, 160), propertyId: String(c.page?.propertyId || '').slice(0, 80) },
+    page: { path: String(c.page?.path || '').slice(0, 160), propertyId: String(c.page?.propertyId || '').slice(0, 80), ...(pageListing(c.page?.listing) ? { listing: pageListing(c.page.listing) } : {}) },
     locale: c.locale === 'ta' ? 'ta' : 'en',
     capabilities: Array.isArray(c.capabilities) ? c.capabilities.slice(0, 20).map(String) : [],
   };
