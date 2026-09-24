@@ -34,7 +34,7 @@ import { signPayload } from '../utils/sourcing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { generateJson, GEMINI_FLASH } from '../utils/gemini.js';
 import { DAILY_PLAN_PRICE_PAISE, accrueComposeCharge, isServicePaused } from '../shared/billing.js';
-import { allocateTasks, briefingPrompt, BRIEFING_SCHEMA } from '../utils/planTasks.js';
+import { allocateTasks, briefingPrompt, BRIEFING_SCHEMA, CATEGORY_ORDER } from '../utils/planTasks.js';
 
 const REGION = 'asia-south1';
 const METER_LOG = 'usage_meter_log';
@@ -406,8 +406,12 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
         taskCount,
         demandMatched, // tasks with a buyer already waiting — the value-proof series
         openRequirements: Number(workState.demand?.openRequirements) || 0,
+        // Planned lanes only — a retired lane an older platform still sends is not work.
         tasksPerCategory: Object.fromEntries(
-          Object.entries(workState.categories || {}).map(([k, v]) => [k, (v || []).length]),
+          CATEGORY_ORDER.filter((k) => k in (workState.categories || {})).map((k) => [
+            k,
+            (workState.categories[k] || []).length,
+          ]),
         ),
         unassigned: stats.unassigned,
         // Seller/buyer grouping: `people` conversations covering `cards` listings, so `callsSaved` is

@@ -38,12 +38,14 @@
 // with web/src/lib/dailyTasks.ts TASK_TYPES in the platform repo: buyer_followup ranks ABOVE the
 // seller cold-call lanes (operator 2026-08-09: buyer demand is priority #1, leads are scarce).
 //
-// Buyer bank (2026-09-14): `buyer_request` (a Priority seller's "any buyers for this?", a paid promise)
-// ranks right under callbacks; `buyer_qualify` (the cleanup call for a buyer grandfathered into the
-// bank) ranks under live buyer follow-ups — the backlog must never displace today's demand.
+// Buyer bank (2026-09-14): `buyer_qualify` (the cleanup call for a buyer grandfathered into the bank)
+// ranks under live buyer follow-ups — the backlog must never displace today's demand.
+//
+// Only these lanes are planned: a snapshot key not listed here is ignored, not an error. That is how
+// the retired seller "any buyers for this?" lane (removed 2026-09-24, platform #1082)
+// stays out of plans even when an older platform deploy still sends its candidates.
 export const CATEGORY_ORDER = [
   'callback_due',
-  'buyer_request',
   'buyer_followup',
   'buyer_qualify',
   'untouched_lead',
@@ -52,7 +54,7 @@ export const CATEGORY_ORDER = [
 ];
 
 // Task types worked on a buyer card — only admins with the buyer-leads grant may take them.
-const BUYER_TYPES = new Set(['buyer_followup', 'buyer_qualify', 'buyer_request']);
+const BUYER_TYPES = new Set(['buyer_followup', 'buyer_qualify']);
 
 // Why-lines are composed here (not by Gemini) so every card's justification is deterministic and
 // grounded — the briefing may summarise, but per-task copy never hallucinates. A candidate with
@@ -120,7 +122,6 @@ const WHY = {
     ),
   rnr_retry: (c) => withDemand(c, withStory(c, `No answer ${c.attempts > 1 ? `×${c.attempts}` : 'once'} — cooled, retry`)),
   buyer_followup: () => 'Buyer waiting — match inventory & reply',
-  buyer_request: () => 'Priority seller asked for buyers — deliver matches or say none right now',
   buyer_qualify: (c) =>
     c.attempts > 0
       ? `In the buyer bank — no answer ×${c.attempts}, try again to confirm or remove`
@@ -146,7 +147,6 @@ export const TASK_SKILL = {
   rnr_retry: 'consent_calls',
   buyer_followup: 'buyer_followup',
   buyer_qualify: 'buyer_followup',
-  buyer_request: 'buyer_followup',
   freshness_check: 'freshness_check',
 };
 
