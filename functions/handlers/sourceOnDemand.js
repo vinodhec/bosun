@@ -76,7 +76,9 @@ export const sourceOnDemand = onRequest(
     const listingType = String(body.listingType || '').trim();
     const propertyType = String(body.propertyType || '').trim();
     const buyerMode = body.mode === 'buyer';
-    if (!orgId || (!locality && !city)) {
+    // The manual-lane modes name no place up front (each pasted post carries its own city).
+    const manualLane = body.mode === 'manual' || body.mode === 'groups';
+    if (!orgId || (!manualLane && !locality && !city)) {
       res.status(400).json({ error: 'orgId and a locality or city are required' });
       return;
     }
