@@ -679,13 +679,15 @@ export async function runForOrg(
   // phone, photos — so scraping them again would pay twice for the same post. Settle them here the
   // way enrichment would have, and lift the poster identity OFF the listing: it exists for buyer
   // dedup (3f), and a scraped display name is not ours to forward to the webhook.
-  const preEnriched = candidates.filter((c) => c.listing.origin === 'group-feed');
+  // Posts an admin pasted by hand (origin:'manual', utils/manualPosts.js) arrive just as full.
+  const isPreEnriched = (c) => c.listing.origin === 'group-feed' || c.listing.origin === 'manual';
+  const preEnriched = candidates.filter(isPreEnriched);
   for (const c of preEnriched) {
-    c.enrichedText = true; // fetchGroupFeed only emits items with text
+    c.enrichedText = true; // fetchGroupFeed / manualPosts only emit items with text
     c.author = c.listing.author || null;
     delete c.listing.author;
   }
-  const toEnrich = candidates.filter((c) => c.listing.origin !== 'group-feed');
+  const toEnrich = candidates.filter((c) => !isPreEnriched(c));
   const chunks = [];
   for (let i = 0; i < toEnrich.length; i += ENRICH_BATCH_SIZE) chunks.push(toEnrich.slice(i, i + ENRICH_BATCH_SIZE));
   await mapLimit(chunks, ENRICH_BATCH_CONCURRENCY, async (chunk) => {

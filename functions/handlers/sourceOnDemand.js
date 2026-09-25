@@ -37,6 +37,7 @@ import { runForOrg } from './runSourcingJobs.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { probeBuyersForPlace } from '../utils/buyerProbe.js';
+import { sourceManualPosts } from '../utils/manualPosts.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { APIFY_TOKEN } from '../utils/secrets.js';
 
@@ -104,6 +105,34 @@ export const sourceOnDemand = onRequest(
     const cfg = orgSnap.data().sourcing || {};
     if (!cfg.actorId || !cfg.webhookUrl) {
       res.status(409).json({ error: 'org has no sourcing relay (actorId + webhookUrl) configured' });
+      return;
+    }
+
+    // The two MANUAL-lane modes spend no Apify credit, so they sit ahead of the cooldown — an
+    // admin pasting a second batch must not wait out (or reset) the on-demand timer.
+    if (body.mode === 'groups') {
+      const groups = (Array.isArray(cfg.buyerGroups) ? cfg.buyerGroups : [])
+        .map((g) => (typeof g === 'string' ? { url: g, city: '' } : { url: String(g?.url || ''), city: String(g?.city || '') }))
+        .filter((g) => g.url);
+      res.status(200).json({ ok: true, groups });
+      return;
+    }
+    if (body.mode === 'manual') {
+      if (!Array.isArray(body.items) || !body.items.length) {
+        res.status(400).json({ error: 'items[] is required' });
+        return;
+      }
+      const run = startRun(db, orgId, 'platform-manual');
+      try {
+        const r = await sourceManualPosts(db, { orgId, cfg, items: body.items, run, runForOrg });
+        await run.finish();
+        console.log('sourceOnDemand:manual:done', orgId, JSON.stringify({ runId: run.id, items: r.results.length, relayed: r.relayed, buyers: r.buyers, amountInr: r.amountInr }));
+        res.status(200).json({ ok: true, runId: run.id, mode: 'manual', ...r });
+      } catch (e) {
+        await run.finish({ status: 'error', error: e?.message || String(e) });
+        console.error('sourceOnDemand:manual:err', orgId, e?.message || e);
+        res.status(502).json({ error: 'manual posts failed', detail: e?.message || String(e) });
+      }
       return;
     }
 

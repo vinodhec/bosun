@@ -173,6 +173,7 @@ async function main() {
   await buyerDedupScenario();
   await queryShapeScenario();
   await groupFeedScenario();
+  await manualPostsScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -779,6 +780,62 @@ async function groupFeedScenario() {
   const seen = db.under(`sourcingSeen/${ORG}/keys/`);
   assert.ok(seen.some((d) => d.owner === true), 'the buyer fingerprint (from the feed author) is recorded for cross-run dedup');
   console.log('\ngroup-feed scenario: full posts skip enrichment, author stays off the wire, real dates gate ✓');
+}
+
+/**
+ * The MANUAL lane (utils/manualPosts.js) — posts an admin pasted from the groups. No Apify call at
+ * all, every pasted item gets its own answer, owner posts are kept alongside buyers, and the ones
+ * the pipeline never writes a row for (bad link, already seen, pasted twice) are settled up front.
+ */
+async function manualPostsScenario() {
+  const url = (n) => `https://www.facebook.com/groups/555/posts/${n}/`;
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const { listingKey } = await import('../utils/sourcing.js');
+  db.store.set(`sourcingSeen/${ORG}/keys/${listingKey(url(4))}`, { url: url(4), relayedAt: 1 });
+  const relayBodies = [];
+  let apifyCalls = 0;
+  globalThis.fetch = async (u, opts) => {
+    if (String(u).includes('apify')) { apifyCalls += 1; return { ok: true, status: 200, json: async () => [] }; }
+    relayBodies.push(JSON.parse(opts.body));
+    return { ok: true, status: 200 };
+  };
+  const stub = async ({ text }) => {
+    if (/cricket/i.test(text)) return { keep: false, side: 'offering', isListing: false, confidence: 0.95, reason: 'not-a-listing' };
+    if (/for sale/i.test(text)) return { keep: true, side: 'offering', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Sale', locality: 'Velachery', price: '55 lakh', bhk: '2' } };
+    return { keep: true, side: 'seeking', isListing: true, localityMatches: true, confidence: 0.9, extracted: { listingType: 'Rent', locality: 'Velachery', bhk: '2' } };
+  };
+  const { runForOrg } = await import('../handlers/runSourcingJobs.js');
+  const { startRun } = await import('../utils/sourcingRun.js');
+  const { sourceManualPosts } = await import('../utils/manualPosts.js');
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, freshnessMonths: 3, maxPerRun: 0 };
+  const run = startRun(db, ORG, 'test');
+  const r = await sourceManualPosts(db, {
+    orgId: ORG, cfg, run,
+    runForOrg: (d, t, o, c, opts) => runForOrg(d, t, o, c, { ...opts, classify: stub }),
+    items: [
+      { url: url(1), text: 'Looking for 2bhk rent in Velachery, family of 4', city: 'Chennai', author: 'Ravi K' },
+      { url: url(2), text: 'Flat for sale Velachery 2bhk 55 lakh call 9876543210', city: 'Chennai' },
+      { url: 'https://www.facebook.com/groups/555/', text: 'the group page, not a post' },
+      { url: url(4), text: 'Need a house in Velachery urgently please', city: 'Chennai' },
+      { url: url(1), text: 'Looking for 2bhk rent in Velachery, family of 4', city: 'Chennai' },
+      { url: url(6), text: 'Cricket match this sunday at the ground', city: 'Chennai' },
+    ],
+  });
+  await run.finish();
+  const st = r.results.map((x) => x.status);
+  assert.deepEqual(st, ['queued', 'queued', 'bad-link', 'duplicate', 'duplicate', 'rejected'], `per-post outcomes: ${JSON.stringify(r.results)}`);
+  assert.equal(r.results[0].leadType, 'buyer');
+  assert.equal(r.results[1].leadType, 'owner', 'a pasted owner post is kept, not dropped as by-catch');
+  assert.equal(apifyCalls, 0, 'the manual lane never calls Apify');
+  assert.equal(r.relayed, 2);
+  assert.equal(r.buyers, 1);
+  assert.ok(r.amountInr > 0, 'relayed leads bill as usual');
+  assert.equal(relayBodies.length, 2);
+  assert.ok(relayBodies.every((b) => b.listing.origin === 'manual' && b.listing.author === undefined), 'origin rides, author stays off the wire');
+  assert.equal(relayBodies[1].listing.phone, '+919876543210');
+  console.log('\nmanual-posts scenario: no Apify, per-post answers, owners kept, dedup + billing intact ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });
