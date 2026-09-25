@@ -319,7 +319,17 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   ~95% genuine — versus 9 in 28h from the by-product and 2/run from the SERP buyer lane. Manual
   trigger: "Scan buyer groups now" (`adminSourceBuyers {source:'groups'}`). **Since 2026-09-03 this
   is the buyer cron's only scheduled leg**, so the demand lane's whole cost knob is
-  `buyerGroupPostsPerVisit` / the per-group `posts` override.
+  `buyerGroupPostsPerVisit` / the per-group `posts` override. Measured cost was ~$4–5/day on the
+  org's Apify bill (52 groups × 2 visits × 20 posts at $2.60/1,000), not the ₹150/day first estimated.
+- **The MANUAL group lane (2026-09-25) — the group lane without the scraper.** The org's admins read
+  the groups themselves and paste posts on the platform's Sourced buyers page ("📋 Paste from groups",
+  `web/src/components/admin/GroupPostsPanel.tsx` → `/api/admin/sourced-buyers/group-posts`). That calls
+  `sourceOnDemand` with `mode:'manual'` (`items[]`, ≤50) — or `mode:'groups'` for the configured group
+  list — and `utils/manualPosts.js` runs them through `runForOrg` in buyer mode with owner posts kept.
+  Pasted posts are `origin:'manual'`, which rides the pre-enriched path (no paid scrape, zero Apify);
+  dedup, classify, relay and the per-lead charge are unchanged. Every item gets a per-post outcome
+  (`queued` buyer/owner, `duplicate`, `rejected`, `too-old`, `bad-link`, `no-text`) via a tapped
+  `leg.lead`. The scheduled group scan is switched off by setting `sourcing.buyerLane` false.
 - **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
   With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
   `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with
