@@ -330,6 +330,11 @@ runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
   dedup, classify, relay and the per-lead charge are unchanged. Every item gets a per-post outcome
   (`queued` buyer/owner, `duplicate`, `rejected`, `too-old`, `bad-link`, `no-text`) via a tapped
   `leg.lead`. The scheduled group scan is switched off by setting `sourcing.buyerLane` false.
+  **Paste-only groups:** a `buyerGroups` entry with `manualOnly: true` stays listed for the admin
+  page but `sourceBuyerGroups` never scrapes it. Since 2026-09-25 only Chennai + Coimbatore (12
+  groups) are scanned; the other 8 cities (40 groups) are paste-only — over Sep 11–25 Chennai was 36%
+  of the scan's cost for ~88% of its buyers, and 5 cities found zero buyers, their owner posts
+  costing ₹6–54 each vs ~₹1.70 from the SERP supply lane.
 - **Salvage lanes (opt-in per org)** — the classifier also returns `side` (offering vs seeking).
   With `sourcing.buyerLeads`, a genuine on-target "wanted / looking for" post relays as
   `listing.leadType:'buyer'` (usually phone-less — the value is the post link + request text); with
