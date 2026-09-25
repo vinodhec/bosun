@@ -234,7 +234,7 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
       }
       // Optional per-group pull size (5-100) — the cost throttle for one group; omitted = org default.
       const posts = g?.posts == null ? null : Math.max(5, Math.min(100, Math.floor(Number(g.posts)) || 0));
-      cleaned.push({ url, city, ...(posts ? { posts } : {}) });
+      cleaned.push({ url, city, ...(posts ? { posts } : {}), ...(g?.manualOnly === true ? { manualOnly: true } : {}) });
     }
     patch['sourcing.buyerGroups'] = cleaned;
   }

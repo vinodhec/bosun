@@ -174,6 +174,7 @@ async function main() {
   await queryShapeScenario();
   await groupFeedScenario();
   await manualPostsScenario();
+  await pasteOnlyGroupsScenario();
   console.log('\n✅ all funnel, billing, lead-row and dedup assertions passed');
 }
 
@@ -836,6 +837,29 @@ async function manualPostsScenario() {
   assert.ok(relayBodies.every((b) => b.listing.origin === 'manual' && b.listing.author === undefined), 'origin rides, author stays off the wire');
   assert.equal(relayBodies[1].listing.phone, '+919876543210');
   console.log('\nmanual-posts scenario: no Apify, per-post answers, owners kept, dedup + billing intact ✓');
+}
+
+/** A `manualOnly` group is never scraped by the group lane; the scanned ones still are. */
+async function pasteOnlyGroupsScenario() {
+  const db = new FakeDb();
+  db.store.set(`orgSecrets/${ORG}`, { sourcing: { secret: 's3cret' } });
+  db.store.set(`organisations/${ORG}`, { balance: 1000, name: 'Test Org' });
+  const visited = [];
+  globalThis.fetch = async (u, opts) => {
+    if (String(u).includes('facebook-groups-scraper')) { visited.push(JSON.parse(opts.body).startUrls[0].url); return { ok: true, status: 200, json: async () => [] }; }
+    return { ok: true, status: 200, json: async () => [] };
+  };
+  const { sourceBuyerGroups } = await import('../handlers/runSourcingJobs.js');
+  const cfg = { actorId: 'a', webhookUrl: WEBHOOK, buyerGroups: [
+    { url: 'https://www.facebook.com/groups/chennai1/', city: 'Chennai' },
+    { url: 'https://www.facebook.com/groups/madurai1/', city: 'Madurai', manualOnly: true },
+  ] };
+  await sourceBuyerGroups(db, 'tok', ORG, cfg);
+  assert.deepEqual(visited, ['https://www.facebook.com/groups/chennai1/'], 'only the scanned group is fetched');
+  const none = await sourceBuyerGroups(db, 'tok', ORG, { ...cfg, buyerGroups: [cfg.buyerGroups[1]] });
+  assert.equal(visited.length, 1, 'an all-paste-only config fetches nothing');
+  assert.match(none.note, /paste-only/);
+  console.log('\npaste-only groups scenario: manualOnly groups are listed but never scraped ✓');
 }
 
 main().catch((e) => { console.error('\n❌', e.message); console.error(e.stack); process.exit(1); });

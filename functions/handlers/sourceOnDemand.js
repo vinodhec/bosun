@@ -114,7 +114,9 @@ export const sourceOnDemand = onRequest(
     // admin pasting a second batch must not wait out (or reset) the on-demand timer.
     if (body.mode === 'groups') {
       const groups = (Array.isArray(cfg.buyerGroups) ? cfg.buyerGroups : [])
-        .map((g) => (typeof g === 'string' ? { url: g, city: '' } : { url: String(g?.url || ''), city: String(g?.city || '') }))
+        .map((g) => (typeof g === 'string'
+          ? { url: g, city: '' }
+          : { url: String(g?.url || ''), city: String(g?.city || ''), ...(g?.manualOnly === true ? { manualOnly: true } : {}) }))
         .filter((g) => g.url);
       res.status(200).json({ ok: true, groups });
       return;

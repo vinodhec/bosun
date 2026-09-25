@@ -259,8 +259,12 @@ export const runBuyerSourcingJobs = onSchedule(
 export async function sourceBuyerGroups(db, apifyToken, orgId, cfg, { trigger = 'cron-buyer-groups', postsPerVisit } = {}) {
   const groups = (Array.isArray(cfg.buyerGroups) ? cfg.buyerGroups : [])
     .map((g) => (typeof g === 'string' ? { url: g, city: '' } : g))
-    .filter((g) => g && typeof g.url === 'string' && g.url.includes('facebook.com/groups/'));
-  if (!groups.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no buyerGroups configured' };
+    .filter((g) => g && typeof g.url === 'string' && g.url.includes('facebook.com/groups/'))
+    // A `manualOnly` group is read by the org's admins and pasted in (utils/manualPosts.js) — it
+    // stays in the list so the admin page can link to it, but the scraper never visits it. Set
+    // 2026-09-25 on the eight cities whose scan cost more per lead than it returned.
+    .filter((g) => g.manualOnly !== true);
+  if (!groups.length) return { ok: true, relayed: 0, amountInr: 0, note: 'no scanned buyerGroups (none configured, or all paste-only)' };
   // Per-visit pull size — the lane's whole cost knob (the actor bills per result). Resolution:
   // the group's own `posts` (a fast Chennai feed deserves 20, a quiet district group 10), else the
   // caller's override, else the org default. The per-group number is how the operator throttles a
