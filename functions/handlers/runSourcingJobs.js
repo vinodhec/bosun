@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
+import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -388,12 +388,14 @@ export async function runForOrg(
   });
   const all = perQuery.flat().filter(Boolean);
 
-  // 2) Keep only individual posts (real listings that enrich); drop group/page landing pages. Then
-  // dedup WITHIN this run by canonical listing key.
-  const posts = all.filter((it) => it?.url && isIndividualPost(it.url));
-  console.log('runSourcingJobs:filter', orgId, JSON.stringify({ fetched: all.length, posts: posts.length }));
+  // 2) Keep only individual posts (real listings that enrich); drop group/page landing pages and
+  // posts on blocked portal pages. Then dedup WITHIN this run by canonical listing key.
+  const individual = all.filter((it) => it?.url && isIndividualPost(it.url));
+  const posts = individual.filter((it) => !isBlockedSourcePage(it.url));
+  console.log('runSourcingJobs:filter', orgId, JSON.stringify({ fetched: all.length, posts: posts.length, blockedPage: individual.length - posts.length }));
   leg.count('fetched', all.length);
   leg.count('posts', posts.length);
+  leg.count('blockedPage', individual.length - posts.length);
   const local = new Map();
   for (const it of posts) {
     const key = listingKey(it.url);

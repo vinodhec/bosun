@@ -276,6 +276,26 @@ export function isIndividualPost(url) {
   }
 }
 
+// Facebook PAGES whose posts we never relay. These are portals and brokers advertising their own
+// inventory, not owners: the post is a teaser ("Click the link below for more details") with no
+// phone, so the lead dies in the phone hunt. NoBroker (2026-09-26, Vignesh): 314 leads relayed from
+// facebook.com/nobrokercom by the `site:facebook.com <locality>` lane, 3 converted. Match is on the
+// first path segment, lowercase.
+const BLOCKED_PAGES = new Set(['nobrokercom']);
+
+/** True if the URL is a post on a page we never source from (see BLOCKED_PAGES). */
+export function isBlockedSourcePage(url) {
+  try {
+    const u = new URL(String(url));
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host !== 'facebook.com' && !host.endsWith('.facebook.com')) return false;
+    const page = u.pathname.split('/').filter(Boolean)[0] || '';
+    return BLOCKED_PAGES.has(page.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Sign a relay body with the org's HMAC secret. The signature covers `${timestamp}.${body}` so the
  * receiver can reject replays by checking the timestamp. Returns headers the receiver recomputes.
