@@ -17,7 +17,7 @@ import {
   TOOL_DEFS, toolsFor, buildSystemInstruction, parseReply, listingsFromToolResult,
   rememberListings, cardsFor, boundToolResult, toolResultsContent, trimHistory, modelStep,
   visitorLanguage, lastVisitorText, languageRule,
-  reelFromToolResult, rememberReel, reelFor,
+  reelFromToolResult, rememberReel, reelFor, reelsFromListResult,
   MAX_HISTORY_CONTENTS, MAX_TOOL_RESULT_CHARS,
 } from '../utils/assistant.js';
 
@@ -52,6 +52,26 @@ check('make_reel is offered to guests too (the animated gate is the platform\'s)
   assert.equal(reelFor('', remembered, ['abc123XYZ']).jobId, 'abc123XYZ', 'a forgotten marker still attaches this turn\'s reel');
   assert.equal(reelFor('nope', remembered), null);
   assert.equal(reelFromToolResult('make_reel', { ok: false, error: 'no_photos' }), null);
+});
+
+check('list_my_reels is member-only, and its rows resolve a [[reel:…]] marker without auto-attaching', () => {
+  assert.ok(!toolsFor({ capabilities: [], signedIn: false }).map((t) => t.name).includes('list_my_reels'));
+  assert.ok(toolsFor({ capabilities: [], signedIn: true }).map((t) => t.name).includes('list_my_reels'));
+  const rows = reelsFromListResult('list_my_reels', { ok: true, reels: [
+    { jobId: 'old1', status: 'ready', style: 'photo', listingId: 'P1', title: 'Flat', videoUrl: 'https://x/v.mp4', createdAtMs: 1 },
+    { jobId: 'bad id!', status: 'weird', style: 'x' },
+    null,
+  ] });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].jobId, 'badid', 'ids are sanitised like make_reel ones');
+  assert.equal(rows[1].status, 'queued');
+  let remembered = [];
+  for (const r of rows) remembered = rememberReel(remembered, r);
+  assert.equal(reelFor('old1', remembered).videoUrl, 'https://x/v.mp4');
+  assert.equal(reelFor('', remembered, []), null, 'a history answer never auto-attaches a reel');
+  assert.deepEqual(reelsFromListResult('make_reel', { ok: true, reels: [{ jobId: 'a' }] }), []);
+  assert.deepEqual(reelsFromListResult('list_my_reels', { ok: false }), []);
+  assert.match(buildSystemInstruction({ user: { id: 'u1' } }), /list_my_reels/);
 });
 
 check('members see everything the platform declares, and nothing it does not', () => {

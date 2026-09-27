@@ -51,6 +51,7 @@ import {
   cardsFor,
   reelFromToolResult,
   rememberReel,
+  reelsFromListResult,
   reelFor,
   scrubIds,
   toolResultsContent,
@@ -288,6 +289,7 @@ export const assistantChat = onRequest(
           turnEvents.tools.push({ name: call.name, ok: !!succeeded, captured: !!succeeded && r.result.captured === true, accountCreated: !!succeeded && r.result.accountCreated === true, ...(reel ? { jobId: reel.jobId } : {}) });
           if (succeeded) remembered = rememberListings(remembered, listingsFromToolResult(call.name, r.result));
           if (reel) reels = rememberReel(reels, reel);
+          if (succeeded) for (const past of reelsFromListResult(call.name, r.result)) reels = rememberReel(reels, past);
         }
         contents = [...contents, toolResultsContent(pending.calls, results)];
         pending = null;
