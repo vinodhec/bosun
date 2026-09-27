@@ -458,6 +458,14 @@ clip is a camera move over the real cover photo, and text-to-video is not used.
   the reply `[[reel:JOBID]]` and Bosun attaches `reply.reel` from the CACHED tool result
   (`reelFromToolResult` / `reelFor` — if Flash forgets the marker the turn's reel is attached anyway).
   The widget polls the platform's `/api/assistant/reel`, which polls `status`.
+- **Reel history.** `list_my_reels` (member-only) lets a seller get back a reel they made earlier.
+  The platform calls `reelJobs` `action:'list'` with the signed-in user's id; Bosun queries
+  `reelJobs` on `requestedBy.userId` newest-first (composite index `requestedBy.userId` ASC +
+  `createdAt` DESC in `firestore.indexes.json` — deploy it with `firebase deploy --only
+  firestore:indexes` before the platform ships its half), drops failed jobs and other orgs' jobs,
+  and returns the same fields as `status` plus `createdAtMs`. Rows are remembered like `make_reel`
+  results (`reelsFromListResult`) so `[[reel:JOBID]]` on a history answer plays that reel; they are
+  never auto-attached. History is bounded by the 30-day job TTL.
 - **Rendering rules learned the hard way.** ffmpeg-static (7.0) has NO drawtext (needs harfbuzz),
   and resvg drew Tamil vowel signs in the wrong place — so captions and the end card are drawn with
   `@napi-rs/canvas` (Skia shapes Tamil correctly) using the bundled Noto fonts in `functions/assets/fonts`.

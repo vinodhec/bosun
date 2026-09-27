@@ -9,6 +9,13 @@
  *   action:'create'  { orgId, conversationId?, style:'photo'|'animated', locale, listing:{…}, requestedBy?, site, force? }
  *                    → { ok, jobId, status, style, etaSeconds, existing?, videoUrl?, posterUrl?, listingId, title }
  *   action:'status'  { orgId, jobId } → { ok, jobId, status, style, styleDelivered, videoUrl, posterUrl, durationSec, listingId, title, listingUrl, error? }
+ *   action:'list'    { orgId, userId, limit? } → { ok, reels:[{ …status fields, createdAtMs }] }
+ *                    — the signed-in member's own reel history (the assistant's `list_my_reels`),
+ *                    newest first, failed jobs left out. Matched on `requestedBy.userId`, which the
+ *                    platform only ever sets from its verified session; the HMAC is what makes the
+ *                    userId trustworthy here. Needs the composite index `reelJobs`
+ *                    requestedBy.userId ASC + createdAt DESC (firestore.indexes.json). History is
+ *                    bounded by the job TTL (TTL_DAYS).
  *
  * Why a Firestore trigger and not the request: Veo alone can take two minutes, and a Cloud Run
  * instance has no CPU after it answers. `reelJobs/{id}` is written `queued`, `processReelJob`
@@ -46,6 +53,11 @@ export const DEFAULT_CONVERSATION_DAILY_CAP = 3;
 /** A ready reel younger than this is reused for the same listing + style (no new job, no charge). */
 const REUSE_MS = 24 * 3600 * 1000;
 const ETA_SECONDS = { photo: 75, animated: 180 };
+/** `list`: reels returned by default / at most, and the jobs scanned to find them (failed jobs and
+ *  another org's jobs for the same userId are dropped after the query, so scan a little wider). */
+export const LIST_DEFAULT = 10;
+export const LIST_MAX = 20;
+const LIST_SCAN = 50;
 
 function istDayKey(nowMs = Date.now()) {
   return new Date(nowMs + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
@@ -107,7 +119,7 @@ export const reelJobs = onRequest(
     try { body = JSON.parse(raw || '{}'); } catch { res.status(400).json({ error: 'invalid JSON' }); return; }
 
     const orgId = s(body.orgId, 128);
-    const action = ['create', 'status'].includes(body.action) ? body.action : '';
+    const action = ['create', 'status', 'list'].includes(body.action) ? body.action : '';
     if (!orgId || !action) {
       logReject('reelJobs', { orgId, status: 400, reason: 'missing-required-field', extra: { hasOrgId: !!orgId, action: body.action } });
       res.status(400).json({ error: 'orgId and a valid action are required' });
@@ -138,6 +150,24 @@ export const reelJobs = onRequest(
         const snap = await db.collection(JOBS).doc(jobId).get();
         if (!snap.exists || snap.data().orgId !== orgId) { res.status(404).json({ error: 'unknown job' }); return; }
         res.status(200).json({ ok: true, ...publicJob(snap.id, snap.data()) });
+        return;
+      }
+
+      if (action === 'list') {
+        const userId = s(body.userId, 128);
+        if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+        const want = Math.min(LIST_MAX, Math.max(1, Math.floor(Number(body.limit)) || LIST_DEFAULT));
+        const snap = await db.collection(JOBS)
+          .where('requestedBy.userId', '==', userId)
+          .orderBy('createdAt', 'desc')
+          .limit(LIST_SCAN)
+          .get();
+        const reels = snap.docs
+          .filter((d) => d.data().orgId === orgId && d.data().status !== 'failed')
+          .slice(0, want)
+          .map((d) => ({ ...publicJob(d.id, d.data()), createdAtMs: Number(d.data().createdAtMs) || null }));
+        console.log('reelJobs:list', orgId, JSON.stringify({ userId, scanned: snap.size, returned: reels.length }));
+        res.status(200).json({ ok: true, reels });
         return;
       }
 
@@ -235,7 +265,9 @@ export const reelJobs = onRequest(
       console.log('reelJobs:create', orgId, JSON.stringify({ jobId: jobRef.id, listingId: listing.id, style, locale, photos: listing.images.length, signedIn: !!rb, conversationId, force: body.force === true }));
       res.status(200).json({ ok: true, existing: false, ...publicJob(jobRef.id, job) });
     } catch (e) {
-      console.error('reelJobs:err', orgId, action, e?.message || e);
+      // code 9 = FAILED_PRECONDITION: the `list` composite index is not deployed (yet).
+      if (e?.code === 9) console.error('reelJobs:missing-index', orgId, action, e?.message || e);
+      else console.error('reelJobs:err', orgId, action, e?.message || e);
       res.status(500).json({ error: 'reel request failed — retry' });
     }
   },

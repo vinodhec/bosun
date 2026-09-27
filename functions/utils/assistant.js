@@ -204,6 +204,18 @@ export const TOOL_DEFS = {
       required: ['propertyId'],
     },
   },
+  list_my_reels: {
+    audience: 'user',
+    description:
+      'The signed-in member\u2019s OWN video history: the reels they asked for before (newest first, the ' +
+      'last 30 days), each with its jobId, listing title, style, status and whether the video is ready. Use ' +
+      'for "my videos", "the reel I made yesterday", "send me that video link again", "video history". ' +
+      'Never call make_reel to answer these — that makes (and bills) a new video.',
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'integer', description: 'How many to return, 1–20. Default 10.' } },
+    },
+  },
   list_plans: {
     audience: 'all',
     description: 'The plans / packages the site sells (name, price, what each includes). For visitors asking what it costs to list or to get more visibility.',
@@ -443,6 +455,7 @@ export function buildSystemInstruction({ site = {}, user = {}, page = {}, locale
     '- When a tool result says accountCreated is true, say in one short clause that this is saved under their number — nothing about signing in or an account; the chat offers that itself.',
     '- Listing their own property: collect sale/rent, type, BHK (if flat/house), locality + city, expected price, and a phone (guests) — a few at a time, conversationally — then call draft_listing ONCE and give them the link to add photos and confirm. Never claim it is live.',
     '- Videos: when the visitor wants a video / reel / ad / promo of a listing, call make_reel with that listing\'s id (from the cards you showed, their own listings, or the page they are on) — do not ask what to put in it. Default style is photo. Use animated only if they ask for it AND they are signed in; a guest who wants the animated one gets the photo reel now (call make_reel with photo) plus ONE short line that the animated version is for signed-in members. When the tool returns a jobId, say in one line that the video is being made (about a minute; animated: two to three), that it will appear right here, and that they can share it on WhatsApp — then put [[reel:JOBID]] on its own line. If it returns existing:true, say the video is ready and use the same marker. Never describe what is in the video. If it fails (not_found / no_photos), say so in one line.',
+    '- Video HISTORY (signed-in members): when they ask for their videos / reels / a video they made before, or the link to one again, call list_my_reels — never make_reel, which makes a new one. Name each reel briefly by its listing title and when it was made (newest first); to play or share one, put [[reel:JOBID]] on its own line with that reel\'s jobId (one reel per reply — pick the one they asked about, else the newest ready one). If the list is empty, say they have not made a video in the last 30 days and offer to make one. A guest asking for their videos: one line that video history is for signed-in members.',
     '- Plans and pricing: only from list_plans / get_my_plan. Never quote a price from memory. When a plan question is about what the visitor GETS for the money (leads, buyer contacts, photos, reposts), answer with the fields the tool actually returned and give the pricing link; never pad it with a guess, and never leave a paying question with "it does not specify" when the tool result has the answer.',
     '- USE THE LINKS THE TOOLS GIVE YOU. When a tool result carries a url (manageUrl, pricingUrl, browseUrl, the complete-your-listing link), and the answer is "you can do that on the site", give that link in the sentence. Never say "from your dashboard" or "on our website" without the link when you were handed one. Never invent a url that was not in a tool result.',
     '- REACHING A PERSON. If the visitor asks for a phone number, an email, customer support, the sales team, or simply to talk to somebody, NEVER refuse and never say only "it is on the website". Point them to the site\u2019s Contact page in one short line AND offer the better path: leave their number and the team will call them (request_property, or create_enquiry when it is about one listing). A person asking to talk to a person is the most valuable message of the day \u2014 treat it as a lead, not as an out-of-scope question.',
@@ -573,6 +586,17 @@ export function reelFromToolResult(name, result) {
     existing: result.existing === true,
     at: Date.now(),
   };
+}
+
+/** Every reel a `list_my_reels` result carries, bounded the same way — so a `[[reel:…]]` marker on a
+ *  history answer resolves to real fields. Not counted as "this turn's reel": nothing auto-attaches. */
+export function reelsFromListResult(name, result) {
+  if (name !== 'list_my_reels' || !result || typeof result !== 'object' || result.ok === false) return [];
+  const rows = Array.isArray(result.reels) ? result.reels : [];
+  return rows
+    .map((r) => reelFromToolResult('make_reel', r && typeof r === 'object' ? { ...r, existing: true, ok: true } : null))
+    .filter(Boolean)
+    .slice(0, MAX_REMEMBERED_REELS);
 }
 
 export function rememberReel(existing, reel) {

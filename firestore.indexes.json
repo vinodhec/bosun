@@ -1,6 +1,14 @@
 {
   "indexes": [
     {
+      "collectionGroup": "reelJobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "requestedBy.userId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "invoices",
       "queryScope": "COLLECTION",
       "fields": [
