@@ -66,7 +66,7 @@ const RELAY_TIMEOUT_MS = 15000;
 // the run doc at status:'running' FOREVER, because finish() (which writes the funnel + flips status)
 // only runs after the target loop. Stop STARTING new targets once we've spent this budget and finish()
 // cleanly as 'partial'; the untouched targets are re-served next run (seen/dead dedup keeps their
-// marginal cost ~0). 20 min sits under the 25-min hard timeout AND well under the 30-min cron cadence,
+// marginal cost ~0). 20 min sits under the 25-min hard timeout AND well under the hourly cron cadence,
 // so a run always finishes before the next one fires (no overlap) with room for finish()'s writes.
 const RUN_BUDGET_MS = 20 * 60 * 1000;
 // FB enrichment batching: URLs per actor run × concurrent runs. 10/run keeps each run-sync call
@@ -95,13 +95,19 @@ const BUYER_ROTATION_WINDOW = 8;
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    schedule: '*/30 * * * *', // every 30 min, 24h — 48 runs/day (topN 3 → each run ~8 min)
+    // HOURLY since 2026-09-28 (was every 30 min). Measured over 25-27 Sep, 39% of what a run fetched
+    // was already seen from an earlier run, and every Google-search actor run costs the same whether
+    // or not it finds anything new — the half-hour cadence was paying ~$3.3/day of SERP + ~$3.3/day
+    // of FB post scrapes for the supply lane alone, ~75% of the org's Apify bill. Hourly halves the
+    // fetch spend for a lead that arrives at most 30 min later. Per-org throttling below this
+    // (`sourcing.cronEveryHours`) is a Firestore flip, never a redeploy.
+    schedule: '0 * * * *', // top of every hour, 24h — 24 runs/day (topN 3 → each run ~12 min)
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
-    // 1500s (25 min) < the 30-min cadence, so a slow run can never overlap the next tick. A topN-3 run
-    // measures ~8 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
-    // wall, the every-30-min cadence + seen/dead dedup pick up the remaining due targets next run — no
-    // lead is lost, just deferred.
+    // 1500s (25 min) < the hourly cadence, so a slow run can never overlap the next tick. A topN-3 run
+    // measures ~12 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
+    // wall, the hourly cadence + seen/dead dedup pick up the remaining due targets next run — no lead
+    // is lost, just deferred.
     timeoutSeconds: 1500,
     memory: '512MiB',
   },
@@ -109,9 +115,21 @@ export const runSourcingJobs = onSchedule(
     const db = getFirestore();
     const apifyToken = process.env.APIFY_TOKEN;
     const snap = await db.collection('organisations').where('sourcing.enabled', '==', true).get();
+    const istHour = new Date(Date.now() + 5.5 * 3600 * 1000).getUTCHours();
     for (const orgDoc of snap.docs) {
       try {
         const cfg = orgDoc.data().sourcing || {};
+        // Per-org THROTTLE: `sourcing.cronEveryHours = N` runs this org only on IST hours divisible by
+        // N (1 = every tick, the default). It exists so an org that is running out of Apify budget
+        // can be slowed to every 2-3 hours with one field write — and restored the same way on the
+        // day the plan resets — instead of a redeploy that slows every org. Static-query orgs
+        // honour it too; the platform's own cadence stamps are untouched (a skipped tick is just a
+        // tick that never happened).
+        const everyHours = Math.max(1, Math.floor(Number(cfg.cronEveryHours) || 1));
+        if (istHour % everyHours !== 0) {
+          console.log('runSourcingJobs:throttled', orgDoc.id, JSON.stringify({ istHour, everyHours }));
+          continue;
+        }
         // Smart path when the org has a demand matrix: source the top due target(s) via the
         // platform's demand ranking + Gemini bilingual queries + relevance gate (dryRun:false so the
         // platform advances each target's cadence, rotating through localities day to day). Orgs with
@@ -192,7 +210,7 @@ function takeByLane(list, { supplyCap = 0, buyerCap = 0 } = {}) {
 export const runBuyerSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    schedule: '15 */2 * * *', // every 2h at :15 — supply runs on :00/:30, so the lanes never collide
+    schedule: '15 */2 * * *', // every 2h at :15 — supply runs on :00, so the lanes never collide
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
     timeoutSeconds: 1500,

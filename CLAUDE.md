@@ -267,8 +267,11 @@ REST API** instead:
 ## Property sourcing relay
 
 A separate, near-zero-COGS metered lane — it never touches the fix pipeline or `finalize.js`.
-Cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, every 2h around the clock — 12
-runs/day, IST-anchored) runs for every org with `sourcing.enabled`:
+Cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, HOURLY around the clock — 24
+runs/day, IST-anchored; was every 30 min until 2026-09-28, when 39% of each run's fetch was found to be
+already-seen results paid for again) runs for every org with `sourcing.enabled`. Per org,
+`sourcing.cronEveryHours = N` throttles it to IST hours divisible by N — a Firestore flip, not a
+redeploy, for an org running out of Apify budget (Apify is the ORG's bill, see "Relay & billing"):
 
 - **Matrix pull** — orgs with `sourcing.matrixUrl` pull the platform's demand-ranked query matrix
   (HMAC-signed GET, `utils/sourcing.js#fetchQueryMatrix`): `targets` plus a per-intent freshness
