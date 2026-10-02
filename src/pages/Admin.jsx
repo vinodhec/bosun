@@ -38,6 +38,7 @@ import {
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
 import SourcingRuns from '../components/SourcingRuns.jsx';
+import RevenueCharts from '../components/RevenueCharts.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
 import { formatINR } from '@shared/currency.js';
@@ -1732,6 +1733,8 @@ export default function Admin() {
         {err && <p className="rounded-xl bg-rose-50 px-4 py-2 text-sm text-bad">{err}</p>}
 
         <Overview data={metrics} busy={metricsBusy} onRefresh={loadMetrics} />
+
+        {metrics?.daily && <RevenueCharts daily={metrics.daily} />}
 
         <SourcingOverview data={metrics?.sourcing} />
 
