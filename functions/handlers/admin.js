@@ -790,6 +790,37 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     pendingAccrualInr: (composeAccrualPaise + autopostAccrualPaise + plannerAccrualPaise + waAccrualPaise + popupAccrualPaise) / 100,
   };
 
+  // ── Daily revenue series for the admin charts: one row per IST calendar day over the last
+  // DAILY_DAYS days, revenue split by source. Attribution matches the windows above — a task books
+  // its finalCharge on completedAt (else createdAt), a lane debit on its createdAt — so a chart's
+  // sum over 30 days agrees with the d30 figures. Fix COGS rides along for a profit line.
+  const DAILY_DAYS = 90;
+  const dailyStartMs = todayStartMs - (DAILY_DAYS - 1) * DAY_MS;
+  const days = Array.from({ length: DAILY_DAYS }, (_, i) => {
+    const d = new Date(dailyStartMs + i * DAY_MS + IST_OFFSET_MS);
+    return { day: d.toISOString().slice(0, 10), fixesInr: 0, fixesCostInr: 0, lanes: {} };
+  });
+  const dayIndex = (ms) => {
+    if (ms == null || ms < dailyStartMs) return -1;
+    const i = Math.floor((ms - dailyStartMs) / DAY_MS);
+    return i < DAILY_DAYS ? i : -1;
+  };
+  for (const d of tasksSnap.docs) {
+    const t = d.data();
+    const i = dayIndex(t.completedAt?.toMillis?.() ?? t.createdAt?.toMillis?.() ?? null);
+    if (i < 0) continue;
+    days[i].fixesInr += Number(t.finalCharge) || 0;
+    days[i].fixesCostInr += Number(t.actualCostInr) || 0;
+  }
+  for (const d of laneSnap.docs) {
+    const t = d.data();
+    if (!LANES[t.kind]) continue;
+    const i = dayIndex(t.createdAt?.toMillis?.() ?? null);
+    if (i < 0) continue;
+    days[i].lanes[t.kind] = (days[i].lanes[t.kind] || 0) + (Number(t.amount) || 0);
+  }
+  const daily = { days, laneLabels: Object.fromEntries(Object.entries(LANES).map(([k, m]) => [k, m.label])) };
+
   // ── Session pool: the base-fee coverage (1,50,000 processed sessions / month). sessionMeter.<yyyymm>
   // is bumped by the nightly session-intelligence run; overage (₹0.20/session) is reconciled from
   // this counter at invoice time, not auto-billed — this block is how the operator watches it.
@@ -868,7 +899,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     break; // one sourcing org in practice
   }
 
-  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, sessionPool, waived, conversionRules, generatedAt: now };
+  return { rate, totals, today, averages, trailing, byOrg, sourcing, lanes, propertyTotal, daily, sessionPool, waived, conversionRules, generatedAt: now };
 });
 
 export const adminSetUserOrg = onCall({ region: REGION }, async (request) => {
