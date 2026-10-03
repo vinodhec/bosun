@@ -243,3 +243,19 @@ console.log('planTasks: skills fixtures passed ✓');
   assert.equal(tasks.length, 200, 'and all 200 grouped cards ride along');
   console.log('planTasks: card-rail fixture passed ✓');
 }
+
+// ── package_pitch: only admins granted package_sales get it; capped at 10; why-line names the offer ──
+{
+  const { allocateTasks: alloc } = await import('../functions/utils/planTasks.js');
+  const pitches = [];
+  for (let i = 0; i < 15; i++) {
+    pitches.push(cand(`U${i}`, { groupKey: `s:98400000${String(i).padStart(2, '0')}`, lockedCount: 3, planName: 'Seller Pack 1', priceLabel: '₹1,299' }));
+  }
+  const off = alloc(ws([admin('a', { capacity: 100 })], { package_pitch: pitches }), { maxTasksPerAdmin: 200 });
+  assert.equal(planFor(off, 'a')?.tasks?.length || 0, 0, 'no grant → no package cards (off for everyone)');
+  const on = alloc(ws([admin('a', { capacity: 100, canPitchPackages: true })], { package_pitch: pitches }), { maxTasksPerAdmin: 200 });
+  const t = planFor(on, 'a').tasks;
+  assert.equal(t.length, 10, 'granted admin gets the lane, capped at 10 a day');
+  assert.match(t[0].why, /3 buyers waiting.*Seller Pack 1 ₹1,299/, 'why-line names the waiting buyers and the offer');
+  console.log('planTasks: package_pitch fixture passed ✓');
+}

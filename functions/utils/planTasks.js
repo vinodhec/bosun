@@ -54,6 +54,7 @@ export const CATEGORY_ORDER = [
   'buyer_followup',
   'buyer_qualify',
   'listing_completion',
+  'package_pitch',
   'untouched_lead',
   'rnr_retry',
   'freshness_check',
@@ -67,7 +68,14 @@ const BUYER_TYPES = new Set(['buyer_followup', 'buyer_qualify']);
  * them through the work-state's `categoryCaps` (its `app_settings/daily_tasks`, platform #1442); a
  * lane not named here and not in the snapshot is uncapped (only the call quota applies).
  */
-export const CATEGORY_CAPS = { listing_completion: 10 };
+export const CATEGORY_CAPS = { listing_completion: 10, package_pitch: 10 };
+
+// Package pitch (2026-10-03, platform PR #1494): a FREE seller with buyers waiting locked on their
+// listing — call, explain the plan, send a payment link. Ranks under listing_completion (intent first)
+// and above cold first calls. Only admins whose work-state row says `canPitchPackages` (platform
+// permission `package_sales.pitch`, off for everyone by default) may take one. `leadId` is the seller's
+// uid; the platform settles the card itself (plan bought / link sent).
+const PACKAGE_TYPES = new Set(['package_pitch']);
 
 export function categoryCapsFor(workState) {
   const caps = { ...CATEGORY_CAPS };
@@ -151,6 +159,11 @@ const WHY = {
   freshness_check: () => 'Published listing past its freshness window — confirm still available',
   // The platform names the step they stopped at (`stepLabel`, e.g. "Step 2 · Required Details") and
   // how many required fields are still empty — no clock here, so no "2 hr ago".
+  package_pitch: (c) => {
+    const n = Number(c.lockedCount) || 0;
+    const offer = c.planName ? ` — offer ${c.planName}${c.priceLabel ? ` ${c.priceLabel}` : ''}` : '';
+    return `${n} buyer${n === 1 ? '' : 's'} waiting, number locked on Free${offer}`;
+  },
   listing_completion: (c) => {
     const left = Number(c.fieldsLeft) || 0;
     const where = c.stepLabel ? `Stopped at ${c.stepLabel}` : 'Started listing, did not finish';
@@ -222,6 +235,7 @@ function eligible(admin, task, { ignoreQuota = false, caps = {} } = {}) {
   if (cap !== undefined && (admin.perType[task.type] || 0) >= cap) return false;
   if (!ignoreQuota && admin.quota <= admin.units) return false;
   if (BUYER_TYPES.has(task.type) && !admin.canAccessBuyerLeads) return false;
+  if (PACKAGE_TYPES.has(task.type) && admin.canPitchPackages !== true) return false;
   // Skills/responsibilities: null = full-skill admin; an array must cover the task's skill.
   const skill = TASK_SKILL[task.type];
   if (skill && Array.isArray(admin.skills) && !admin.skills.includes(skill)) return false;
