@@ -863,6 +863,22 @@ export const LEAD_BRIEF_PRICE_PAISE = 45;  // 3× cost
 export const ASSISTANT_MESSAGE_COST_PAISE = 20;   // measured avg Gemini Flash cost per reply (GST-incl., 24-entry history)
 export const ASSISTANT_MESSAGE_PRICE_PAISE = 50;  // ₹0.50 per delivered assistant reply (2.5× cost; was ₹1.00 at launch)
 export const ASSISTANT_OUTCOME_PRICE_PAISE = 500; // ₹5 per NEW capture (enquiry / requirement / listing draft)
+/**
+ * ── Staff coach (staff_assessment / staff_chat) — the customer's ADMIN training page ─────────────
+ * The platform hosts the training content itself (static, free to read). Bosun is used for the two
+ * parts that need judgement, each metered per use (handlers/staffCoach.js):
+ *   - staff_assessment: grading the written "what would you say" answers of one assessment attempt
+ *     against the module's model answers — ONE unit per attempt (idempotency = the attempt id).
+ *   - staff_chat: "Ask MaadiVeedu Admin" — a staff member asks about plans, scripts and tasks; the
+ *     reply is grounded in the training text the platform sends. ONE unit per CONVERSATION (the first
+ *     delivered reply settles it; later replies in it are free, capped per conversation per day).
+ * Cost: one Gemini Flash call per grade (~₹0.3) / per reply (~₹0.2). Priced by the operator
+ * (2026-10-03): ₹10 per assessment attempt, ₹5 per chat conversation. Per-org override via
+ * `pricing.staff_assessment` / `pricing.staff_chat` (priceForService).
+ */
+export const STAFF_ASSESSMENT_PRICE_PAISE = 1000; // ₹10 per graded assessment attempt
+export const STAFF_CHAT_PRICE_PAISE = 500; // ₹5 per staff chat conversation
+export const STAFF_CHAT_MAX_REPLIES = 20; // replies per conversation per day
 
 /**
  * ── Listing reels (reel_photo / reel_animated) — made from inside the website assistant ──────────

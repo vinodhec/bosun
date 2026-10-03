@@ -30,6 +30,8 @@ import {
   DEFECT_SLA_REPORT_PRICE_PAISE,
   ASSISTANT_MESSAGE_PRICE_PAISE,
   ASSISTANT_OUTCOME_PRICE_PAISE,
+  STAFF_ASSESSMENT_PRICE_PAISE,
+  STAFF_CHAT_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
   REEL_PHOTO_PRICE_PAISE,
   REEL_ANIMATED_PRICE_PAISE,
@@ -116,6 +118,19 @@ export const SERVICE_DEFS = {
     accrualField: 'assistantOutcomeAccrualPaise',
     kind: 'assistant_outcome',
     label: 'Website assistant — enquiry / requirement / listing captured',
+  },
+  // Settled in-process by staffCoach (shared/billing.js, "Staff coach").
+  staff_assessment: {
+    pricePaise: STAFF_ASSESSMENT_PRICE_PAISE,
+    accrualField: 'staffAssessmentAccrualPaise',
+    kind: 'staff_assessment',
+    label: 'Staff training — assessment graded',
+  },
+  staff_chat: {
+    pricePaise: STAFF_CHAT_PRICE_PAISE,
+    accrualField: 'staffChatAccrualPaise',
+    kind: 'staff_chat',
+    label: 'Ask MaadiVeedu Admin — staff chat conversation',
   },
   // ── Defect tracking ───────────────────────────────────────────────────────────────────────────
   // `defect_triage` is settled in-process by defectIntake, and ONLY when the dedupe gate passes — a

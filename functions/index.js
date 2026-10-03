@@ -118,6 +118,7 @@ export { usageMeter } from './handlers/usageMeter.js';
 // `assistant_message` (₹1.20, shared/billing.js) per delivered reply — tool hops are free, a
 // degraded reply is free. Actions: message | tool_results | history.
 export { assistantChat } from './handlers/assistantChat.js';
+export { staffCoach } from './handlers/staffCoach.js';
 
 // HTTP (customer→Bosun, same HMAC) + Firestore worker: listing REELS made from inside the website
 // assistant (`make_reel`). `reelJobs` takes the listing and answers with a job id; `processReelJob`
