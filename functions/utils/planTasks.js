@@ -41,6 +41,11 @@
 // Buyer bank (2026-09-14): `buyer_qualify` (the cleanup call for a buyer grandfathered into the bank)
 // ranks under live buyer follow-ups — the backlog must never displace today's demand.
 //
+// Finish listing (2026-10-03, platform #1442): `listing_completion` calls a seller who abandoned the
+// list-a-property wizard (2h–7d ago) and offers to post it for them on consent. It ranks under the
+// buyer lanes (buyer demand stays #1) and above the cold seller lanes — this seller has already
+// shown intent. Capped per admin per day (CATEGORY_CAPS) so it never crowds the plan.
+//
 // Only these lanes are planned: a snapshot key not listed here is ignored, not an error. That is how
 // the retired seller "any buyers for this?" lane (removed 2026-09-24, platform #1082)
 // stays out of plans even when an older platform deploy still sends its candidates.
@@ -48,6 +53,7 @@ export const CATEGORY_ORDER = [
   'callback_due',
   'buyer_followup',
   'buyer_qualify',
+  'listing_completion',
   'untouched_lead',
   'rnr_retry',
   'freshness_check',
@@ -55,6 +61,22 @@ export const CATEGORY_ORDER = [
 
 // Task types worked on a buyer card — only admins with the buyer-leads grant may take them.
 const BUYER_TYPES = new Set(['buyer_followup', 'buyer_qualify']);
+
+/**
+ * Per-admin, per-day card caps for lanes that must stay a side dish. The platform can override any of
+ * them through the work-state's `categoryCaps` (its `app_settings/daily_tasks`, platform #1442); a
+ * lane not named here and not in the snapshot is uncapped (only the call quota applies).
+ */
+export const CATEGORY_CAPS = { listing_completion: 10 };
+
+export function categoryCapsFor(workState) {
+  const caps = { ...CATEGORY_CAPS };
+  for (const [k, v] of Object.entries(workState?.categoryCaps || {})) {
+    const n = Math.floor(Number(v));
+    if (Number.isFinite(n) && n >= 0) caps[k] = n;
+  }
+  return caps;
+}
 
 // Why-lines are composed here (not by Gemini) so every card's justification is deterministic and
 // grounded — the briefing may summarise, but per-task copy never hallucinates. A candidate with
@@ -127,6 +149,16 @@ const WHY = {
       ? `In the buyer bank — no answer ×${c.attempts}, try again to confirm or remove`
       : 'In the buyer bank from past demand — confirm still looking, or remove',
   freshness_check: () => 'Published listing past its freshness window — confirm still available',
+  // The platform names the step they stopped at (`stepLabel`, e.g. "Step 2 · Required Details") and
+  // how many required fields are still empty — no clock here, so no "2 hr ago".
+  listing_completion: (c) => {
+    const left = Number(c.fieldsLeft) || 0;
+    const where = c.stepLabel ? `Stopped at ${c.stepLabel}` : 'Started listing, did not finish';
+    return withDemand(
+      c,
+      `${where}${left ? ` · ${left} field${left > 1 ? 's' : ''} left` : ''} — offer to finish it on the call`,
+    );
+  },
 };
 
 /** FNV-1a over a string — the deterministic per-day rotation seed (no Math.random in a planner). */
@@ -148,6 +180,7 @@ export const TASK_SKILL = {
   buyer_followup: 'buyer_followup',
   buyer_qualify: 'buyer_followup',
   freshness_check: 'freshness_check',
+  listing_completion: 'consent_calls',
 };
 
 // The quota IS the operator's plan size — nothing else. `capacity` is the platform's number,
@@ -181,8 +214,12 @@ const MAX_CARDS_PER_PLAN = 400;
  * card costs no extra call, so the quota (a call budget) must not push the seller's third listing
  * onto a second admin — the whole point of grouping. Scope and skill still apply.
  */
-function eligible(admin, task, { ignoreQuota = false } = {}) {
+function eligible(admin, task, { ignoreQuota = false, caps = {} } = {}) {
   if (admin.assigned.length >= MAX_CARDS_PER_PLAN) return false;
+  // A capped lane's cap holds even for a same-person card: it is a card budget for the lane, not a
+  // call budget, and a group sibling over the cap simply goes to someone else or stays unassigned.
+  const cap = caps[task.type];
+  if (cap !== undefined && (admin.perType[task.type] || 0) >= cap) return false;
   if (!ignoreQuota && admin.quota <= admin.units) return false;
   if (BUYER_TYPES.has(task.type) && !admin.canAccessBuyerLeads) return false;
   // Skills/responsibilities: null = full-skill admin; an array must cover the task's skill.
@@ -207,10 +244,12 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       // what the quota and the load-balancing fill-ratio are measured against.
       units: 0,
       groups: new Set(),
+      perType: {},
     }))
     .sort((a, b) => a.uid.localeCompare(b.uid)); // fixed roster order → reproducible cursor math
 
   const stats = { unassigned: {}, perAdmin: {} };
+  const caps = categoryCapsFor(workState);
   const n = roster.length;
   // groupKey → the admin who owns that person TODAY. Filled the first time any of their tasks is
   // allocated and consulted for every later one, across categories: a seller with a due callback, an
@@ -218,6 +257,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
   const groupOwner = new Map();
   const place = (admin, task) => {
     admin.assigned.push(task);
+    admin.perType[task.type] = (admin.perType[task.type] || 0) + 1;
     if (task.groupKey) {
       if (!admin.groups.has(task.groupKey)) {
         admin.groups.add(task.groupKey);
@@ -258,7 +298,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       // re-creates it in the one place both admins are told to work from.
       if (task.groupKey && groupOwner.has(task.groupKey)) {
         const holder = roster.find((a) => a.uid === groupOwner.get(task.groupKey));
-        if (holder && eligible(holder, task, { ignoreQuota: true })) {
+        if (holder && eligible(holder, task, { ignoreQuota: true, caps })) {
           place(holder, task);
           continue;
         }
@@ -271,7 +311,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       // wins, and the platform's ingest reassigns the lead to whoever it lands on below.
       const ownerUid = category === 'freshness_check' ? c.convertedBy : c.assignedTo;
       const owner = ownerUid ? roster.find((a) => a.uid === ownerUid) : null;
-      if (owner && eligible(owner, task)) {
+      if (owner && eligible(owner, task, { caps })) {
         place(owner, task);
         continue;
       }
@@ -281,7 +321,7 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
       let pickKey = null;
       for (let i = 0; i < n; i++) {
         const a = roster[i];
-        if (!eligible(a, task)) continue;
+        if (!eligible(a, task, { caps })) continue;
         const key = [a.units / a.quota, (i - cursor + n) % n, a.uid];
         if (
           !pick ||
