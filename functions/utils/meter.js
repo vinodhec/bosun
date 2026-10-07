@@ -32,6 +32,7 @@ import {
   ASSISTANT_OUTCOME_PRICE_PAISE,
   STAFF_ASSESSMENT_PRICE_PAISE,
   STAFF_CHAT_PRICE_PAISE,
+  STAFF_TRAINING_DAY_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
   REEL_PHOTO_PRICE_PAISE,
   REEL_ANIMATED_PRICE_PAISE,
@@ -131,6 +132,12 @@ export const SERVICE_DEFS = {
     accrualField: 'staffChatAccrualPaise',
     kind: 'staff_chat',
     label: 'Ask MaadiVeedu Admin — staff chat conversation',
+  },
+  staff_training_day: {
+    pricePaise: STAFF_TRAINING_DAY_PRICE_PAISE,
+    accrualField: 'staffTrainingDayAccrualPaise',
+    kind: 'staff_training_day',
+    label: 'Staff training day assigned (per person per day)',
   },
   // ── Defect tracking ───────────────────────────────────────────────────────────────────────────
   // `defect_triage` is settled in-process by defectIntake, and ONLY when the dedupe gate passes — a

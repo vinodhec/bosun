@@ -7,10 +7,14 @@
  *                  → { items:[{ id, score (0–10), feedback }], overall, charged }
  *   action:'chat'  { orgId, conversationId, knowledge, history:[{ role:'user'|'assistant', text }], message }
  *                  → { reply, charged }
+ *   action:'assign_day' { orgId, uid, name, dateKey (yyyymmdd IST), modules:[title] }
+ *                  → { charged, duplicate } — a superadmin assigned this person a training day; billed
+ *                    ₹300 on assignment, once per person per day (no model call).
  *
  * Auth: the org's sourcing secret (same HMAC as assistantChat). Billing (shared/billing.js "Staff
  * coach"): one `staff_assessment` per attempt id, one `staff_chat` per conversation id (the first
- * delivered reply; later replies in that conversation are free, capped STAFF_CHAT_MAX_REPLIES a day).
+ * delivered reply; later replies in that conversation are free, capped STAFF_CHAT_MAX_REPLIES a day),
+ * one `staff_training_day` per person per day (idempotency `${uid}:${dateKey}`).
  * A failed model call is never charged. Refuses work for an org whose billing is paused / negative.
  */
 import { onRequest } from 'firebase-functions/v2/https';
@@ -56,7 +60,7 @@ export const staffCoach = onRequest({ region: REGION, timeoutSeconds: 60, memory
     return;
   }
   const orgId = String(body.orgId || '');
-  const action = ['grade', 'chat'].includes(body.action) ? body.action : '';
+  const action = ['grade', 'chat', 'assign_day'].includes(body.action) ? body.action : '';
   if (!orgId || !action) {
     res.status(400).json({ error: 'orgId and action are required' });
     return;
@@ -84,6 +88,25 @@ export const staffCoach = onRequest({ region: REGION, timeoutSeconds: 60, memory
   }
 
   try {
+    if (action === 'assign_day') {
+      const uid = clip(body.uid, 128).replace(/[^A-Za-z0-9_-]/g, '');
+      const dateKey = /^\d{8}$/.test(String(body.dateKey || '')) ? String(body.dateKey) : '';
+      if (!uid || !dateKey) {
+        res.status(400).json({ error: 'uid and dateKey are required' });
+        return;
+      }
+      const modules = (Array.isArray(body.modules) ? body.modules : []).slice(0, 10).map((m) => clip(m, 80));
+      const name = clip(body.name, 60) || uid.slice(0, 8);
+      const settled = await settleMetered({
+        db, orgId, service: 'staff_training_day',
+        idempotencyKey: `${uid}:${dateKey}`,
+        description: `Staff training day — ${name}, ${dateKey.slice(6)}/${dateKey.slice(4, 6)}/${dateKey.slice(0, 4)}`,
+        extra: { uid, name, dateKey, modules },
+      });
+      res.json({ ok: true, charged: settled.charged, duplicate: settled.duplicate });
+      return;
+    }
+
     if (action === 'grade') {
       const attemptId = clip(body.attemptId, 80).replace(/[^A-Za-z0-9_:-]/g, '');
       const answers = (Array.isArray(body.answers) ? body.answers : []).slice(0, 6).map((a) => ({

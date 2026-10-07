@@ -879,6 +879,14 @@ export const ASSISTANT_OUTCOME_PRICE_PAISE = 500; // ₹5 per NEW capture (enqui
 export const STAFF_ASSESSMENT_PRICE_PAISE = 1000; // ₹10 per graded assessment attempt
 export const STAFF_CHAT_PRICE_PAISE = 500; // ₹5 per staff chat conversation
 export const STAFF_CHAT_MAX_REPLIES = 20; // replies per conversation per day
+/**
+ * staff_training_day (operator 2026-10-07): a superadmin assigns a person a TRAINING DAY on the
+ * platform's /admin/training page (which modules to study, test and ask about that day). Billed ₹300
+ * per person per day, ON ASSIGNMENT (whether or not they open it), idempotent on `${uid}:${dateKey}`
+ * so re-assigning the same person the same day never double-bills. It is ADDITIONAL: the ₹10 per
+ * graded attempt and ₹5 per chat conversation above still apply on a training day.
+ */
+export const STAFF_TRAINING_DAY_PRICE_PAISE = 30000; // ₹300 per person per training day
 
 /**
  * ── Listing reels (reel_photo / reel_animated) — made from inside the website assistant ──────────
