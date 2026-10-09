@@ -989,3 +989,15 @@ export function priceForService(org, service, fallbackPaise) {
  * DEFAULT. An org's `pricing.console_minute` overrides (priceForService). Operator-set 2026-09-04.
  */
 export const CONSOLE_MINUTE_PRICE_PAISE = 1300;  // ₹13 per session-minute (₹780/hour, operator-set 2026-09-04), flat; minimum one minute
+
+/**
+ * ── AI consent calls (voice_minute) ────────────────────────────────────────────────────────────
+ * Meera, the platform's AI caller, rings sourced owners for listing consent over Exotel with a
+ * Gemini Live session on the line. The cost is time — a telephony channel plus a live model per
+ * minute — so the unit is the started minute of a placed call, reported by the platform on the
+ * carrier's terminal status (one event per minute, idempotent `<callId>:m<k>`).
+ *   voice_minute — ₹30 per started minute (PLACEHOLDER until the operator sets it; covers
+ *                  ~₹1/min carrier + ~₹8–10/min model at the house 3× markup).
+ * DEFAULT. An org's `pricing.voice_minute` overrides (priceForService).
+ */
+export const VOICE_MINUTE_PRICE_PAISE = 3000;

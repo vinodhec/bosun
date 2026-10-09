@@ -34,6 +34,7 @@ import {
   STAFF_CHAT_PRICE_PAISE,
   STAFF_TRAINING_DAY_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
+  VOICE_MINUTE_PRICE_PAISE,
   REEL_PHOTO_PRICE_PAISE,
   REEL_ANIMATED_PRICE_PAISE,
   accrueComposeCharge,
@@ -191,6 +192,14 @@ export const SERVICE_DEFS = {
     accrualField: 'consoleMinuteAccrualPaise',
     kind: 'console_minute',
     label: 'Chat & code — session minute',
+  },
+  // AI consent calls (the platform's voice agent): one event per started minute of a placed call,
+  // reported by the platform on Exotel's terminal status. Idempotent per `<callId>:m<k>`.
+  voice_minute: {
+    pricePaise: VOICE_MINUTE_PRICE_PAISE,
+    accrualField: 'voiceMinuteAccrualPaise',
+    kind: 'voice_minute',
+    label: 'AI consent call — minute',
   },
 };
 
