@@ -149,6 +149,8 @@ export function invoiceSummary(inv) {
     totalInr: inv.payableInr ?? inv.totalInr,
     creditInr: inv.creditInr,
     status: inv.status || 'issued',
+    source: inv.source || 'manual',              // 'auto_topup' = issued by the auto top-up credit line
+    paymentStatus: inv.paymentStatus || 'paid',  // manual top-ups are credited after payment
   };
 }
 
