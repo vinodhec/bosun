@@ -87,12 +87,17 @@ const SCHEMA = {
     listingType: { type: 'string' },
     priceText: { type: 'string' },
     phone: { type: 'string' },
+    // Builder/promoter PROJECT signal (many units for sale: a plot layout, an apartment project, a
+    // villa community). Not in `required` — an older cached prompt that omits it degrades to false.
+    isProject: { type: 'boolean' },
+    projectName: { type: 'string' },
+    promoterName: { type: 'string' },
     reason: { type: 'string' },
   },
   required: ['isListing', 'side', 'localityMatches', 'confidence'],
   propertyOrdering: [
     'isListing', 'side', 'localityMatches', 'localityNamed', 'confidence', 'locality', 'bhk',
-    'propertyType', 'listingType', 'priceText', 'phone', 'reason',
+    'propertyType', 'listingType', 'priceText', 'phone', 'isProject', 'projectName', 'promoterName', 'reason',
   ],
 };
 
@@ -144,7 +149,13 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `FALSE when the title is cut off before any place name — e.g. it ends "near ..." — or when no ` +
     `locality appears anywhere in the text; a place name that is merely MISSING is not a mismatch), ` +
     `confidence 0-1. Extract locality, bhk, propertyType, listingType ` +
-    `(Sale/Rent/Lease — for a 'seeking' post, what the poster WANTS), priceText and phone when present.`;
+    `(Sale/Rent/Lease — for a 'seeking' post, what the poster WANTS), priceText and phone when present. ` +
+    `isProject: TRUE only when an 'offering' poster is a BUILDER or PROMOTER advertising a whole ` +
+    `PROJECT or LAYOUT with many units for sale — a DTCP/CMDA/RERA-approved plot layout, an apartment ` +
+    `or villa project, a gated community, "new launch", "booking open", "promoters", "sites available" ` +
+    `— NOT a single owner property, a resale flat, or a broker's one listing. When true, extract ` +
+    `projectName (the layout/project's name, e.g. "Sri Karpaga Vinayagar Nagar") and promoterName ` +
+    `(the builder/promoter company) if stated.`;
 
   // FLASH, not FLASH_LITE. This gate only ever sees the SERP title + ~145-char snippet (see the
   // caller in runSourcingJobs.js), which is truncated mid-sentence and strips the context that makes
@@ -181,6 +192,9 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
       listingType: String(j.listingType || ''),
       priceText: String(j.priceText || ''),
       phone: String(j.phone || ''),
+      isProject: j.isProject === true,
+      projectName: String(j.projectName || '').slice(0, 120),
+      promoterName: String(j.promoterName || '').slice(0, 120),
     },
     reason: String(j.reason || '').slice(0, 160),
   };

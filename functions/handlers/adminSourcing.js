@@ -206,8 +206,13 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
   // `offTargetLeads` are the by-product harvests inside a supply run.
   // `groupSupplyLeads` lets the twice-daily GROUP lane keep the owner posts it reads past (default
   // off: six metro feeds of supply by-catch with no pending-cap backpressure is a flood).
-  for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads', 'groupSupplyLeads']) {
+  // `projectLeads` relays a COPY of every builder/promoter project post to the platform's
+  // sourced-project ingest (field-visit lane) on top of the supply relay — see runSourcingJobs step 4.
+  for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads', 'groupSupplyLeads', 'projectLeads']) {
     if (request.data?.[k] != null) patch[`sourcing.${k}`] = request.data[k] === true;
+  }
+  if (typeof request.data?.projectWebhookUrl === 'string') {
+    patch['sourcing.projectWebhookUrl'] = request.data.projectWebhookUrl.trim() || FieldValue.delete();
   }
   // Numbers. 0 is MEANINGFUL for buyerMaxPerRun (uncapped) so it must survive the parse.
   const num = (v, min, max) => {

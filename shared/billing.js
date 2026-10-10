@@ -545,6 +545,13 @@ export function randomSourcedUnitPrice(rng = Math.random) {
 // this constant, and only this constant.
 export const SOURCED_BUYER_UNIT_INR = 12.4;
 
+// A PROJECT by-catch copy — an 'offering' post the classifier judged to be a builder/promoter
+// advertising a whole layout or project (classifyListing `isProject`) — is relayed a SECOND time to
+// the platform's `/api/ingest/sourced-project` for the builder-sourcing (field-visit) lane, on top of
+// the ordinary supply relay. The copy is billed at this flat unit; the supply relay keeps its band.
+// Owner-set placeholder (2026-10-10): equal to the buyer unit until the lane earns its own number.
+export const SOURCED_PROJECT_UNIT_INR = 12.4;
+
 /**
  * Charge (INR) for a batch of successfully-relayed listings: `buyerCount` of them at the flat
  * SOURCED_BUYER_UNIT_INR, the rest as independent random draws from the seller band; summed, then
@@ -553,12 +560,16 @@ export const SOURCED_BUYER_UNIT_INR = 12.4;
  * "variable cost" auditable, not just the total) — buyer units listed first, matching nothing but
  * the count (the ledger stores no per-lead identity at this level).
  */
-export function priceForSourcedBatch(uniqueCount, { rng = Math.random, buyerCount = 0 } = {}) {
+export function priceForSourcedBatch(uniqueCount, { rng = Math.random, buyerCount = 0, projectCount = 0 } = {}) {
   const n = Math.max(0, Math.floor(Number(uniqueCount) || 0));
   const b = Math.min(n, Math.max(0, Math.floor(Number(buyerCount) || 0)));
+  // Project copies are ADDITIONAL relays (the same post also went down the supply lane), so they are
+  // not taken out of `n` — they add their own flat units on top.
+  const pc = Math.max(0, Math.floor(Number(projectCount) || 0));
   const unitPrices = [
     ...Array.from({ length: b }, () => SOURCED_BUYER_UNIT_INR),
     ...Array.from({ length: n - b }, () => randomSourcedUnitPrice(rng)),
+    ...Array.from({ length: pc }, () => SOURCED_PROJECT_UNIT_INR),
   ];
   const amountInr = Math.ceil(unitPrices.reduce((a, p) => a + p, 0));
   return { amountInr, unitPrices };

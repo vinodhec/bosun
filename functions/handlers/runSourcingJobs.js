@@ -508,6 +508,13 @@ export async function runForOrg(
   // the cron honours `sourcing.groupSupplyLeads` (adminSetSourcingLanes).
   const keepSupplyByCatch = classifying && buyerMode && harvestSupply === true;
   const salvageOffTarget = classifying && !buyerMode && !!cfg.offTargetLeads;
+  // Builder/promoter PROJECT by-catch (opt-in `sourcing.projectLeads`): an on-target 'offering' post
+  // the classifier flags `isProject` is relayed as usual AND a copy goes to the platform's
+  // sourced-project ingest (the field-visit lane). Additive — the supply queue loses nothing.
+  const harvestProjects = classifying && !!cfg.projectLeads;
+  const projectWebhookUrl = harvestProjects
+    ? String(cfg.projectWebhookUrl || String(cfg.webhookUrl || '').replace(/\/sourced-listing\b/, '/sourced-project'))
+    : '';
   // Only a CONFIDENT off-target reject is dead — never enrich it again. Four rejects are deliberately
   // NOT recorded so they retry: the transient 'degraded-no-india-signal' fail-open (classifier down),
   // 'no-signal' — because that deterministic pre-filter now sees only the short SERP snippet, so
@@ -620,6 +627,9 @@ export async function runForOrg(
           c.dropReason = 'supply-post';
           return;
         }
+      }
+      if (!c.drop && !verdict.degraded && side === 'offering' && harvestProjects && verdict.extracted?.isProject) {
+        c.listing.projectLead = true;
       }
       // Degraded fail-open is SIGNAL-GATED: when the classifier is down we still relay plausible
       // Indian listings (Indian mobile / ₹-lakh-crore price / the target locality named in the text)
@@ -805,6 +815,7 @@ export async function runForOrg(
         c.listing.classifyStatus = 'verified';
         if (verdict.extracted?.phone && !c.listing.phone) c.listing.phone = verdict.extracted.phone;
         if (verdict.extracted) c.listing.extracted = verdict.extracted;
+        if (side === 'offering' && harvestProjects && verdict.extracted?.isProject) c.listing.projectLead = true;
       });
       for (const c of pending) {
         if (!c.drop) {
@@ -1001,6 +1012,7 @@ export async function runForOrg(
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
   let relayed = 0;
   let buyerRelayed = 0;
+  let projectRelayed = 0;
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
@@ -1031,6 +1043,19 @@ export async function runForOrg(
         leg.bump('buyerRelayed');
       }
       else if (listing.leadType === 'off-target') leg.bump('offTargetRelayed');
+      // Project by-catch copy → the builder-sourcing lane. Billed at the flat project unit (step 5)
+      // only on its own 2xx; a failed copy costs nothing and is retried by the platform's own RERA
+      // import if the project is registered there (dedupe by RERA no / url on the receiver).
+      if (listing.projectLead && projectWebhookUrl && listing.leadType !== 'off-target') {
+        const pok = await relayProject({ projectWebhookUrl, secret, orgId, listing, target });
+        if (pok) {
+          projectRelayed += 1;
+          leg.bump('projectRelayed');
+          await seenCol.doc(key).set({ projectRelayedAt: FieldValue.serverTimestamp() }, { merge: true });
+        } else {
+          leg.bump('projectRelayFailed');
+        }
+      }
       leg.lead({ key, listing, stage: 'relayed' });
     } else {
       // A webhook reject is the one drop that costs us everything (SERP + classify + the paid FB
@@ -1059,7 +1084,7 @@ export async function runForOrg(
   }
 
   // 5) One transactional debit for the whole batch (org may go negative — operator reconciles).
-  const { amountInr, unitPrices } = priceForSourcedBatch(relayed, { ...(rng ? { rng } : {}), buyerCount: buyerRelayed });
+  const { amountInr, unitPrices } = priceForSourcedBatch(relayed, { ...(rng ? { rng } : {}), buyerCount: buyerRelayed, projectCount: projectRelayed });
   if (amountInr > 0) {
     await db.runTransaction(async (tx) => {
       const orgRef = db.collection('organisations').doc(orgId);
@@ -1074,12 +1099,13 @@ export async function runForOrg(
         amount: amountInr,
         count: relayed,
         buyerCount: buyerRelayed, // of `count`, how many billed at the flat buyer unit price
+        projectCount: projectRelayed, // ADDITIONAL project-lane copies billed at the flat project unit
         unitPrices,
         createdAt: FieldValue.serverTimestamp(),
       });
     });
   }
-  console.log('runSourcingJobs:done', orgId, JSON.stringify({ relayed, amountInr }));
+  console.log('runSourcingJobs:done', orgId, JSON.stringify({ relayed, projectRelayed, amountInr }));
   leg.done({ relayed, amountInr });
   // `buyerRelayed` of `relayed` were seeking posts; the rest are owner listings (supply by-catch in a buyer run).
   return { relayed, amountInr, buyerRelayed };
@@ -1254,6 +1280,49 @@ export async function relayOne({ webhookUrl, secret, orgId, listing }) {
     return resp.ok;
   } catch (e) {
     console.error('relayOne:err', orgId, e?.message || e);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// HMAC-sign and POST the PROJECT copy of a builder/promoter post to the org's sourced-project
+// ingest. Same scheme as relayOne; the body is the receiver's `project` contract (lib/sourcedProjects
+// on the platform): url, title, kind, projectName, promoterName, description, locality, city, phone.
+export async function relayProject({ projectWebhookUrl, secret, orgId, listing, target }) {
+  const ex = listing.extracted || {};
+  const text = [listing.title, listing.snippet, listing.text].filter(Boolean).join('\n').slice(0, 4000);
+  const kind = /layout|plot|site|nagar|avenue|garden/i.test(`${ex.projectName || ''} ${ex.propertyType || ''} ${text}`) ? 'layout' : 'building';
+  const body = JSON.stringify({
+    orgId,
+    project: {
+      url: listing.url,
+      title: listing.title || '',
+      kind,
+      projectName: ex.projectName || '',
+      promoterName: ex.promoterName || '',
+      description: text,
+      locality: ex.locality || target?.locality || '',
+      city: target?.city || '',
+      phone: listing.phone || ex.phone || '',
+      priceText: ex.priceText || '',
+      postedAt: listing.postedAt || null,
+    },
+    source: { via: 'bosun', url: listing.url },
+  });
+  const { signature, timestamp } = signPayload(secret, body);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), RELAY_TIMEOUT_MS);
+  try {
+    const resp = await fetch(projectWebhookUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-bosun-signature': signature, 'x-bosun-timestamp': timestamp },
+      body,
+      signal: ctrl.signal,
+    });
+    return resp.ok;
+  } catch (e) {
+    console.error('relayProject:err', orgId, e?.message || e);
     return false;
   } finally {
     clearTimeout(timer);
