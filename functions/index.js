@@ -29,6 +29,8 @@ export {
   adminRemoveUserOrg,
   adminSetOrgApproval,
   adminSetOrgBilling,
+  adminSetAutoTopUp,
+  adminSetInvoicePaid,
   adminListUsers,
   adminSetUserDeploy,
   adminQuoteTask,
@@ -42,6 +44,10 @@ export {
   adminListPurchases,
   adminDeletePurchase,
 } from './handlers/admin.js';
+
+// Auto top-up (credit line): an org's balance falling below its threshold credits the configured
+// amount and issues an UNPAID invoice. Config via adminSetAutoTopUp; settle via adminSetInvoicePaid.
+export { autoTopUpOnBalance } from './handlers/autoTopUp.js';
 
 // Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML.
 export { listMyInvoices, getMyInvoiceHtml } from './handlers/invoices.js';

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth.js';
 import { useBalance } from '../hooks/useBalance.js';
+import { useOrg } from '../hooks/useOrg.js';
 import { createRazorpayOrder } from '../firebase/functions.js';
 import Navbar from '../components/Navbar.jsx';
 import { formatINR } from '@shared/currency.js';
@@ -16,6 +17,8 @@ export default function TopUp() {
   const { state } = useLocation();
   const { user } = useAuth();
   const balance = useBalance(user?.uid);
+  const org = useOrg(user);
+  const auto = org?.autoTopUp?.enabled ? org.autoTopUp : null;
   const [busy, setBusy] = useState(0);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -56,6 +59,12 @@ export default function TopUp() {
         {state?.message && (
           <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
             {state.message}
+          </p>
+        )}
+        {auto && (
+          <p className="mt-3 rounded-xl bg-brand-50 px-4 py-3 text-sm text-ink">
+            Automatic top-up is on: when your credits drop below {formatINR(auto.thresholdInr)}, we add{' '}
+            {formatINR(auto.amountInr)} and send you the bill.
           </p>
         )}
         {msg && (

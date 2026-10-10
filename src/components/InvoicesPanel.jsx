@@ -64,7 +64,10 @@ export default function InvoicesPanel({ orgId }) {
                 <li key={r.id} className="flex items-center justify-between gap-3 py-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-ink">{r.number}</p>
-                    <p className="text-xs text-ink-soft">{date(r.issuedAtMs)} · {fmt(r.totalInr)}</p>
+                    <p className="text-xs text-ink-soft">
+                      {date(r.issuedAtMs)} · {fmt(r.totalInr)}
+                      {r.paymentStatus === 'unpaid' && <span className="ml-1.5 font-semibold text-amber-700">· Payment due</span>}
+                    </p>
                   </div>
                   <button type="button" onClick={() => download(r.id)} className="btn btn-outline btn-sm shrink-0">
                     Download

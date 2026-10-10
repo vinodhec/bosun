@@ -9,6 +9,8 @@ import {
   adminRemoveUserOrg,
   adminSetOrgApproval,
   adminSetOrgBilling,
+  adminSetAutoTopUp,
+  adminSetInvoicePaid,
   adminListUsers,
   adminSetUserDeploy,
   adminSetUserInvoices,
@@ -149,7 +151,8 @@ function Overview({ data, busy, onRefresh }) {
             <MetricCard label="Revenue" value={formatINR(t.revenueInr)} sub="earned on fixes" tone="good" />
             <MetricCard label="Paid to Anthropic" value={fmtUSD(t.anthropicUsd)} sub={`${inrPrecise(t.costInr)} cost`} />
             <MetricCard label="Profit" value={formatINR(t.profitInr)} sub={`${t.marginPct}% margin`} tone={t.profitInr >= 0 ? 'good' : 'bad'} />
-            <MetricCard label="Cash collected" value={formatINR(t.creditsAddedInr)} sub={`${formatINR(t.balanceInr)} unspent`} />
+            <MetricCard label="Cash collected" value={formatINR(t.creditsAddedInr - (t.autoTopUpDueInr || 0))}
+              sub={`${formatINR(t.balanceInr)} unspent${t.autoTopUpDueInr ? ` · ${formatINR(t.autoTopUpDueInr)} auto top-up due` : ''}`} />
             <MetricCard label="Organisations" value={t.orgs} sub={`${t.tasksTotal} jobs total`} />
             <MetricCard label="Fixes delivered" value={t.fixesDone}
               sub={`${t.failedRuns} failed${t.inProgress ? ` · ${t.inProgress} running` : ''}`} />
@@ -749,6 +752,18 @@ function DeployAccess({ orgs }) {
     } catch { setErr('Could not open that invoice.'); }
   };
 
+  // Auto top-up invoices are issued UNPAID; marking one paid frees the org's next auto top-up.
+  const togglePaid = async (iv) => {
+    const paid = iv.paymentStatus !== 'paid';
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminSetInvoicePaid({ invoiceId: iv.id, paid });
+      setInvoices((list) => list.map((x) => (x.id === iv.id ? { ...x, paymentStatus: paid ? 'paid' : 'unpaid' } : x)));
+      setMsg(`${iv.number} marked ${paid ? 'paid' : 'unpaid'}.`);
+    } catch { setErr('Could not update that invoice.'); }
+    finally { setBusy(false); }
+  };
+
   // Org-name lookup for the membership chips.
   const orgName = (id) => orgs.find((o) => o.id === id)?.name || id;
 
@@ -858,12 +873,24 @@ function DeployAccess({ orgs }) {
                       {iv.issuedAtMs ? new Date(iv.issuedAtMs).toLocaleDateString('en-IN') : ''} · {formatINR(iv.totalInr)} · {iv.buyerName || '—'}
                     </p>
                   </div>
-                  <button
-                    className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50"
-                    onClick={() => openInvoice(iv.id)}
-                  >
-                    Download
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {iv.source === 'auto_topup' && (
+                      <button
+                        className={`rounded-lg px-2.5 py-1 text-xs font-semibold ring-1 transition disabled:opacity-60 ${iv.paymentStatus === 'paid' ? 'text-green-700 ring-green-200 hover:bg-green-50' : 'text-amber-700 ring-amber-200 hover:bg-amber-50'}`}
+                        disabled={busy}
+                        title="Auto top-up invoice — click to toggle paid / unpaid"
+                        onClick={() => togglePaid(iv)}
+                      >
+                        {iv.paymentStatus === 'paid' ? 'Auto · paid ✓' : 'Auto · mark paid'}
+                      </button>
+                    )}
+                    <button
+                      className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50"
+                      onClick={() => openInvoice(iv.id)}
+                    >
+                      Download
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -1190,6 +1217,106 @@ function OrgBilling({ orgs }) {
           <input className={field} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Address / city — e.g. Chennai - 600044, Tamil Nadu" />
           <button className={btn} disabled={busy || !orgId} onClick={save}>{busy ? 'Saving…' : 'Save billing profile'}</button>
           <p className="text-xs text-ink-soft">Leave the state code blank to auto-fill from the GSTIN's first two digits.</p>
+        </>
+      )}
+
+      {msg && <p className="rounded-lg bg-green-50 px-3 py-2 text-xs text-green-700">{msg}</p>}
+      {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-bad">{err}</p>}
+    </section>
+  );
+}
+
+// Auto top-up (a credit line): when the org's balance falls below the threshold, the amount is
+// credited at once and the invoice is issued UNPAID — mark it paid under "People & workspaces".
+function AutoTopUp({ orgs, onSaved }) {
+  const [orgId, setOrgId] = useState('');
+  const [form, setForm] = useState({ enabled: false, thresholdInr: '', amountInr: '', maxPerMonth: '4', maxUnpaid: '1' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const org = orgs.find((x) => x.id === orgId);
+  const st = org?.autoTopUpState;
+
+  const pick = (id) => {
+    setOrgId(id); setMsg(''); setErr('');
+    const a = orgs.find((x) => x.id === id)?.autoTopUp || {};
+    setForm({
+      enabled: a.enabled === true,
+      thresholdInr: a.thresholdInr != null ? String(a.thresholdInr) : '',
+      amountInr: a.amountInr != null ? String(a.amountInr) : '',
+      maxPerMonth: String(a.maxPerMonth ?? 4),
+      maxUnpaid: String(a.maxUnpaid ?? 1),
+    });
+  };
+
+  const save = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminSetAutoTopUp({
+        orgId,
+        enabled: form.enabled,
+        thresholdInr: Number(form.thresholdInr),
+        amountInr: Number(form.amountInr),
+        maxPerMonth: Number(form.maxPerMonth),
+        maxUnpaid: Number(form.maxUnpaid),
+      });
+      setMsg(form.enabled
+        ? `On — below ${formatINR(Number(form.thresholdInr))}, add ${formatINR(Number(form.amountInr))}.`
+        : 'Auto top-up switched off.');
+      onSaved?.();
+    } catch (e) { setErr(e?.message || 'Could not save.'); }
+    finally { setBusy(false); }
+  };
+
+  const num = 'w-full rounded-lg border border-line px-3 py-2 outline-none focus:border-brand-500';
+  return (
+    <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+      <h2 className="font-semibold text-ink">Auto top-up (credit line)</h2>
+      <p className="text-xs text-ink-soft">
+        When the balance falls below the threshold, the amount is credited immediately and a tax
+        invoice is issued as <b>unpaid</b>. No further auto top-up happens while the org has
+        “max unpaid” auto invoices outstanding, or after “max per month” top-ups this month.
+        If the org is already below the threshold, saving switches it on and tops up straight away.
+      </p>
+      <select className={field} value={orgId} onChange={(e) => pick(e.target.value)}>
+        <option value="">Select organisation…</option>
+        {orgs.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name} — {formatINR(o.balance)}{o.autoTopUp?.enabled ? ` · auto <${formatINR(o.autoTopUp.thresholdInr)} → +${formatINR(o.autoTopUp.amountInr)}` : ''}
+          </option>
+        ))}
+      </select>
+
+      {orgId && (
+        <>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+            Enabled
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs text-ink-soft">When balance below (₹)
+              <input className={num} type="number" min="0" value={form.thresholdInr} onChange={(e) => setForm({ ...form, thresholdInr: e.target.value })} placeholder="e.g. 200" />
+            </label>
+            <label className="text-xs text-ink-soft">Add credits of (₹)
+              <input className={num} type="number" min="100" value={form.amountInr} onChange={(e) => setForm({ ...form, amountInr: e.target.value })} placeholder="e.g. 1000" />
+            </label>
+            <label className="text-xs text-ink-soft">Max top-ups per month
+              <input className={num} type="number" min="1" value={form.maxPerMonth} onChange={(e) => setForm({ ...form, maxPerMonth: e.target.value })} />
+            </label>
+            <label className="text-xs text-ink-soft">Max unpaid auto invoices
+              <input className={num} type="number" min="1" value={form.maxUnpaid} onChange={(e) => setForm({ ...form, maxUnpaid: e.target.value })} />
+            </label>
+          </div>
+          {st && (
+            <p className="text-xs text-ink-soft">
+              Outstanding: {st.unpaid || 0} unpaid ({formatINR(st.unpaidCreditInr || 0)} credit)
+              {st.month ? ` · ${st.monthCount || 0} this month (${st.month})` : ''}
+              {st.lastInvoiceNumber ? ` · last ${st.lastInvoiceNumber}` : ''}
+            </p>
+          )}
+          <button className={btn} disabled={busy || form.thresholdInr === '' || !form.amountInr} onClick={save}>
+            {busy ? 'Saving…' : 'Save auto top-up'}
+          </button>
         </>
       )}
 
@@ -1817,6 +1944,8 @@ export default function Admin() {
             Deduct credits
           </button>
         </section>
+
+        <AutoTopUp orgs={orgs} onSaved={refresh} />
 
         <Ledger orgs={orgs} />
 

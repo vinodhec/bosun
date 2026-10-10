@@ -54,8 +54,8 @@ custom claim set by the operator; that claim gates org + transaction reads in th
 shared/         Canonical billing + currency. The only place pricing/markup/floors live.
 src/            Vite SPA — pages/, components/, hooks/, firebase/ (clients), utils/
 functions/      Cloud Functions (gen2, nodejs22, region asia-south1)
-  handlers/     One file per callable group (createTask, classifyTask, customerTasks, featureTasks, admin, adminGithub, adminFigma, pollSessions, ensureUser)
-  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize, classify, agentResult, featurePlan, featureRun, sessionView, figma)
+  handlers/     One file per callable group (createTask, classifyTask, customerTasks, featureTasks, admin, adminGithub, adminFigma, pollSessions, ensureUser, autoTopUp)
+  utils/        Server-side helpers (billing, claudeAgent, vault, github, secrets, routeModel, finalize, classify, agentResult, featurePlan, featureRun, sessionView, figma, walletCredit, autoTopUp)
   scripts/      Standalone Managed-Agents E2E scripts (no Firebase) — see scripts/README.md
   shared/       GENERATED at predeploy from /shared (gitignored)
 scripts/sync-shared.sh   Copies /shared → /functions/shared. Runs before deploy AND emulate.
@@ -103,6 +103,27 @@ All charge math goes through `shared/billing.js`. Key invariants:
 - The `MARKUP_MULTIPLIER` / `computeCharge` (×2.5, ₹75 floor) path is legacy — it still backs the
   `actualCostInr` analytics field and a couple of scripts, but the customer charge is
   `priceFromCostUsd`, never `computeCharge` and never `priceForComplexity`.
+
+## Auto top-up (a per-org credit line)
+
+`org.autoTopUp = { enabled, thresholdInr, amountInr, maxPerMonth, maxUnpaid }` — operator-set via
+`adminSetAutoTopUp` (Admin → "Auto top-up"), never client-written. When the balance is below
+`thresholdInr`, `autoTopUpOnBalance` (an `onDocumentUpdated` trigger on `organisations/{id}`,
+`handlers/autoTopUp.js`) credits `amountInr` IMMEDIATELY and issues the normal SW/ invoice with
+`source:'auto_topup'`, `paymentStatus:'unpaid'` — we extend credit, the owner pays the bill later.
+Because it watches the org doc, NO debit path needs to know about it.
+
+- **One credit writer.** `utils/walletCredit.js#writeWalletCredit` (balance + `credit` txn + gapless
+  invoice) backs both `adminAddCredits` and the trigger — never fork it.
+- **Level-triggered, guard-bounded.** It fires whenever `balance < thresholdInr` (so a missed or
+  redelivered event self-heals); what stops repeats is `utils/autoTopUp.js#autoTopUpDecision`,
+  re-evaluated INSIDE the transaction: at most `maxUnpaid` (default 1) unpaid auto invoices
+  (`org.autoTopUpState.unpaid`) and `maxPerMonth` (default 4, IST month) top-ups.
+- **Settling.** `adminSetInvoicePaid` flips an invoice's `paymentStatus` and, for auto invoices,
+  decrements `autoTopUpState.unpaid` / `unpaidCreditInr` — which (if still below the line) lets the
+  next top-up fire. Legacy/manual invoices read as `paid` (credited after payment).
+- `adminMetrics` "Cash collected" subtracts `autoTopUpDueInr` (Σ `unpaidCreditInr`).
+- Validate with `cd functions && node scripts/validate-auto-topup.mjs` (pure, in-memory).
 
 ## GST reports (the software line's slice of a shared GSTIN)
 
