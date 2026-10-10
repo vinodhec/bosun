@@ -26,6 +26,7 @@
  * maxTasksPerAdmin?, capPerCategory?, restDays? }. Secret: orgSecrets/{orgId}.sourcing.secret (same
  * vault as the relay). Audit: plannerRuns/{orgId}/runs/{planRunId}.
  */
+import { settleMetered } from '../utils/meter.js';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
@@ -393,6 +394,28 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
       return debitInr;
     });
 
+    // 5b) Package pitch cards — billed per card on top of the plan-day (operator decision 2026-10-10),
+    // same idempotency key as the plan-day so a re-run never double-charges. Nothing is charged when
+    // no caller holds the package permission (the platform sends no such cards then).
+    const packageCards = plans.reduce((s, p) => s + p.tasks.filter((t) => t.type === 'package_pitch').length, 0);
+    let packageCharged = 0;
+    if (packageCards > 0) {
+      try {
+        const r = await settleMetered({
+          orgId,
+          service: 'package_pitch_card',
+          idempotencyKey: dateKey,
+          qty: packageCards,
+          description: `Package pitch cards planned (${dateKey}, ${packageCards} cards)`,
+          extra: { planRunId, trigger, dateKey },
+          db,
+        });
+        packageCharged = Number(r.charged) || 0;
+      } catch (e) {
+        console.error('planDailyTasks:package-card-settle:err', e instanceof Error ? e.message : e);
+      }
+    }
+
     // 6) Audit trail for the ops console.
     await db
       .collection('plannerRuns')
@@ -404,6 +427,8 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
         trigger,
         admins: plans.length,
         taskCount,
+        packageCards, // 💼 Package cards planned (billed per card, see 5b)
+        packageChargedInr: packageCharged,
         demandMatched, // tasks with a buyer already waiting — the value-proof series
         openRequirements: Number(workState.demand?.openRequirements) || 0,
         // Planned lanes only — a retired lane an older platform still sends is not work.

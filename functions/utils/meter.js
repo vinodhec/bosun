@@ -20,6 +20,8 @@ import {
   AUTOPOST_USAGE_PRICE_PAISE,
   WA_MESSAGE_DELIVERED_PRICE_PAISE,
   DAILY_PLAN_PRICE_PAISE,
+  PACKAGE_PITCH_CARD_PRICE_PAISE,
+  PACKAGE_PITCH_CONVERSION_PRICE_PAISE,
   SEO_REPORT_REPLAY_PRICE_PAISE,
   BLOG_CLASSIFY_PRICE_PAISE,
   EOD_SUMMARY_PRICE_PAISE,
@@ -70,6 +72,22 @@ export const SERVICE_DEFS = {
     accrualField: 'plannerAccrualPaise',
     kind: 'daily_plan',
     label: 'Nightly admin work-queue plan',
+  },
+  // Package pitch lane (2026-10-10): per card the planner puts in a caller's plan — settled by
+  // planDailyTasks in the same run as the plan-day charge, qty = cards, key = dateKey.
+  package_pitch_card: {
+    pricePaise: PACKAGE_PITCH_CARD_PRICE_PAISE,
+    accrualField: 'packagePitchCardAccrualPaise',
+    kind: 'package_pitch_card',
+    label: 'Package pitch — card planned',
+  },
+  // …and per conversion: a pitched seller paid (plan or single buyer). Reported by the platform's
+  // payment-capture hook via usageMeter, idempotency key = the payment doc id.
+  package_pitch_conversion: {
+    pricePaise: PACKAGE_PITCH_CONVERSION_PRICE_PAISE,
+    accrualField: 'packagePitchConversionAccrualPaise',
+    kind: 'package_pitch_conversion',
+    label: 'Package pitch — conversion (seller paid)',
   },
   // Normally settled in-process by seoWeeklyReport at the flat held price; this tracks the same
   // constant so a ledger replay prices identically — after any successful run the shared log row

@@ -652,6 +652,18 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
 export const DAILY_PLAN_PRICE_PAISE = 30000; // ₹300 per plan-day, flat (repriced from ₹200, 2026-09-08)
 
 /**
+ * ── Package pitch lane (package_pitch_card / package_pitch_conversion) ─────────────────────────────
+ * Operator decision 2026-10-10. The planner's 💼 Package cards (a Free seller with buyers waiting
+ * locked, ranked, with coach notes) are billed PER CARD on top of the plan-day, settled by
+ * planDailyTasks right after the plan-day charge (idempotent per dateKey). A CONVERSION — the pitched
+ * seller pays (plan or ₹ single), reported by the platform's capture hook through usageMeter with the
+ * payment id as the idempotency key — is billed per event. Neither figure is shown anywhere on the
+ * customer's platform; the platform only says "from a pitch".
+ */
+export const PACKAGE_PITCH_CARD_PRICE_PAISE = 1200; // ₹12 per package card planned
+export const PACKAGE_PITCH_CONVERSION_PRICE_PAISE = 12000; // ₹120 per pitched seller who paid
+
+/**
  * ── EOD WhatsApp team summary (eod_summary) ────────────────────────────────────────────────────
  * FLAT per summary-day (operator decision 2026-08-03): every evening at 18:30 IST the eodSummary
  * job asks the platform to WhatsApp the day's team scoreboard (calls done, deals, buyers-waiting,

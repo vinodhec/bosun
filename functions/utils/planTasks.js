@@ -162,7 +162,12 @@ const WHY = {
   package_pitch: (c) => {
     const n = Number(c.lockedCount) || 0;
     const offer = c.planName ? ` — offer ${c.planName}${c.priceLabel ? ` ${c.priceLabel}` : ''}` : '';
-    return `${n} buyer${n === 1 ? '' : 's'} waiting, number locked on Free${offer}`;
+    const waiting = `${n} buyer${n === 1 ? '' : 's'} waiting, number locked on Free`;
+    // Stage comes from the platform's pitch state (lib/packagePitch.ts): a promised callback or a
+    // retry outranks a cold pitch on the card AND in the caller's reading order.
+    if (c.pitchStage === 'callback') return `Seller asked to be called back today · ${waiting}${offer}`;
+    if (c.pitchStage === 'rnr') return `No answer last time${c.attempts ? ` ×${c.attempts}` : ''} — try another hour · ${waiting}${offer}`;
+    return `${waiting}${offer}`;
   },
   listing_completion: (c) => {
     const left = Number(c.fieldsLeft) || 0;
@@ -303,6 +308,20 @@ export function allocateTasks(workState, { maxTasksPerAdmin = 40 } = {}) {
         groupKey: c.groupKey || '', // 's:'/'b:' + last 10 digits — the person, '' when unknown
         groupSize: 1, // recomputed per plan below (what THIS admin's card should claim)
         why: WHY[category](c),
+        // Package cards carry their own facts for the inline card (platform lib/packagePitchServer):
+        // buyers waiting, the plan to offer, the stage, and the coach notes. Bounded here, re-checked
+        // by the platform's ingest.
+        ...(PACKAGE_TYPES.has(category)
+          ? {
+              lockedCount: Number(c.lockedCount) || 0,
+              planName: String(c.planName || ''),
+              priceLabel: String(c.priceLabel || ''),
+              pitchStage: c.pitchStage === 'rnr' || c.pitchStage === 'callback' ? c.pitchStage : 'fresh',
+              coachNotes: Array.isArray(c.coachNotes) ? c.coachNotes.map((x) => String(x).slice(0, 240)).slice(0, 8) : [],
+              opener: String(c.opener || '').slice(0, 300),
+              openerLocal: String(c.openerLocal || '').slice(0, 300),
+            }
+          : {}),
       };
 
       // 0) GROUP AFFINITY — outranks everything else, including the owner's own assignment and the
