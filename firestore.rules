@@ -103,6 +103,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Payments RECEIVED against invoices (receivables). Operator data: no client reads — the customer
+    // sees only the per-invoice paid/due fields via listMyInvoices; only the Admin SDK
+    // (adminRecordPayment / adminDeletePayment) writes here. `shareToken` on an invoice is read
+    // through callables too, never by a direct doc read.
+    match /payments/{paymentId} {
+      allow read:  if false;
+      allow write: if false;
+    }
+
     // OUR vendor bills (Anthropic API credits) — the inward half of the GST reports. Operator
     // data, not customer data: no client reads it at all, and only the Admin SDK writes it.
     // Reached solely through the adminRecordPurchase / adminListPurchases callables.

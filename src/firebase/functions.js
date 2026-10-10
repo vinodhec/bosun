@@ -96,6 +96,12 @@ export const adminDisconnectFigma = httpsCallable(functions, 'adminDisconnectFig
 export const adminListInvoices = httpsCallable(functions, 'adminListInvoices');
 export const adminInvoiceHtml = httpsCallable(functions, 'adminInvoiceHtml');
 export const adminSetUserInvoices = httpsCallable(functions, 'adminSetUserInvoices');
+// Receivables: record money in (allocated oldest-invoice-first), undo, list, roll-up, share link.
+export const adminRecordPayment = httpsCallable(functions, 'adminRecordPayment');
+export const adminDeletePayment = httpsCallable(functions, 'adminDeletePayment');
+export const adminListPayments = httpsCallable(functions, 'adminListPayments');
+export const adminReceivables = httpsCallable(functions, 'adminReceivables');
+export const adminInvoiceShareLink = httpsCallable(functions, 'adminInvoiceShareLink');
 export const adminGstReport = httpsCallable(functions, 'adminGstReport');
 // Operator-only: OUR vendor bills (Anthropic API credits) — the inward half of the GST reports.
 export const adminRecordPurchase = httpsCallable(functions, 'adminRecordPurchase');
@@ -121,3 +127,4 @@ export const adminPlanNow = httpsCallable(functions, 'adminPlanNow');
 // Customer-facing GST invoices.
 export const listMyInvoices = httpsCallable(functions, 'listMyInvoices');
 export const getMyInvoiceHtml = httpsCallable(functions, 'getMyInvoiceHtml');
+export const getMyInvoiceShareLink = httpsCallable(functions, 'getMyInvoiceShareLink');

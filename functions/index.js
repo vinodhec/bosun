@@ -41,10 +41,17 @@ export {
   adminRecordPurchase,
   adminListPurchases,
   adminDeletePurchase,
+  // Receivables: payments received against invoices (FIFO allocation), roll-up, share link.
+  adminRecordPayment,
+  adminDeletePayment,
+  adminListPayments,
+  adminReceivables,
+  adminInvoiceShareLink,
 } from './handlers/admin.js';
 
-// Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML.
-export { listMyInvoices, getMyInvoiceHtml } from './handlers/invoices.js';
+// Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML + share link,
+// and the PUBLIC share-by-token page (Hosting rewrites /i/** to publicInvoice).
+export { listMyInvoices, getMyInvoiceHtml, getMyInvoiceShareLink, publicInvoice } from './handlers/invoices.js';
 
 // Operator-only: connect an org's Figma account so a pasted design link enriches a fix with
 // exact design context (the agent builds the UI pixel-perfect).

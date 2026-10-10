@@ -4,7 +4,10 @@ import { getAuth } from 'firebase-admin/auth';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
-import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary } from '../utils/invoice.js';
+import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor } from '../utils/invoice.js';
+import { receivablesSummary, paymentSummary } from '../utils/payments.js';
+import { recordPayment, deletePayment } from '../utils/receivables.js';
+import { ensureShareToken } from '../utils/invoiceShare.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
 import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE, REEL_PHOTO_PRICE_PAISE, REEL_ANIMATED_PRICE_PAISE } from '../shared/billing.js';
@@ -54,18 +57,122 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
     const invoice = buildInvoiceRecord({
       org: snap.data(), orgId, creditInr: amount, number, fy, seq, txnId: txnRef.id, by,
     });
+    // Money the customer paid EARLIER than we invoiced (a combined payment that overshot the open
+    // invoices) sits on the org as `advanceInr`; it is applied to this invoice at issue time.
+    const advance = Math.max(0, Math.round(Number(snap.data().advanceInr ?? 0)));
+    const applied = Math.min(advance, invoice.payableInr);
+    if (applied > 0) {
+      invoice.paidInr = applied;
+      invoice.dueInr = invoice.payableInr - applied;
+      invoice.paymentStatus = invoice.dueInr === 0 ? 'paid' : 'partial';
+      invoice.paidAtMs = invoice.dueInr === 0 ? invoice.issuedAtMs : null;
+      invoice.payments = [{ paymentId: null, source: 'advance', amountInr: applied, receivedAtMs: invoice.issuedAtMs }];
+    }
 
     // Writes.
-    tx.update(orgRef, { balance: next });
+    tx.update(orgRef, { balance: next, ...(applied > 0 ? { advanceInr: advance - applied } : {}) });
     tx.set(txnRef, {
       orgId, type: 'credit', amount, by, invoiceId: invRef.id, invoiceNumber: number,
       createdAt: FieldValue.serverTimestamp(),
     });
     tx.set(counterRef, { [fy]: seq }, { merge: true });
     tx.set(invRef, { ...invoice, createdAt: FieldValue.serverTimestamp() });
-    return { balance: next, invoiceId: invRef.id, invoiceNumber: number };
+    return { balance: next, invoiceId: invRef.id, invoiceNumber: number, advanceAppliedInr: applied };
   });
   return { orgId, ...result };
+});
+
+// ── Receivables: payments received against invoices ─────────────────────────────────────────
+// The operator records the rupee amount when money lands; the SYSTEM allocates it to the org's
+// open invoices oldest-first (utils/payments.js#allocatePayment) and any excess is held on the org
+// as `advanceInr` for the next invoice. Everything runs in one transaction so an invoice can never
+// be marked paid without the payment row that explains it (and vice versa).
+export const adminRecordPayment = onCall({ region: REGION }, async (request) => {
+  const by = requireAdmin(request);
+  const d = request.data || {};
+  const db = getFirestore();
+  try {
+    const result = await recordPayment(db, {
+      orgId: d.orgId, amountInr: d.amountInr, receivedAtMs: d.receivedAtMs, method: d.method,
+      reference: d.reference, note: d.note, preferInvoiceId: d.invoiceId, by,
+    });
+    return result;
+  } catch (e) {
+    if (e?.code) throw new HttpsError(e.code, e.message);
+    throw e;
+  }
+});
+
+// Undo a wrongly-entered payment: reverse each allocation and release any advance it created.
+// Refused if that advance has since been applied to a newer invoice (fix that invoice first).
+export const adminDeletePayment = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const paymentId = String(request.data?.paymentId ?? '').trim();
+  if (!paymentId) throw new HttpsError('invalid-argument', 'paymentId required.');
+  try {
+    return await deletePayment(getFirestore(), paymentId);
+  } catch (e) {
+    if (e?.code) throw new HttpsError(e.code, e.message);
+    throw e;
+  }
+});
+
+// Payments recorded for one org, newest first.
+export const adminListPayments = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const snap = await db.collection('payments').where('orgId', '==', orgId).orderBy('receivedAtMs', 'desc').limit(200).get();
+  const orgSnap = await db.collection('organisations').doc(orgId).get();
+  return {
+    orgId,
+    advanceInr: Math.max(0, Math.round(Number(orgSnap.data()?.advanceInr ?? 0))),
+    payments: snap.docs.map((d) => paymentSummary(d.id, d.data())),
+  };
+});
+
+// Receivables across EVERY org: how many invoices are paid vs pending and what is outstanding,
+// plus the open invoices themselves (oldest first) so the operator can chase them.
+export const adminReceivables = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const db = getFirestore();
+  const [invSnap, orgSnap] = await Promise.all([
+    db.collection('invoices').orderBy('issuedAtMs', 'desc').limit(2000).get(),
+    db.collection('organisations').get(),
+  ]);
+  const orgName = new Map(orgSnap.docs.map((d) => [d.id, d.data().name || d.id]));
+  const advances = orgSnap.docs
+    .map((d) => ({ orgId: d.id, name: d.data().name || d.id, advanceInr: Math.round(Number(d.data().advanceInr ?? 0)) }))
+    .filter((o) => o.advanceInr > 0);
+  const all = invSnap.docs.map((d) => ({ id: d.id, ...invoiceSummary(d.data()), orgId: d.data().orgId })).filter((i) => i.status !== 'cancelled');
+  const byOrg = {};
+  for (const inv of all) {
+    (byOrg[inv.orgId] ||= []).push(inv);
+  }
+  const orgs = Object.entries(byOrg)
+    .map(([orgId, rows]) => ({ orgId, name: orgName.get(orgId) || orgId, ...receivablesSummary(rows) }))
+    .sort((a, b) => b.dueInr - a.dueInr);
+  const openInvoices = all
+    .filter((i) => i.paymentStatus !== 'paid')
+    .map((i) => ({ ...i, orgName: orgName.get(i.orgId) || i.orgId }))
+    .sort((a, b) => (a.issuedAtMs || 0) - (b.issuedAtMs || 0));
+  return { total: receivablesSummary(all), orgs, openInvoices, advances };
+});
+
+// Share link for one invoice (operator side): mints the public token on first use and returns the
+// URL plus a ready-to-send WhatsApp message.
+export const adminInvoiceShareLink = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const invoiceId = String(request.data?.invoiceId ?? '').trim();
+  if (!invoiceId) throw new HttpsError('invalid-argument', 'invoiceId required.');
+  const db = getFirestore();
+  const ref = db.collection('invoices').doc(invoiceId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Invoice not found.');
+  const token = await ensureShareToken(ref, snap.data());
+  const url = shareUrlFor(token);
+  return { invoiceId, url, message: shareMessageFor(snap.data(), url) };
 });
 
 // Operator: list an org's issued tax invoices (newest first), plus printable HTML on demand.

@@ -14,6 +14,11 @@ import {
   adminSetUserInvoices,
   adminListInvoices,
   adminInvoiceHtml,
+  adminInvoiceShareLink,
+  adminRecordPayment,
+  adminDeletePayment,
+  adminListPayments,
+  adminReceivables,
   adminGstReport,
   adminRecordPurchase,
   adminListPurchases,
@@ -37,6 +42,7 @@ import {
 } from '../firebase/functions.js';
 import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
+import { shareOnWhatsApp, copyText } from '../utils/share.js';
 import SourcingRuns from '../components/SourcingRuns.jsx';
 import RevenueCharts from '../components/RevenueCharts.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
@@ -738,17 +744,6 @@ function DeployAccess({ orgs }) {
     finally { setBusy(false); }
   };
 
-  // Open one invoice as a printable page (save/print as PDF).
-  const openInvoice = async (id) => {
-    try {
-      const { data } = await adminInvoiceHtml({ invoiceId: id });
-      const w = window.open('', '_blank');
-      if (!w) return;
-      w.document.write(data.html); w.document.close(); w.focus();
-      setTimeout(() => w.print(), 400);
-    } catch { setErr('Could not open that invoice.'); }
-  };
-
   // Org-name lookup for the membership chips.
   const orgName = (id) => orgs.find((o) => o.id === id)?.name || id;
 
@@ -843,32 +838,245 @@ function DeployAccess({ orgs }) {
         </ul>
       )}
 
-      {orgId && (
-        <div className="mt-5 border-t border-line pt-4">
-          <h3 className="mb-2 text-sm font-semibold text-ink">Invoices</h3>
-          {invoices.length === 0 ? (
-            <p className="text-xs text-ink-soft">No invoices for this organisation yet — one is created each time you add credits.</p>
-          ) : (
-            <ul className="space-y-1.5">
-              {invoices.map((iv) => (
-                <li key={iv.id} className="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2 text-sm">
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-ink">{iv.number}</p>
-                    <p className="text-xs text-ink-soft">
-                      {iv.issuedAtMs ? new Date(iv.issuedAtMs).toLocaleDateString('en-IN') : ''} · {formatINR(iv.totalInr)} · {iv.buyerName || '—'}
-                    </p>
-                  </div>
-                  <button
-                    className="shrink-0 rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50"
-                    onClick={() => openInvoice(iv.id)}
-                  >
-                    Download
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+      {orgId && <OrgInvoices orgId={orgId} invoices={invoices} onChanged={() => load(orgId)} />}
+    </section>
+  );
+}
+
+// Payment status chip shared by the invoice lists.
+const PAY_CHIP = {
+  paid: 'bg-green-50 text-green-700 ring-green-200',
+  partial: 'bg-amber-50 text-amber-700 ring-amber-200',
+  unpaid: 'bg-red-50 text-red-700 ring-red-200',
+};
+function PayStatus({ inv }) {
+  const label = inv.paymentStatus === 'paid' ? 'Paid' : inv.paymentStatus === 'partial' ? `Partly paid · ${formatINR(inv.dueInr)} due` : `Due ${formatINR(inv.dueInr)}`;
+  return <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${PAY_CHIP[inv.paymentStatus] || PAY_CHIP.unpaid}`}>{label}</span>;
+}
+
+// Open one invoice as a printable page (save/print as PDF).
+async function printInvoice(id) {
+  const { data } = await adminInvoiceHtml({ invoiceId: id });
+  const w = window.open('', '_blank');
+  if (!w) return;
+  w.document.write(data.html); w.document.close(); w.focus();
+  setTimeout(() => w.print(), 400);
+}
+
+// One org's invoices + receivables: paid / pending counts, a "Record payment" form (the operator
+// types the rupee amount that landed; the backend allocates it to the oldest open invoices and
+// holds any excess as an advance), the payments received so far (with undo), and per-invoice
+// Download / WhatsApp share.
+function OrgInvoices({ orgId, invoices, onChanged }) {
+  const today = () => new Date().toISOString().slice(0, 10);
+  const [pay, setPay] = useState({ amountInr: '', date: today(), method: 'upi', reference: '', note: '', invoiceId: '' });
+  const [payments, setPayments] = useState([]);
+  const [advanceInr, setAdvanceInr] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const loadPayments = async () => {
+    try {
+      const { data } = await adminListPayments({ orgId });
+      setPayments(data.payments || []); setAdvanceInr(data.advanceInr || 0);
+    } catch { /* list is advisory */ }
+  };
+  useEffect(() => { setPayments([]); setAdvanceInr(0); setErr(''); setMsg(''); loadPayments(); }, [orgId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const paidCount = invoices.filter((i) => i.paymentStatus === 'paid').length;
+  const pending = invoices.filter((i) => i.paymentStatus !== 'paid');
+  const dueTotal = pending.reduce((a, i) => a + (i.dueInr || 0), 0);
+
+  const record = async () => {
+    const amount = Math.round(Number(pay.amountInr));
+    if (!Number.isFinite(amount) || amount <= 0) { setErr('Enter the amount received.'); return; }
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const receivedAtMs = pay.date ? new Date(`${pay.date}T12:00:00`).getTime() : Date.now();
+      const { data } = await adminRecordPayment({
+        orgId, amountInr: amount, receivedAtMs, method: pay.method,
+        reference: pay.reference, note: pay.note, invoiceId: pay.invoiceId || undefined,
+      });
+      const parts = (data.allocations || []).map((a) => `${a.number} ${formatINR(a.amountInr)}${a.paymentStatus === 'paid' ? ' (paid in full)' : ` (${formatINR(a.dueInr)} still due)`}`);
+      if (data.unallocatedInr > 0) parts.push(`${formatINR(data.unallocatedInr)} held as advance for the next invoice`);
+      setMsg(`Recorded ${formatINR(amount)} → ${parts.join(' · ') || 'no open invoices (held as advance)'}.`);
+      setPay({ amountInr: '', date: today(), method: 'upi', reference: '', note: '', invoiceId: '' });
+      await loadPayments(); onChanged?.();
+    } catch (e) { setErr(e?.message || 'Could not record that payment.'); }
+    finally { setBusy(false); }
+  };
+
+  const undo = async (p) => {
+    if (!window.confirm(`Delete the ${formatINR(p.amountInr)} payment? The invoices it covered go back to pending.`)) return;
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      await adminDeletePayment({ paymentId: p.id });
+      setMsg(`Payment of ${formatINR(p.amountInr)} removed.`);
+      await loadPayments(); onChanged?.();
+    } catch (e) { setErr(e?.message || 'Could not delete that payment.'); }
+    finally { setBusy(false); }
+  };
+
+  const share = async (inv) => {
+    setErr('');
+    try {
+      const { data } = await adminInvoiceShareLink({ invoiceId: inv.id });
+      shareOnWhatsApp(data.message);
+    } catch { setErr('Could not create the share link.'); }
+  };
+  const copyLink = async (inv) => {
+    setErr(''); setMsg('');
+    try {
+      const { data } = await adminInvoiceShareLink({ invoiceId: inv.id });
+      setMsg((await copyText(data.url)) ? `Link copied: ${data.url}` : data.url);
+    } catch { setErr('Could not create the share link.'); }
+  };
+
+  const methodLabel = { upi: 'UPI', bank: 'Bank', cash: 'Cash', other: 'Other' };
+  const dateOf = (ms) => (ms ? new Date(ms).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+
+  return (
+    <div className="mt-5 border-t border-line pt-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-ink">Invoices &amp; payments</h3>
+        {invoices.length > 0 && (
+          <p className="text-xs text-ink-soft">
+            <span className="font-semibold text-green-700">{paidCount} paid</span> · <span className={`font-semibold ${pending.length ? 'text-red-700' : 'text-ink-soft'}`}>{pending.length} pending</span>
+            {dueTotal > 0 && <> · <span className="font-semibold text-ink">{formatINR(dueTotal)} outstanding</span></>}
+            {advanceInr > 0 && <> · {formatINR(advanceInr)} advance held</>}
+          </p>
+        )}
+      </div>
+      {err && <p className="mb-2 text-sm text-bad">{err}</p>}
+      {msg && <p className="mb-2 text-sm text-green-700">{msg}</p>}
+
+      {invoices.length === 0 ? (
+        <p className="text-xs text-ink-soft">No invoices for this organisation yet — one is created each time you add credits.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {invoices.map((iv) => (
+            <li key={iv.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line px-3 py-2 text-sm">
+              <div className="min-w-0">
+                <p className="flex flex-wrap items-center gap-2 font-medium text-ink"><span className="truncate">{iv.number}</span><PayStatus inv={iv} /></p>
+                <p className="text-xs text-ink-soft">
+                  {dateOf(iv.issuedAtMs)} · {formatINR(iv.totalInr)} · {iv.buyerName || '—'}
+                  {iv.paymentStatus === 'paid' && iv.paidAtMs ? ` · paid ${dateOf(iv.paidAtMs)}` : ''}
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-1.5">
+                <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-brand-600 ring-1 ring-line transition hover:bg-brand-50" onClick={() => printInvoice(iv.id).catch(() => setErr('Could not open that invoice.'))}>Download</button>
+                <button className="rounded-lg bg-[#25D366] px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-[#1ebe5d]" onClick={() => share(iv)} title="Share this invoice on WhatsApp">WhatsApp</button>
+                <button className="rounded-lg px-2.5 py-1 text-xs font-semibold text-ink-soft ring-1 ring-line transition hover:bg-canvas" onClick={() => copyLink(iv)} title="Copy the public link">Copy link</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* Record a payment received. */}
+      <div className="mt-4 rounded-xl border border-dashed border-line bg-canvas/60 p-3">
+        <p className="mb-2 text-xs font-semibold text-ink">Record a payment received</p>
+        <p className="mb-2 text-xs text-ink-soft">Type what landed in the bank. It is applied to the oldest pending invoice first, then the next — a combined payment clears several; anything left over is held as an advance for the next invoice.</p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <input className={field} type="number" min="1" step="1" inputMode="numeric" placeholder="Amount ₹" value={pay.amountInr} onChange={(e) => setPay({ ...pay, amountInr: e.target.value })} />
+          <input className={field} type="date" value={pay.date} max={today()} onChange={(e) => setPay({ ...pay, date: e.target.value })} />
+          <select className={field} value={pay.method} onChange={(e) => setPay({ ...pay, method: e.target.value })}>
+            <option value="upi">UPI</option><option value="bank">Bank transfer</option><option value="cash">Cash</option><option value="other">Other</option>
+          </select>
+          <input className={field} placeholder="Reference / UTR (optional)" value={pay.reference} onChange={(e) => setPay({ ...pay, reference: e.target.value })} />
+          <select className={field} value={pay.invoiceId} onChange={(e) => setPay({ ...pay, invoiceId: e.target.value })} title="Leave on 'oldest first' unless the customer named the invoice">
+            <option value="">Apply oldest first</option>
+            {pending.map((i) => <option key={i.id} value={i.id}>For {i.number} ({formatINR(i.dueInr)} due)</option>)}
+          </select>
+          <input className={field} placeholder="Note (optional)" value={pay.note} onChange={(e) => setPay({ ...pay, note: e.target.value })} />
         </div>
+        <button className={`${btn} mt-2`} disabled={busy || !pay.amountInr} onClick={record}>{busy ? 'Saving…' : 'Record payment'}</button>
+      </div>
+
+      {payments.length > 0 && (
+        <div className="mt-3">
+          <p className="mb-1 text-xs font-semibold text-ink">Payments received</p>
+          <ul className="divide-y divide-line text-xs">
+            {payments.map((p) => (
+              <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5">
+                <div className="min-w-0">
+                  <span className="font-semibold text-ink">{formatINR(p.amountInr)}</span> · {dateOf(p.receivedAtMs)} · {methodLabel[p.method] || 'Other'}{p.reference ? ` · ${p.reference}` : ''}
+                  <div className="text-ink-soft">
+                    {(p.allocations || []).map((a) => `${a.number}: ${formatINR(a.amountInr)}`).join(' · ')}
+                    {p.unallocatedInr > 0 ? `${p.allocations?.length ? ' · ' : ''}advance ${formatINR(p.unallocatedInr)}` : ''}
+                    {p.note ? ` — ${p.note}` : ''}
+                  </div>
+                </div>
+                <button className="shrink-0 text-ink-soft hover:text-bad disabled:opacity-60" disabled={busy} onClick={() => undo(p)} title="Delete this payment">Undo</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Receivables across every organisation: how many invoices are paid vs pending, what is
+// outstanding, and the open invoices oldest-first so the operator knows whom to chase.
+function Receivables() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const load = async () => {
+    setBusy(true); setErr('');
+    try { const r = await adminReceivables({}); setData(r.data); }
+    catch { setErr('Could not load receivables.'); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+  const t = data?.total;
+  const dateOf = (ms) => (ms ? new Date(ms).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : '');
+  const ageDays = (ms) => (ms ? Math.floor((Date.now() - ms) / 86400000) : 0);
+  const share = async (inv) => {
+    try { const { data: d } = await adminInvoiceShareLink({ invoiceId: inv.id }); shareOnWhatsApp(d.message); }
+    catch { setErr('Could not create the share link.'); }
+  };
+  return (
+    <section className="space-y-3 rounded-2xl border border-line bg-white p-5">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-semibold text-ink">Payments due</h2>
+        <button className="text-xs font-semibold text-brand-600 hover:underline disabled:opacity-60" disabled={busy} onClick={load}>{busy ? 'Loading…' : 'Refresh'}</button>
+      </div>
+      <p className="text-xs text-ink-soft">Every invoice issued, paid vs pending. Record what a customer paid under People &amp; workspaces → their organisation; it is applied to their oldest pending invoice first.</p>
+      {err && <p className="text-sm text-bad">{err}</p>}
+      {t && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            ['Invoices', t.count, 'text-ink'],
+            ['Paid', t.paid, 'text-green-700'],
+            ['Pending', t.pending, t.pending ? 'text-red-700' : 'text-ink'],
+            ['Outstanding', formatINR(t.dueInr), t.dueInr ? 'text-red-700' : 'text-ink'],
+          ].map(([k, v, c]) => (
+            <div key={k} className="rounded-xl bg-canvas p-3">
+              <p className="text-[11px] uppercase tracking-wide text-ink-soft">{k}</p>
+              <p className={`text-lg font-semibold ${c}`}>{v}</p>
+            </div>
+          ))}
+        </div>
+      )}
+      {data?.openInvoices?.length > 0 && (
+        <ul className="divide-y divide-line text-sm">
+          {data.openInvoices.map((iv) => (
+            <li key={iv.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+              <div className="min-w-0">
+                <p className="flex flex-wrap items-center gap-2 font-medium text-ink"><span>{iv.orgName}</span><span className="text-ink-soft">{iv.number}</span><PayStatus inv={iv} /></p>
+                <p className="text-xs text-ink-soft">{dateOf(iv.issuedAtMs)} · {ageDays(iv.issuedAtMs)} days · invoice {formatINR(iv.totalInr)}{iv.paidInr ? ` · received ${formatINR(iv.paidInr)}` : ''}</p>
+              </div>
+              <button className="rounded-lg bg-[#25D366] px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-[#1ebe5d]" onClick={() => share(iv)} title="Send this invoice on WhatsApp">WhatsApp</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {data && data.openInvoices?.length === 0 && <p className="text-sm text-green-700">Nothing pending — every invoice is paid.</p>}
+      {data?.advances?.length > 0 && (
+        <p className="text-xs text-ink-soft">Advance held: {data.advances.map((a) => `${a.name} ${formatINR(a.advanceInr)}`).join(' · ')} — applied automatically to their next invoice.</p>
       )}
     </section>
   );
@@ -1830,6 +2038,7 @@ export default function Admin() {
           <button className={btn} disabled={busy || !assign.email || !assign.orgId} onClick={() => run(() => adminSetUserOrg({ email: assign.email.trim(), orgId: assign.orgId }), 'User assigned (they must sign out/in to see it).')}>Assign</button>
         </section>
 
+        <Receivables />
         <DeployAccess orgs={orgs} />
 
         <GstReports />

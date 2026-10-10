@@ -131,6 +131,27 @@ is a rupee tax and the statement is what reconciles. `config/fxRate` is for COGS
 for tax. `purchases/{id}` follows the cardinal rule and is stricter than most: operator data, so
 `allow read: if false` too — reachable only via the admin callables.
 
+## Receivables (payments received against invoices)
+
+An invoice is issued UNPAID the moment credits are added (`adminAddCredits`); the customer pays
+later, often several invoices in one UPI transfer. The operator records the rupee amount when it
+lands (Admin → People & workspaces → org → "Record a payment received") and the SYSTEM decides where
+it goes: `utils/payments.js#allocatePayment` fills the org's open invoices OLDEST FIRST, and whatever
+is left over is held on the org as `advanceInr`, applied automatically to the next invoice issued.
+The transaction (`utils/receivables.js#recordPayment` / `deletePayment`) writes `payments/{id}`
+(operator-only, `allow read: if false`) and keeps `invoices/{id}.paidInr / dueInr / paymentStatus
+('unpaid'|'partial'|'paid') / paidAtMs / payments[]` in step. A duplicate UTR for the same org is
+refused. Legacy invoices with no `paidInr` read as fully due. `adminReceivables` is the cross-org
+roll-up ("Payments due" at the top of Admin); `scripts/seed-payments.mjs` bulk-records a JSON list
+through the same transaction (used once on 2026-10-10 for MaadiVeedu's nine PhonePe receipts).
+
+**Sharing an invoice on WhatsApp.** `adminInvoiceShareLink` / `getMyInvoiceShareLink` mint a
+32-hex `shareToken` on the invoice (once, `utils/invoiceShare.js`) and return
+`https://bosun-76bba.web.app/i/<token>` plus a ready message; Hosting rewrites `/i/**` to the public
+`publicInvoice` HTTP function, which renders the same printable page stamped with the LIVE paid /
+balance-due figures (no auth, no-store, noindex). The "WhatsApp" button on every invoice row opens
+`wa.me/?text=` with that message. Revoke a link by clearing `shareToken`.
+
 ## The fix pipeline (where state lives)
 
 1. `classifyTask` — Haiku call (`utils/classify.js`) returns `{ complexity, reason }`; drives the

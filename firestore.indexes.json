@@ -17,6 +17,14 @@
       ]
     },
     {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orgId", "order": "ASCENDING" },
+        { "fieldPath": "receivedAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "features",
       "queryScope": "COLLECTION",
       "fields": [

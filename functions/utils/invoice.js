@@ -5,6 +5,27 @@
 import { gstBreakdown, INVOICE_SAC_CODE, OUTPUT_GST_RATE, PLATFORM_FEE_RATE, platformFeeInr } from '../shared/billing.js';
 import { SIGNATURE_DATA_URI } from './signatureAsset.js';
 import { LOGO_DATA_URI } from './logoAsset.js';
+import { invoiceDueInr, paymentStatusOf } from './payments.js';
+
+// Where the public (share-by-link) invoice page lives — Hosting rewrites /i/** to the
+// `publicInvoice` function (firebase.json). Override with PUBLIC_BASE_URL when a custom domain lands.
+export const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://bosun-76bba.web.app').replace(/\/$/, '');
+export const shareUrlFor = (token) => `${PUBLIC_BASE_URL}/i/${encodeURIComponent(token)}`;
+
+/** The WhatsApp message that accompanies a shared invoice link (plain text, no markdown). */
+export function shareMessageFor(inv, url) {
+  const payable = Math.round(inv.payableInr ?? inv.totalInr ?? 0);
+  const due = invoiceDueInr(inv);
+  const status = paymentStatusOf(inv);
+  const money = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+  const lines = [
+    `Tax invoice ${inv.number} from ${inv.supplier?.legalName || SUPPLIER.legalName}`,
+    `Amount: ${money(payable)}`,
+    status === 'paid' ? 'Status: Paid — thank you!' : status === 'partial' ? `Balance due: ${money(due)}` : `Payment pending: ${money(due)}`,
+    `View / download: ${url}`,
+  ];
+  return lines.join('\n');
+}
 
 // The GST-registered supplier. Invoices show THIS legal name only — never the "Bosun" brand.
 // NOTE: `address` is legally required on a tax invoice — fill the real registered address before
@@ -114,6 +135,13 @@ export function buildInvoiceRecord({ org, orgId, creditInr, number, fy, seq, txn
     roundOffInr: Math.round((Math.round(gst.total) - gst.total) * 100) / 100,
     payableInr: Math.round(gst.total),                    // rounded to whole rupee — what the customer pays
     creditInr: credit,                                    // credits actually added to the wallet (fee excluded)
+    // Receivables (see utils/payments.js). Issued UNPAID; adminRecordPayment allocates money in,
+    // oldest invoice first, and keeps these three in step. `payments` lists each allocation.
+    paidInr: 0,
+    dueInr: Math.round(gst.total),
+    paymentStatus: 'unpaid',
+    paidAtMs: null,
+    payments: [],
   };
 }
 
@@ -149,6 +177,12 @@ export function invoiceSummary(inv) {
     totalInr: inv.payableInr ?? inv.totalInr,
     creditInr: inv.creditInr,
     status: inv.status || 'issued',
+    // Receivables — legacy invoices (no paidInr) read as fully due.
+    paidInr: Math.round(Number(inv.paidInr ?? 0)),
+    dueInr: invoiceDueInr(inv),
+    paymentStatus: paymentStatusOf(inv),
+    paidAtMs: inv.paidAtMs || null,
+    hasShareLink: !!inv.shareToken,
   };
 }
 
@@ -167,6 +201,17 @@ export function renderInvoiceHtml(inv) {
   const placeOfSupply = posCode ? `${posState} (State code ${posCode})` : (b.placeOfSupply || posState);
   const payable = inv.payableInr ?? Math.round(inv.totalInr);
   const roundOff = inv.roundOffInr ?? Math.round((payable - inv.totalInr) * 100) / 100;
+  // Receivables stamp: what has been received against this invoice and what is still due.
+  const paid = Math.min(payable, Math.round(Number(inv.paidInr ?? 0)));
+  const due = invoiceDueInr(inv);
+  const payStatus = paymentStatusOf(inv);
+  const stamp = payStatus === 'paid' ? { text: 'PAID', color: '#15803d' }
+    : payStatus === 'partial' ? { text: 'PARTLY PAID', color: '#b45309' }
+    : { text: 'PAYMENT DUE', color: '#b91c1c' };
+  const paidOn = inv.paidAtMs ? new Date(inv.paidAtMs).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : null;
+  const payRows = `
+    <tr><td>Received</td><td class="r">${inr(paid)}</td></tr>
+    <tr class="${due > 0 ? 'due' : ''}"><td>Balance due</td><td class="r">${inr(due)}</td></tr>`;
   const taxRows = inv.igstInr
     ? `<tr><td>IGST @ ${Math.round(inv.gstRate * 100)}%</td><td class="r">${inr(inv.igstInr)}</td></tr>`
     : `<tr><td>CGST @ ${Math.round(inv.gstRate * 50)}%</td><td class="r">${inr(inv.cgstInr)}</td></tr>
@@ -187,7 +232,9 @@ export function renderInvoiceHtml(inv) {
   .sign{text-align:center;min-width:190px}
   .sigspace{min-height:56px;display:flex;align-items:flex-end;justify-content:center}
   .sigspace img{max-height:64px;max-width:200px}
-  .sigline{border-top:1px solid #999;padding-top:4px;margin-top:2px} @media print{body{margin:0}}
+  .sigline{border-top:1px solid #999;padding-top:4px;margin-top:2px}
+  .stamp{display:inline-block;margin-top:6px;padding:2px 10px;border:2px solid;border-radius:6px;font-weight:800;font-size:12px;letter-spacing:.08em}
+  .due td{font-weight:700;color:#b91c1c} @media print{body{margin:0}}
 </style></head><body>
   <div class="head">
     <div>${s.logoDataUri ? `<img src="${s.logoDataUri}" alt="" style="max-height:52px;max-width:200px;margin-bottom:8px;display:block" />` : ''}<h1>${esc(s.legalName)}</h1>
@@ -195,7 +242,9 @@ export function renderInvoiceHtml(inv) {
       ${s.phone ? `<div class="muted">Ph: ${esc(s.phone)}</div>` : ''}
       <div class="muted">GSTIN: ${esc(s.gstin)}</div></div>
     <div class="meta"><div style="font-weight:700">TAX INVOICE</div>
-      <div class="muted">No: ${esc(inv.number)}</div><div class="muted">Date: ${esc(date)}</div></div>
+      <div class="muted">No: ${esc(inv.number)}</div><div class="muted">Date: ${esc(date)}</div>
+      <div class="stamp" style="color:${stamp.color};border-color:${stamp.color}">${stamp.text}</div>
+      ${paidOn && payStatus === 'paid' ? `<div class="muted">Paid on ${esc(paidOn)}</div>` : ''}</div>
   </div>
   <div class="parties">
     <div><div class="lbl">Bill to</div><div style="font-weight:600">${esc(b.legalName)}</div>
@@ -211,6 +260,7 @@ export function renderInvoiceHtml(inv) {
     ${taxRows}
     ${roundOff ? `<tr><td>Round off</td><td class="r">${roundOff < 0 ? '−' : '+'}${inr(Math.abs(roundOff))}</td></tr>` : ''}
     <tr class="grand"><td>Total</td><td class="r">${inr(payable)}</td></tr>
+    ${payRows}
   </tbody></table>
   <div style="clear:both"></div>
   <div style="margin-top:10px;font-size:12px"><span class="lbl" style="display:inline">Amount in words:</span> <b>${esc(amountInWords(payable))}</b></div>
