@@ -236,7 +236,10 @@ function eligible(admin, task, { ignoreQuota = false, caps = {} } = {}) {
   if (admin.assigned.length >= MAX_CARDS_PER_PLAN) return false;
   // A capped lane's cap holds even for a same-person card: it is a card budget for the lane, not a
   // call budget, and a group sibling over the cap simply goes to someone else or stays unassigned.
-  const cap = caps[task.type];
+  // A package card's cap is per PERSON when the platform sends one (`packagePitchCapacity`, set on the
+  // sourcing staff page — 2 a day at launch, scaled by the owner); the lane cap is the fallback.
+  const personalCap = PACKAGE_TYPES.has(task.type) && Number.isFinite(Number(admin.packagePitchCapacity)) && admin.packagePitchCapacity !== null ? Number(admin.packagePitchCapacity) : undefined;
+  const cap = personalCap !== undefined ? personalCap : caps[task.type];
   if (cap !== undefined && (admin.perType[task.type] || 0) >= cap) return false;
   if (!ignoreQuota && admin.quota <= admin.units) return false;
   if (BUYER_TYPES.has(task.type) && !admin.canAccessBuyerLeads) return false;
