@@ -552,9 +552,9 @@ export const SOURCED_BUYER_UNIT_INR = 12.4;
 //      coordinates, registration no, no phone — Bosun's fetch cost is a few paise per project;
 //   2. a Facebook by-catch COPY — an 'offering' post the classifier flagged `isProject`, relayed a
 //      second time on top of the ordinary supply relay.
-// ₹5 = ~2× an owner lead (verified builder + exact site beats an unverified post) and well under the
+// ₹9 (owner decision 2026-10-10 late; was ₹5 for an hour) — above an owner lead, under the
 // buyer unit (no phone, needs a visit to convert). Owner decision 2026-10-10.
-export const SOURCED_PROJECT_UNIT_INR = 5;
+export const SOURCED_PROJECT_UNIT_INR = 9;
 
 /** Charge for a batch of relayed RERA projects: flat units, rounded up once to whole rupees. */
 export function priceForProjectBatch(count) {
