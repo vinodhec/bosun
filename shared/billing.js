@@ -545,12 +545,23 @@ export function randomSourcedUnitPrice(rng = Math.random) {
 // this constant, and only this constant.
 export const SOURCED_BUYER_UNIT_INR = 12.4;
 
-// A PROJECT by-catch copy — an 'offering' post the classifier judged to be a builder/promoter
-// advertising a whole layout or project (classifyListing `isProject`) — is relayed a SECOND time to
-// the platform's `/api/ingest/sourced-project` for the builder-sourcing (field-visit) lane, on top of
-// the ordinary supply relay. The copy is billed at this flat unit; the supply relay keeps its band.
-// Owner-set placeholder (2026-10-10): equal to the buyer unit until the lane earns its own number.
-export const SOURCED_PROJECT_UNIT_INR = 12.4;
+// Builder PROJECTS — the field-visit lane. Two ways a project reaches the platform's
+// `/api/ingest/sourced-project`, both billed at this one flat unit, once per project (the receiver
+// dedupes on RERA no / url, and Bosun's own projectSeen never relays the same registration twice):
+//   1. the TN RERA register crawl (runProjectSourcingJobs): a verified builder, exact site
+//      coordinates, registration no, no phone — Bosun's fetch cost is a few paise per project;
+//   2. a Facebook by-catch COPY — an 'offering' post the classifier flagged `isProject`, relayed a
+//      second time on top of the ordinary supply relay.
+// ₹5 = ~2× an owner lead (verified builder + exact site beats an unverified post) and well under the
+// buyer unit (no phone, needs a visit to convert). Owner decision 2026-10-10.
+export const SOURCED_PROJECT_UNIT_INR = 5;
+
+/** Charge for a batch of relayed RERA projects: flat units, rounded up once to whole rupees. */
+export function priceForProjectBatch(count) {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const unitPrices = Array.from({ length: n }, () => SOURCED_PROJECT_UNIT_INR);
+  return { amountInr: Math.ceil(unitPrices.reduce((a, p) => a + p, 0)), unitPrices };
+}
 
 /**
  * Charge (INR) for a batch of successfully-relayed listings: `buyerCount` of them at the flat

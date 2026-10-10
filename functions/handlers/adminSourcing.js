@@ -211,6 +211,13 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
   for (const k of ['buyerLane', 'buyerSerpLane', 'buyerLeads', 'offTargetLeads', 'groupSupplyLeads', 'projectLeads']) {
     if (request.data?.[k] != null) patch[`sourcing.${k}`] = request.data[k] === true;
   }
+  // TN RERA register crawl (projectSourcing.js): `{ enabled, cities: ['Chennai'], maxPerRun }`.
+  if (request.data?.projectRegistry && typeof request.data.projectRegistry === 'object') {
+    const pr = request.data.projectRegistry;
+    if (pr.enabled != null) patch['sourcing.projectRegistry.enabled'] = pr.enabled === true;
+    if (Array.isArray(pr.cities)) patch['sourcing.projectRegistry.cities'] = pr.cities.map(String).filter(Boolean).slice(0, 10);
+    if (pr.maxPerRun != null) patch['sourcing.projectRegistry.maxPerRun'] = Math.max(1, Math.min(400, Math.floor(Number(pr.maxPerRun) || 150)));
+  }
   if (typeof request.data?.projectWebhookUrl === 'string') {
     patch['sourcing.projectWebhookUrl'] = request.data.projectWebhookUrl.trim() || FieldValue.delete();
   }
