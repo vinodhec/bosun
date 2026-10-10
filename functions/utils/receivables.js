@@ -7,6 +7,28 @@ import { PAYMENT_METHODS, allocatePayment, invoiceDueInr, paymentStatusOf } from
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 
+// Auto top-up invoices (source 'auto_topup') are the org's credit line: `autoTopUpState.unpaid` /
+// `unpaidCreditInr` count the OPEN ones and gate the next auto top-up (utils/autoTopUp.js). When a
+// payment settles one, or an undo re-opens one, those counters move with it — here, in the same
+// transaction, so the ledger and the credit line can never disagree.
+function autoTopUpDelta(invoices /* [{ data, wasPaid, nowPaid }] */) {
+  let unpaid = 0, creditInr = 0;
+  for (const { data, wasPaid, nowPaid } of invoices) {
+    if (data.source !== 'auto_topup' || wasPaid === nowPaid) continue;
+    const sign = nowPaid ? -1 : 1;
+    unpaid += sign; creditInr += sign * (Math.round(Number(data.creditInr)) || 0);
+  }
+  return { unpaid, creditInr };
+}
+function applyAutoTopUpDelta(tx, orgRef, orgData, delta) {
+  if (!delta.unpaid && !delta.creditInr) return {};
+  const st = orgData?.autoTopUpState || {};
+  return {
+    'autoTopUpState.unpaid': Math.max(0, (Number(st.unpaid) || 0) + delta.unpaid),
+    'autoTopUpState.unpaidCreditInr': Math.max(0, (Number(st.unpaidCreditInr) || 0) + delta.creditInr),
+  };
+}
+
 export async function recordPayment(db, { orgId, amountInr, receivedAtMs, method, reference, note, preferInvoiceId, by }) {
   orgId = String(orgId ?? '').trim();
   const amount = Math.round(Number(amountInr));
@@ -47,11 +69,13 @@ export async function recordPayment(db, { orgId, amountInr, receivedAtMs, method
       createdAt: FieldValue.serverTimestamp(),
     });
     const touched = [];
+    const transitions = [];
     for (const a of allocations) {
       const inv = open.find((i) => i.id === a.invoiceId);
       const paidInr = Math.round(Number(inv.data.paidInr ?? 0)) + a.amountInr;
       const next = { ...inv.data, paidInr };
       const paymentStatus = paymentStatusOf(next);
+      transitions.push({ data: inv.data, wasPaid: paymentStatusOf(inv.data) === 'paid', nowPaid: paymentStatus === 'paid' });
       tx.update(inv.ref, {
         paidInr,
         dueInr: invoiceDueInr(next),
@@ -62,7 +86,11 @@ export async function recordPayment(db, { orgId, amountInr, receivedAtMs, method
       touched.push({ invoiceId: a.invoiceId, number: a.number, amountInr: a.amountInr, paymentStatus, dueInr: invoiceDueInr(next) });
     }
     const advanceInr = Math.max(0, Math.round(Number(orgSnap.data().advanceInr ?? 0))) + unallocatedInr;
-    if (unallocatedInr > 0) tx.update(orgRef, { advanceInr });
+    const orgUpdate = {
+      ...(unallocatedInr > 0 ? { advanceInr } : {}),
+      ...applyAutoTopUpDelta(tx, orgRef, orgSnap.data(), autoTopUpDelta(transitions)),
+    };
+    if (Object.keys(orgUpdate).length) tx.update(orgRef, orgUpdate);
     return { paymentId: payRef.id, allocations: touched, unallocatedInr, advanceInr };
   });
   return { orgId, amountInr: amount, ...result };
@@ -83,12 +111,14 @@ export async function deletePayment(db, paymentId) {
     if (unallocated > 0 && advance < unallocated) {
       throw fail('failed-precondition', 'Part of this payment was already applied to a later invoice as an advance — it can no longer be deleted.');
     }
+    const transitions = [];
     invSnaps.forEach((snap, i) => {
       if (!snap.exists) return;
       const inv = snap.data();
       const paidInr = Math.max(0, Math.round(Number(inv.paidInr ?? 0)) - allocations[i].amountInr);
       const next = { ...inv, paidInr };
       const paymentStatus = paymentStatusOf(next);
+      transitions.push({ data: inv, wasPaid: paymentStatusOf(inv) === 'paid', nowPaid: paymentStatus === 'paid' });
       tx.update(snap.ref, {
         paidInr,
         dueInr: invoiceDueInr(next),
@@ -97,7 +127,11 @@ export async function deletePayment(db, paymentId) {
         payments: (Array.isArray(inv.payments) ? inv.payments : []).filter((x) => x.paymentId !== paymentId),
       });
     });
-    if (unallocated > 0 && orgSnap.exists) tx.update(orgRef, { advanceInr: advance - unallocated });
+    const orgUpdate = {
+      ...(unallocated > 0 ? { advanceInr: advance - unallocated } : {}),
+      ...applyAutoTopUpDelta(tx, orgRef, orgSnap.data(), autoTopUpDelta(transitions)),
+    };
+    if (orgSnap.exists && Object.keys(orgUpdate).length) tx.update(orgRef, orgUpdate);
     tx.delete(payRef);
     return { paymentId, orgId: p.orgId, reversedInr: p.amountInr };
   });

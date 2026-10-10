@@ -177,7 +177,8 @@ export function invoiceSummary(inv) {
     totalInr: inv.payableInr ?? inv.totalInr,
     creditInr: inv.creditInr,
     status: inv.status || 'issued',
-    // Receivables — legacy invoices (no paidInr) read as fully due.
+    source: inv.source || 'manual',              // 'auto_topup' = issued by the auto top-up credit line
+    // Receivables — computed from the amounts; an invoice with no paidInr reads as fully due.
     paidInr: Math.round(Number(inv.paidInr ?? 0)),
     dueInr: invoiceDueInr(inv),
     paymentStatus: paymentStatusOf(inv),

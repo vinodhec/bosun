@@ -76,6 +76,7 @@ export const adminSetUserOrg = httpsCallable(functions, 'adminSetUserOrg');
 export const adminRemoveUserOrg = httpsCallable(functions, 'adminRemoveUserOrg');
 export const adminSetOrgApproval = httpsCallable(functions, 'adminSetOrgApproval');
 export const adminSetOrgBilling = httpsCallable(functions, 'adminSetOrgBilling');
+export const adminSetAutoTopUp = httpsCallable(functions, 'adminSetAutoTopUp');
 export const adminListUsers = httpsCallable(functions, 'adminListUsers');
 export const adminSetUserDeploy = httpsCallable(functions, 'adminSetUserDeploy');
 export const adminQuoteTask = httpsCallable(functions, 'adminQuoteTask');

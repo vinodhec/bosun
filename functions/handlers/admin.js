@@ -4,10 +4,12 @@ import { getAuth } from 'firebase-admin/auth';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
-import { financialYear, formatInvoiceNumber, buildInvoiceRecord, renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor } from '../utils/invoice.js';
+import { renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor } from '../utils/invoice.js';
 import { receivablesSummary, paymentSummary } from '../utils/payments.js';
 import { recordPayment, deletePayment } from '../utils/receivables.js';
 import { ensureShareToken } from '../utils/invoiceShare.js';
+import { writeWalletCredit, invoiceCounterRef } from '../utils/walletCredit.js';
+import { normalizeAutoTopUp } from '../utils/autoTopUp.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
 import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE, REEL_PHOTO_PRICE_PAISE, REEL_ANIMATED_PRICE_PAISE } from '../shared/billing.js';
@@ -37,47 +39,15 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
   }
   const db = getFirestore();
   const orgRef = db.collection('organisations').doc(orgId);
-  const counterRef = db.collection('counters').doc('invoices');
-  const txnRef = db.collection('transactions').doc();
-  const invRef = db.collection('invoices').doc();
   const result = await db.runTransaction(async (tx) => {
     // Reads first (Firestore requires all reads before any write in a transaction).
     const snap = await tx.get(orgRef);
     if (!snap.exists) throw new HttpsError('not-found', 'Organisation not found.');
-    const counterSnap = await tx.get(counterRef);
-
-    const next = Number(snap.data().balance ?? 0) + amount;
-
-    // Gapless per-financial-year invoice number, allocated atomically with the credit.
-    const fy = financialYear();
-    const seq = Number(counterSnap.get(fy) ?? 0) + 1;
-    const number = formatInvoiceNumber(fy, seq);
-    // The wallet is credited `amount`; the invoice adds the platform fee ON TOP (buildInvoiceRecord),
-    // so the customer pays credit + fee + GST while only `amount` lands in the wallet balance below.
-    const invoice = buildInvoiceRecord({
-      org: snap.data(), orgId, creditInr: amount, number, fy, seq, txnId: txnRef.id, by,
+    const counterSnap = await tx.get(invoiceCounterRef(db));
+    const { balance, invoiceId, invoiceNumber, advanceAppliedInr } = writeWalletCredit(tx, {
+      db, orgId, org: snap.data(), counterSnap, amount, by,
     });
-    // Money the customer paid EARLIER than we invoiced (a combined payment that overshot the open
-    // invoices) sits on the org as `advanceInr`; it is applied to this invoice at issue time.
-    const advance = Math.max(0, Math.round(Number(snap.data().advanceInr ?? 0)));
-    const applied = Math.min(advance, invoice.payableInr);
-    if (applied > 0) {
-      invoice.paidInr = applied;
-      invoice.dueInr = invoice.payableInr - applied;
-      invoice.paymentStatus = invoice.dueInr === 0 ? 'paid' : 'partial';
-      invoice.paidAtMs = invoice.dueInr === 0 ? invoice.issuedAtMs : null;
-      invoice.payments = [{ paymentId: null, source: 'advance', amountInr: applied, receivedAtMs: invoice.issuedAtMs }];
-    }
-
-    // Writes.
-    tx.update(orgRef, { balance: next, ...(applied > 0 ? { advanceInr: advance - applied } : {}) });
-    tx.set(txnRef, {
-      orgId, type: 'credit', amount, by, invoiceId: invRef.id, invoiceNumber: number,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    tx.set(counterRef, { [fy]: seq }, { merge: true });
-    tx.set(invRef, { ...invoice, createdAt: FieldValue.serverTimestamp() });
-    return { balance: next, invoiceId: invRef.id, invoiceNumber: number, advanceAppliedInr: applied };
+    return { balance, invoiceId, invoiceNumber, advanceAppliedInr };
   });
   return { orgId, ...result };
 });
@@ -173,6 +143,22 @@ export const adminInvoiceShareLink = onCall({ region: REGION }, async (request) 
   const token = await ensureShareToken(ref, snap.data());
   const url = shareUrlFor(token);
   return { invoiceId, url, message: shareMessageFor(snap.data(), url) };
+});
+
+// Operator: configure an org's AUTO TOP-UP — a credit line: when the balance falls below
+// `thresholdInr`, credit `amountInr` immediately and issue the SW/ invoice as UNPAID (the trigger
+// lives in handlers/autoTopUp.js). Guards: `maxUnpaid` outstanding auto invoices, `maxPerMonth`.
+// Saving with enabled:true can fire at once if the org is already below the line.
+export const adminSetAutoTopUp = onCall({ region: REGION }, async (request) => {
+  const by = requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const { config, error } = normalizeAutoTopUp(request.data || {});
+  if (error) throw new HttpsError('invalid-argument', error);
+  const ref = getFirestore().collection('organisations').doc(orgId);
+  if (!(await ref.get()).exists) throw new HttpsError('not-found', 'Organisation not found.');
+  await ref.update({ autoTopUp: { ...config, updatedBy: by, updatedAtMs: Date.now() } });
+  return { orgId, autoTopUp: config };
 });
 
 // Operator: list an org's issued tax invoices (newest first), plus printable HTML on demand.
@@ -419,6 +405,8 @@ export const adminListOrgs = onCall({ region: REGION }, async (request) => {
       repo: d.data().github?.repoFullName ?? null,
       requireApproval: d.data().requireApproval === true, // does this org need "Looks good" before charging?
       billing: d.data().billing || null, // GST buyer profile (see adminSetOrgBilling); null = unset.
+      autoTopUp: d.data().autoTopUp || null,           // credit-line config (adminSetAutoTopUp)
+      autoTopUpState: d.data().autoTopUpState || null, // outstanding auto invoices + month count
       // Non-secret Figma connection status (handle only — never the token).
       figma: d.data().figma?.connected
         ? { connected: true, handle: d.data().figma.handle || '', email: d.data().figma.email || '' }
@@ -573,6 +561,8 @@ export const adminQuoteTask = onCall({ region: REGION }, async (request) => {
 //   anthropicUsd= Σ task.actualCostUsd — the same COGS in USD (what we pay Anthropic)
 //   profitInr   = revenueInr − costInr  (a failed run is paid ₹0 but still cost us → a loss)
 //   creditsAddedInr = Σ credit transactions — cash collected via top-ups / manual credit
+//   autoTopUpDueInr = Σ org.autoTopUpState.unpaidCreditInr — auto top-up credit not yet paid for
+//                     (included in creditsAddedInr; subtract it for cash actually in hand)
 //   balanceInr  = Σ org.balance         — unspent prepaid credit still owed to customers
 export const adminMetrics = onCall({ region: REGION }, async (request) => {
   requireAdmin(request);
@@ -713,6 +703,9 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     totals.creditsAddedInr += amt;
     bump(d.data().orgId, (s) => { s.creditsAddedInr += amt; });
   }
+
+  totals.autoTopUpDueInr = 0;
+  for (const d of orgsSnap.docs) totals.autoTopUpDueInr += Number(d.data().autoTopUpState?.unpaidCreditInr) || 0;
 
   for (const s of orgStats.values()) {
     s.profitInr = s.revenueInr - s.costInr;
