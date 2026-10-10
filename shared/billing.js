@@ -649,7 +649,7 @@ export const WA_MESSAGE_DELIVERED_PRICE_PAISE = 25; // ₹0.25 flat per outbound
  * hand-triggered plan of 2026-09-12 (corrected in the ledger by hand). After changing any price:
  *   node scripts/stale-functions.mjs shared/billing.js   → prints the exact --only list to deploy.
  */
-export const DAILY_PLAN_PRICE_PAISE = 30000; // ₹300 per plan-day, flat (repriced from ₹200, 2026-09-08)
+export const DAILY_PLAN_PRICE_PAISE = 37500; // ₹375 per plan-day, flat (₹300 → ₹375 on 2026-10-10 for the package pitch lane; ₹200 → ₹300 on 2026-09-08)
 
 /**
  * ── Package pitch lane (package_pitch_card / package_pitch_conversion) ─────────────────────────────
