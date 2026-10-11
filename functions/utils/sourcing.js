@@ -527,6 +527,58 @@ export function parseEnrichedItem(it) {
   return { text: text.slice(0, 2000), phone: extractPhone(text), postedAt, author, ...withImages };
 }
 
+/**
+ * Settle ONE paid-scrape result onto its listing (mutates `listing`). Returns `{ enrichedText, author }`.
+ *
+ * `snippetOnly` is set whenever the body that will be relayed is NOT text scraped from this post:
+ * a miss (`enriched` null) AND a scrape that came back with no text (only a date / photos). The
+ * second case used to relay the SERP snippet unmarked — that is how maadiveedu `SP-020236`
+ * (2026-09-26) carried a 5 BHK house ad, which Google had served on two different plot posts, under
+ * a land-plot URL whose scrape returned a post date but no text.
+ */
+export function settleEnrichment(listing, enriched) {
+  if (!enriched) {
+    listing.snippetOnly = true;
+    return { enrichedText: false, author: null };
+  }
+  if (enriched.text) listing.snippet = enriched.text;
+  else listing.snippetOnly = true;
+  if (enriched.phone) listing.phone = enriched.phone;
+  if (enriched.postedAt) listing.postedAt = enriched.postedAt;
+  if (enriched.images?.length) listing.images = enriched.images;
+  return { enrichedText: Boolean(enriched.text), author: enriched.author || null };
+}
+
+const snippetKeyOf = (t) => String(t || '').toLowerCase().replace(/read more/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+/**
+ * Blank a SERP-only body that Google served on more than one post in the same run (mutates the
+ * listings; returns how many were blanked). Two different post URLs cannot share one description, so
+ * the text belongs to neither for certain — it is a neighbouring post's, and relaying it puts somebody
+ * else's property under this URL. The listing still relays (title, URL, date, photos); the platform
+ * reads the real post. Only `snippetOnly` bodies are touched: scraped text is this post's by definition.
+ */
+export function blankSharedSnippets(listings) {
+  const urlsByKey = new Map();
+  for (const l of listings) {
+    const k = snippetKeyOf(l?.snippet);
+    if (!k || k.length < 30) continue;
+    if (!urlsByKey.has(k)) urlsByKey.set(k, new Set());
+    urlsByKey.get(k).add(canonicalizeUrl(l.url));
+  }
+  let blanked = 0;
+  for (const l of listings) {
+    if (!l?.snippetOnly) continue;
+    const urls = urlsByKey.get(snippetKeyOf(l.snippet));
+    if (urls && urls.size > 1) {
+      l.snippet = '';
+      l.snippetShared = true;
+      blanked += 1;
+    }
+  }
+  return blanked;
+}
+
 export async function enrichPost({ apifyToken, url, actorId = FB_POSTS_ACTOR }) {
   if (!apifyToken || !url) return null;
   const endpoint = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;

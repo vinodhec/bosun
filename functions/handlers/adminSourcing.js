@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts } from '../utils/sourcing.js';
+import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts, settleEnrichment } from '../utils/sourcing.js';
 import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayOne } from './runSourcingJobs.js';
 import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
@@ -492,12 +492,9 @@ export const adminSourcingRelayLead = onCall(
       classifyStatus: 'manual', // provenance: a human, not the classifier, vouched for this lead
     };
     const enriched = (await enrichPosts({ apifyToken: process.env.APIFY_TOKEN, urls: [lead.url] })).get(lead.url);
-    if (enriched) {
-      if (enriched.text && enriched.text.length > listing.snippet.length) listing.snippet = enriched.text;
-      if (enriched.phone) listing.phone = enriched.phone;
-      if (enriched.postedAt) listing.postedAt = enriched.postedAt;
-      if (enriched.images?.length) listing.images = enriched.images;
-    }
+    // Same settle as the pipeline: the scraped post always beats the SERP snippet, and a body that
+    // is still SERP text (miss, or a scrape with no text) relays marked `snippetOnly` (maadiveedu #1655).
+    settleEnrichment(listing, enriched || null);
 
     const ok = await relayOne({ webhookUrl: cfg.webhookUrl, secret, orgId, listing });
     if (!ok) throw new HttpsError('unavailable', 'The org webhook did not accept the lead (non-2xx). Nothing was billed.');
