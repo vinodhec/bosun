@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
+import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -720,44 +720,24 @@ export async function runForOrg(
       const enriched = enrichedByUrl.get(c.listing.url);
       // An enrich miss is the paid scrape we bought and got nothing for — the direct Apify-waste
       // signal, and the reason a lead can reach the webhook with only its SERP snippet.
-      if (!enriched) {
-        leg.bump('enrichMissed');
-        // The paid scrape returned nothing, so this lead relays with its SERP snippet standing in
-        // for the post body — text Google may well have lifted from a neighbouring post. Say so on
-        // the wire: the platform's own bleed guard (web/src/lib/snippetBleed.ts) can only GUESS
-        // whether a body belongs to its title, and this flag turns that guess into a fact it is
-        // told. Additive field; an older platform build ignores it harmlessly.
-        c.listing.snippetOnly = true;
-        continue;
-      }
-      if (enriched.text) c.enrichedText = true; // the full-text pass (3c2) needs to know real text arrived
-      // ALWAYS prefer the scraped post over the SERP snippet — never "only if it is longer".
-      //
-      // The two texts are not comparable in quality. `enriched.text` was fetched from THIS post's
-      // own URL and is definitionally the right body. The snippet came off a Google results page,
-      // where (as the classify step above already notes) Google routinely lifts the text from an
-      // ADJACENT post. Ranking them by length let a long wrong snippet beat a short right post.
-      //
-      // That is how MaadiVeedu published `SP-009676`: the real post is the one line "House for
-      // Sales salem junction", the snippet Google served was a long Saligramam commercial-land ad,
-      // the length test kept the ad and discarded the post, and the listing went live in Chennai
-      // with somebody else's property in its description. `SP-009532` is the same shape — a Madurai
-      // plot that published as Madhavaram, Chennai, 450km away. Reported 2026-08-26.
-      //
-      // A scrape that returns EMPTY text still falls through to the snippet below, which is the
-      // honest fail-open: we have nothing better. It is marked as such so the platform can distrust it.
-      if (enriched.text) {
-        c.listing.snippet = enriched.text;
-      }
-      if (enriched.phone) c.listing.phone = enriched.phone;
-      if (enriched.postedAt) c.listing.postedAt = enriched.postedAt;
-      // Poster identity — the buyer lane's dedup handle (3f). Kept off the relay body: the platform
-      // has the post URL, and a scraped display name is not ours to forward.
-      if (enriched.author) c.author = enriched.author;
-      // Post photos ride to the webhook on the listing itself; only set when found (no empty arrays).
-      if (enriched.images?.length) c.listing.images = enriched.images;
+      if (!enriched) leg.bump('enrichMissed');
+      else if (!enriched.text) leg.bump('enrichNoText');
+      // settleEnrichment ALWAYS prefers the scraped post over the SERP snippet — never "only if it
+      // is longer". The snippet came off a Google results page, where Google routinely lifts the text
+      // from an ADJACENT post; ranking them by length let a long wrong snippet beat a short right
+      // post (`SP-009676`, `SP-009532`, reported 2026-08-26). When the scrape brought no text (a miss,
+      // or only a date / photos) the SERP snippet stands in and the listing is marked `snippetOnly`,
+      // so the platform's bleed guard (web/src/lib/snippetBleed.ts) is told instead of guessing.
+      const settled = settleEnrichment(c.listing, enriched);
+      if (settled.enrichedText) c.enrichedText = true; // the full-text pass (3c2) needs to know real text arrived
+      // Poster identity — the buyer lane's dedup handle (3f). Kept off the relay body.
+      if (settled.author) c.author = settled.author;
     }
   });
+  // A SERP-only body Google served on two different posts belongs to neither: blank it rather than
+  // relay somebody else's property under this URL (maadiveedu SP-020236, 2026-09-26).
+  const sharedBlanked = blankSharedSnippets(candidates.map((c) => c.listing));
+  if (sharedBlanked) leg.count('sharedSnippetBlanked', sharedBlanked);
   const withImages = candidates.filter((c) => c.listing.images?.length).length;
   console.log('runSourcingJobs:images', orgId, JSON.stringify({ withImages, paidScrapes: toEnrich.length, alreadyFull: preEnriched.length }));
   leg.count('enriched', toEnrich.length); // paid scrapes only — group-feed listings cost nothing here

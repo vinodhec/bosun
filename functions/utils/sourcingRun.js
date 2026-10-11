@@ -57,6 +57,8 @@ function blankFunnel() {
     poolDeferred: 0,       // 3c — trimmed to the enrich pool; NOT dropped, next run picks it up
     enriched: 0,           // 3c1 — paid FB scrapes actually attempted
     enrichMissed: 0,       // 3c1 — scraper returned nothing for the URL (kept, SERP snippet stands)
+    enrichNoText: 0,       // 3c1 — scraper returned the post but no text (date/photos only; SERP snippet stands, snippetOnly)
+    sharedSnippetBlanked: 0, // 3c1 — SERP-only body Google served on 2+ posts this run; blanked, never relayed
     withImages: 0,         // enriched posts that yielded photos
     withPhone: 0,          // enriched posts that yielded an owner phone
     fullTextConfirmed: 0,  // 3c2 — the full post text settled a locality-unknown lead: it proceeds
