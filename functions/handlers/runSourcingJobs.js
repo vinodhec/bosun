@@ -95,18 +95,18 @@ const BUYER_ROTATION_WINDOW = 8;
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    // HOURLY since 2026-09-28 (was every 30 min). Measured over 25-27 Sep, 39% of what a run fetched
-    // was already seen from an earlier run, and every Google-search actor run costs the same whether
-    // or not it finds anything new — the half-hour cadence was paying ~$3.3/day of SERP + ~$3.3/day
-    // of FB post scrapes for the supply lane alone, ~75% of the org's Apify bill. Hourly halves the
-    // fetch spend for a lead that arrives at most 30 min later. Per-org throttling below this
+    // EVERY 30 MIN since 2026-10-12 (owner: "fetch every 15-30 min so we get enough before tomorrow's
+    // plan"). History: 30 min until 2026-09-28, then hourly to halve the Apify bill (39% of a run's
+    // fetch was already seen; ~$6.6/day at half-hour), and the org sat at cronEveryHours 3 → only ~10
+    // relayed leads/day. 30 min, not 15: a topN-3 run measures 12-16 min and RUN_BUDGET_MS is 20, so a
+    // 15-min tick would start while the previous run is still going. Per-org throttling below this
     // (`sourcing.cronEveryHours`) is a Firestore flip, never a redeploy.
-    schedule: '0 * * * *', // top of every hour, 24h — 24 runs/day (topN 3 → each run ~12 min)
+    schedule: '*/30 * * * *', // :00 and :30, 24h — 48 runs/day (topN 3 → each run ~12-16 min)
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
-    // 1500s (25 min) < the hourly cadence, so a slow run can never overlap the next tick. A topN-3 run
+    // 1500s (25 min) < the 30-min cadence, so a slow run can never overlap the next tick. A topN-3 run
     // measures ~12 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
-    // wall, the hourly cadence + seen/dead dedup pick up the remaining due targets next run — no lead
+    // wall, the next tick + seen/dead dedup pick up the remaining due targets next run — no lead
     // is lost, just deferred.
     timeoutSeconds: 1500,
     memory: '512MiB',
