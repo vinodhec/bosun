@@ -305,10 +305,10 @@ export function renderDuesHtml({ orgName, rows }) {
   const total = rows.reduce((a, r) => a + invoiceDueInr(r.inv), 0);
   const day = (ms) => new Date(ms || Date.now()).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
   const body = rows.length
-    ? `<table><thead><tr><th>Invoice</th><th>Date</th><th class="r">Amount</th><th class="r">Due</th></tr></thead><tbody>
-      ${rows.map(({ inv, url }) => `<tr><td><a href="${esc(url)}">${esc(inv.number)}</a></td><td>${day(inv.issuedAtMs)}</td>
+    ? `<table><thead><tr><th>Invoice</th><th class="r">Amount</th><th class="r">Due</th></tr></thead><tbody>
+      ${rows.map(({ inv, url }) => `<tr><td><a href="${esc(url)}">${esc(inv.number)}</a></td>
         <td class="r">${inr(inv.payableInr ?? inv.totalInr)}</td><td class="r">${inr(invoiceDueInr(inv))}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td colspan="3">Total due</td><td class="r">${inr(total)}</td></tr></tfoot></table>`
+      </tbody><tfoot><tr><td colspan="2">Total due</td><td class="r">${inr(total)}</td></tr></tfoot></table>`
     : '<p class="ok">Nothing is due right now. Thank you!</p>';
   return `<!doctype html><html><head><meta charset="utf-8"><title>Payment due — ${esc(orgName || s.legalName)}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
