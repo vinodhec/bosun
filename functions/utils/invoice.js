@@ -11,6 +11,7 @@ import { invoiceDueInr, paymentStatusOf } from './payments.js';
 // `publicInvoice` function (firebase.json). Override with PUBLIC_BASE_URL when a custom domain lands.
 export const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://bosun-76bba.web.app').replace(/\/$/, '');
 export const shareUrlFor = (token) => `${PUBLIC_BASE_URL}/i/${encodeURIComponent(token)}`;
+export const duesUrlFor = (token) => `${PUBLIC_BASE_URL}/d/${encodeURIComponent(token)}`;
 
 /** The WhatsApp message that accompanies a shared invoice link (plain text, no markdown). */
 export function shareMessageFor(inv, url) {
@@ -281,5 +282,55 @@ export function renderInvoiceHtml(inv) {
     </div>
     <div class="muted" style="margin-top:14px">Subject to Erode, Tamil Nadu jurisdiction. E. &amp; O.E.</div>
   </div>
+</body></html>`;
+}
+
+/** The WhatsApp message that accompanies an org's payment-due link (plain text). */
+export function duesMessageFor(orgName, totalDueInr, count, url) {
+  const money = `₹${Number(totalDueInr || 0).toLocaleString('en-IN')}`;
+  return [
+    `Payment due to ${SUPPLIER.legalName}${orgName ? ` — ${orgName}` : ''}`,
+    count ? `${count} invoice${count === 1 ? '' : 's'} pending · total ${money}` : 'Nothing pending — thank you!',
+    `View invoices and how to pay: ${url}`,
+  ].join('\n');
+}
+
+/**
+ * Public "payment due" page for one org: the invoices that still have a balance due (oldest
+ * first), each linking to its own invoice page, the total, and the bank details to pay. Read-only;
+ * `rows` are { inv, url } with url the invoice's /i/ share link.
+ */
+export function renderDuesHtml({ orgName, rows }) {
+  const s = SUPPLIER;
+  const total = rows.reduce((a, r) => a + invoiceDueInr(r.inv), 0);
+  const day = (ms) => new Date(ms || Date.now()).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  const body = rows.length
+    ? `<table><thead><tr><th>Invoice</th><th>Date</th><th class="r">Amount</th><th class="r">Due</th></tr></thead><tbody>
+      ${rows.map(({ inv, url }) => `<tr><td><a href="${esc(url)}">${esc(inv.number)}</a></td><td>${day(inv.issuedAtMs)}</td>
+        <td class="r">${inr(inv.payableInr ?? inv.totalInr)}</td><td class="r">${inr(invoiceDueInr(inv))}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="3">Total due</td><td class="r">${inr(total)}</td></tr></tfoot></table>`
+    : '<p class="ok">Nothing is due right now. Thank you!</p>';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Payment due — ${esc(orgName || s.legalName)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<style>
+body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#111;background:#f6f7f9;margin:0;padding:24px 16px}
+.card{max-width:640px;margin:0 auto 16px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px}
+h1{font-size:20px;margin:0 0 4px}.muted{color:#6b7280;font-size:13px}.lbl{color:#6b7280;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.total{font-size:28px;font-weight:700;color:#b91c1c;margin:8px 0 0}
+table{width:100%;border-collapse:collapse;margin-top:8px}th,td{padding:8px 4px;border-bottom:1px solid #eee;text-align:left}
+th{font-size:12px;color:#6b7280;font-weight:600}td a{white-space:nowrap}.r{text-align:right}tfoot td{font-weight:700;border-bottom:0}
+a{color:#1d4ed8}.ok{color:#15803d;font-weight:600}.bank div{margin:2px 0}
+</style></head><body>
+<div class="card"><div class="lbl">Payment due</div>
+  <h1>${esc(orgName || '')}</h1>
+  <div class="muted">From ${esc(s.legalName)} · GSTIN ${esc(s.gstin)} · as of ${day(Date.now())}</div>
+  ${rows.length ? `<div class="total">${inr(total)}</div><div class="muted">${rows.length} invoice${rows.length === 1 ? '' : 's'} pending</div>` : ''}
+</div>
+<div class="card"><div class="lbl">Pending invoices</div>${body}
+  ${rows.length ? '<div class="muted" style="margin-top:8px">Tap an invoice number to view or download it.</div>' : ''}</div>
+${rows.length && s.bank ? `<div class="card bank"><div class="lbl">How to pay (bank transfer / UPI to account)</div>
+  <div style="font-weight:600;margin-top:6px">${esc(s.bank.holder || s.legalName)}</div>
+  <div>${esc(s.bank.name)}</div><div>A/C <b>${esc(s.bank.account)}</b></div><div>IFSC <b>${esc(s.bank.ifsc)}</b></div>
+  <div class="muted" style="margin-top:8px">Please mention the invoice numbers in the payment note${s.phone ? ` and share the receipt on ${esc(s.phone.split(',')[0].trim())}` : ''}.</div></div>` : ''}
 </body></html>`;
 }

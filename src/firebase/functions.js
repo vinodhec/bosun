@@ -103,6 +103,7 @@ export const adminDeletePayment = httpsCallable(functions, 'adminDeletePayment')
 export const adminListPayments = httpsCallable(functions, 'adminListPayments');
 export const adminReceivables = httpsCallable(functions, 'adminReceivables');
 export const adminInvoiceShareLink = httpsCallable(functions, 'adminInvoiceShareLink');
+export const adminDuesShareLink = httpsCallable(functions, 'adminDuesShareLink');
 export const adminGstReport = httpsCallable(functions, 'adminGstReport');
 // Operator-only: OUR vendor bills (Anthropic API credits) — the inward half of the GST reports.
 export const adminRecordPurchase = httpsCallable(functions, 'adminRecordPurchase');

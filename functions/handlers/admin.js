@@ -4,10 +4,11 @@ import { getAuth } from 'firebase-admin/auth';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
-import { renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor } from '../utils/invoice.js';
+import { renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor, duesUrlFor, duesMessageFor } from '../utils/invoice.js';
 import { receivablesSummary, paymentSummary } from '../utils/payments.js';
 import { recordPayment, deletePayment } from '../utils/receivables.js';
-import { ensureShareToken } from '../utils/invoiceShare.js';
+import { ensureShareToken, ensureDuesToken } from '../utils/invoiceShare.js';
+import { invoiceDueInr } from '../utils/payments.js';
 import { writeWalletCredit, invoiceCounterRef } from '../utils/walletCredit.js';
 import { normalizeAutoTopUp } from '../utils/autoTopUp.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
@@ -143,6 +144,25 @@ export const adminInvoiceShareLink = onCall({ region: REGION }, async (request) 
   const token = await ensureShareToken(ref, snap.data());
   const url = shareUrlFor(token);
   return { invoiceId, url, message: shareMessageFor(snap.data(), url) };
+});
+
+// Operator: the org's guest "payment due" link (/d/<token>, publicDues) — every invoice with a
+// balance due and how to pay, for a WhatsApp/email to the customer. Mints the token on first use.
+export const adminDuesShareLink = onCall({ region: REGION }, async (request) => {
+  requireAdmin(request);
+  const orgId = String(request.data?.orgId ?? '').trim();
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  const db = getFirestore();
+  const ref = db.collection('organisations').doc(orgId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+  const token = await ensureDuesToken(ref, snap.data());
+  const inv = await db.collection('invoices').where('orgId', '==', orgId).get();
+  const dues = inv.docs.map((d) => d.data()).filter((i) => i.status !== 'void' && invoiceDueInr(i) > 0);
+  const totalDueInr = dues.reduce((a, i) => a + invoiceDueInr(i), 0);
+  const url = duesUrlFor(token);
+  const name = snap.data().billing?.legalName || snap.data().name || '';
+  return { orgId, url, totalDueInr, count: dues.length, message: duesMessageFor(name, totalDueInr, dues.length, url) };
 });
 
 // Operator: configure an org's AUTO TOP-UP — a credit line: when the balance falls below

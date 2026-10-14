@@ -48,6 +48,7 @@ export {
   adminListPayments,
   adminReceivables,
   adminInvoiceShareLink,
+  adminDuesShareLink,
 } from './handlers/admin.js';
 
 // Auto top-up (credit line): an org's balance falling below its threshold credits the configured
@@ -57,7 +58,7 @@ export { autoTopUpOnBalance } from './handlers/autoTopUp.js';
 
 // Customer-facing GST tax invoices (issued on wallet top-ups). List + printable HTML + share link,
 // and the PUBLIC share-by-token page (Hosting rewrites /i/** to publicInvoice).
-export { listMyInvoices, getMyInvoiceHtml, getMyInvoiceShareLink, publicInvoice } from './handlers/invoices.js';
+export { listMyInvoices, getMyInvoiceHtml, getMyInvoiceShareLink, publicInvoice, publicDues } from './handlers/invoices.js';
 
 // Operator-only: connect an org's Figma account so a pasted design link enriches a fix with
 // exact design context (the agent builds the UI pixel-perfect).

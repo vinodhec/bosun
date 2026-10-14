@@ -4,6 +4,7 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [
       { "source": "/i/**", "function": { "functionId": "publicInvoice", "region": "asia-south1" } },
+      { "source": "/d/**", "function": { "functionId": "publicDues", "region": "asia-south1" } },
       { "source": "**", "destination": "/index.html" }
     ],
     "headers": [

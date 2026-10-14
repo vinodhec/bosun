@@ -16,6 +16,7 @@ import {
   adminListInvoices,
   adminInvoiceHtml,
   adminInvoiceShareLink,
+  adminDuesShareLink,
   adminRecordPayment,
   adminDeletePayment,
   adminListPayments,
@@ -935,6 +936,16 @@ function OrgInvoices({ orgId, invoices, onChanged }) {
     } catch { setErr('Could not create the share link.'); }
   };
 
+  // The org's guest "payment due" page: every pending invoice + how to pay, one link.
+  const shareDues = async (via) => {
+    setErr(''); setMsg('');
+    try {
+      const { data } = await adminDuesShareLink({ orgId });
+      if (via === 'wa') shareOnWhatsApp(data.message);
+      else setMsg((await copyText(data.url)) ? `Payment-due link copied: ${data.url}` : data.url);
+    } catch { setErr('Could not create the payment-due link.'); }
+  };
+
   const methodLabel = { upi: 'UPI', bank: 'Bank', cash: 'Cash', other: 'Other' };
   const dateOf = (ms) => (ms ? new Date(ms).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
 
@@ -947,6 +958,7 @@ function OrgInvoices({ orgId, invoices, onChanged }) {
             <span className="font-semibold text-green-700">{paidCount} paid</span> · <span className={`font-semibold ${pending.length ? 'text-red-700' : 'text-ink-soft'}`}>{pending.length} pending</span>
             {dueTotal > 0 && <> · <span className="font-semibold text-ink">{formatINR(dueTotal)} outstanding</span></>}
             {advanceInr > 0 && <> · {formatINR(advanceInr)} advance held</>}
+            {dueTotal > 0 && <> · <button className="underline" onClick={() => shareDues('wa')}>WhatsApp dues</button> · <button className="underline" onClick={() => shareDues('copy')}>Copy dues link</button></>}
           </p>
         )}
       </div>

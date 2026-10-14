@@ -1,8 +1,9 @@
 import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
 import { resolveOrgId, isMember } from '../utils/orgs.js';
-import { invoiceSummary, renderInvoiceHtml, shareUrlFor, shareMessageFor } from '../utils/invoice.js';
+import { invoiceSummary, renderInvoiceHtml, shareUrlFor, shareMessageFor, renderDuesHtml } from '../utils/invoice.js';
 import { ensureShareToken } from '../utils/invoiceShare.js';
+import { invoiceDueInr } from '../utils/payments.js';
 
 // Customer-facing invoice views. Invoices are org-scoped; a member sees their org's tax invoices
 // (issued on wallet top-ups) and can open one as printable HTML to save as a PDF.
@@ -80,6 +81,30 @@ export const publicInvoice = onRequest({ region: REGION, cors: false, timeoutSec
   const snap = await getFirestore().collection('invoices').where('shareToken', '==', token).limit(1).get();
   if (snap.empty) { res.status(404).type('html').send(NOT_FOUND_HTML); return; }
   res.status(200).type('html').send(renderInvoiceHtml(snap.docs[0].data()));
+});
+
+// PUBLIC "payment due" page for an org, reached by its dues token only — Hosting rewrites
+// /d/<token> here. Lists the org's invoices that still have a balance due (live amounts), each
+// linked to its own /i/ page (minting that invoice's token if it has none), plus how to pay.
+export const publicDues = onRequest({ region: REGION, cors: false, timeoutSeconds: 30 }, async (req, res) => {
+  res.set('Cache-Control', 'private, no-store');
+  res.set('X-Robots-Tag', 'noindex, nofollow');
+  if (req.method !== 'GET') { res.status(405).send('GET only'); return; }
+  const fromPath = decodeURIComponent((req.path || '').split('/').filter(Boolean).pop() || '');
+  const token = String(req.query?.t || fromPath || '').trim();
+  if (!/^[a-f0-9]{32}$/.test(token)) { res.status(404).type('html').send(NOT_FOUND_HTML); return; }
+  const db = getFirestore();
+  const orgSnap = await db.collection('organisations').where('duesShareToken', '==', token).limit(1).get();
+  if (orgSnap.empty) { res.status(404).type('html').send(NOT_FOUND_HTML); return; }
+  const org = orgSnap.docs[0];
+  const invSnap = await db.collection('invoices').where('orgId', '==', org.id).get();
+  const due = invSnap.docs
+    .filter((d) => d.data().status !== 'void' && invoiceDueInr(d.data()) > 0)
+    .sort((a, b) => (a.data().issuedAtMs || 0) - (b.data().issuedAtMs || 0));
+  const rows = [];
+  for (const d of due) rows.push({ inv: d.data(), url: shareUrlFor(await ensureShareToken(d.ref, d.data())) });
+  const orgName = org.data().billing?.legalName || org.data().name || '';
+  res.status(200).type('html').send(renderDuesHtml({ orgName, rows }));
 });
 
 const NOT_FOUND_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Invoice not found</title>

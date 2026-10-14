@@ -10,3 +10,13 @@ export async function ensureShareToken(ref, data) {
   await ref.update({ shareToken: token, shareTokenAtMs: Date.now() });
   return token;
 }
+
+// The org-level "payment due" page (/d/<token> → publicDues): every invoice of the org with a
+// balance due, the total, and how to pay. Same idea as above: one random token per org, minted on
+// first share, stored as `organisations/{id}.duesShareToken`, revoked by clearing the field.
+export async function ensureDuesToken(orgRef, org) {
+  if (org?.duesShareToken) return org.duesShareToken;
+  const token = randomBytes(16).toString('hex');
+  await orgRef.update({ duesShareToken: token, duesShareTokenAtMs: Date.now() });
+  return token;
+}
