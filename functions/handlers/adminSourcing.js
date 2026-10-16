@@ -1,7 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts, settleEnrichment } from '../utils/sourcing.js';
-import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayOne } from './runSourcingJobs.js';
+import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayListing } from './runSourcingJobs.js';
 import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -508,8 +508,17 @@ export const adminSourcingRelayLead = onCall(
     // is still SERP text (miss, or a scrape with no text) relays marked `snippetOnly` (maadiveedu #1655).
     settleEnrichment(listing, enriched || null);
 
-    const ok = await relayOne({ webhookUrl: cfg.webhookUrl, secret, orgId, listing });
+    const { ok, billable, autoRejected } = await relayListing({ webhookUrl: cfg.webhookUrl, secret, orgId, listing });
     if (!ok) throw new HttpsError('unavailable', 'The org webhook did not accept the lead (non-2xx). Nothing was billed.');
+    if (!billable) {
+      // The receiver binned it on arrival (already-known seller) — seen, never charged. Same rule as
+      // the batch path (relayListing).
+      await seenRef.set({
+        url: listing.url, title: listing.title, postedAt: listing.postedAt || null, leadType: listing.leadType || null,
+        relayedAt: FieldValue.serverTimestamp(), manual: true, relayedBy: email, billed: false,
+      });
+      return { ok: true, billed: false, amountInr: 0, note: `The platform auto-rejected it on arrival (${autoRejected}). Nothing was billed.` };
+    }
 
     // Delivered — now the money, mirroring the batch path: mark seen (plain set, clearing any dead
     // marker), then one transactional unit-price debit.

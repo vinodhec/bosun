@@ -314,8 +314,7 @@ REST API** instead:
 
 A separate, near-zero-COGS metered lane — it never touches the fix pipeline or `finalize.js`.
 Cron `runSourcingJobs` (`functions/handlers/runSourcingJobs.js`, HOURLY around the clock — 24
-runs/day, IST-anchored; was every 30 min until 2026-09-28, when 39% of each run's fetch was found to be
-already-seen results paid for again) runs for every org with `sourcing.enabled`. Per org,
+runs/day, IST-anchored; every 30 min until 2026-09-28 and again 2026-10-12 → 10-16, hourly since) runs for every org with `sourcing.enabled`. Per org,
 `sourcing.cronEveryHours = N` throttles it to IST hours divisible by N — a Firestore flip, not a
 redeploy, for an org running out of Apify budget (Apify is the ORG's bill, see "Relay & billing"):
 
@@ -411,6 +410,14 @@ redeploy, for an org running out of Apify budget (Apify is the ORG's bill, see "
   $2.60/1,000 posts (~₹150/day, ~35–50 posts per relayed lead) sets the ORG's all-in economics
   (~₹21–25 per buyer lead with this charge on top) and must never be folded into the unit price.
   Re-price by editing that one constant; nothing else in the lane reads a rate.
+- **Arrival auto-rejects are not billed** (2026-10-16) — `relayListing` reads the 2xx body: a
+  receiver that answers `billable: false` (MaadiVeedu: seller already has a posted property / was
+  already called) has the lead marked seen (`billed: false` on the seen doc, never re-sent) but not
+  charged, and it is not counted in `relayed`; funnel key `relayedUnbilled`. Silence = billable.
+- **Region / language gate** (2026-10-16) — the classifier also returns `state` and `language`;
+  `orgFitDropReason` drops (dead, funnel `orgFitDropped`) a lead whose state or language is outside
+  `sourcing.allowedStates` / `sourcing.allowedLanguages`. Empty lists = no filter; unknown = kept.
+  MaadiVeedu: Tamil Nadu + Puducherry, tamil + english.
 - **Operator override** — `adminSourcingRelayLead` relays ONE recorded (dropped) lead by hand from
   the run-detail panel ("Relay & bill"): enrich → same HMAC webhook → mark seen → debit the same
   one-lead unit price. The gates are advice, the human is the backstop — the money rules never bend

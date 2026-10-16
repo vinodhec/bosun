@@ -1,7 +1,7 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
-import { classifyListing, hasPropertySignal, MIN_CONFIDENCE } from '../utils/classifyListing.js';
+import { classifyListing, hasPropertySignal, MIN_CONFIDENCE, orgFitDropReason } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { startRun, NULL_LEG } from '../utils/sourcingRun.js';
@@ -95,16 +95,15 @@ const BUYER_ROTATION_WINDOW = 8;
 export const runSourcingJobs = onSchedule(
   {
     region: 'asia-south1',
-    // EVERY 30 MIN since 2026-10-12 (owner: "fetch every 15-30 min so we get enough before tomorrow's
-    // plan"). History: 30 min until 2026-09-28, then hourly to halve the Apify bill (39% of a run's
-    // fetch was already seen; ~$6.6/day at half-hour), and the org sat at cronEveryHours 3 → only ~10
-    // relayed leads/day. 30 min, not 15: a topN-3 run measures 12-16 min and RUN_BUDGET_MS is 20, so a
-    // 15-min tick would start while the previous run is still going. Per-org throttling below this
+    // HOURLY since 2026-10-16 (owner: "make it as 1 hour fetch" — cutting relayed volume ~30-40%
+    // alongside the arrival-duplicate no-charge and the region/language gate). History: 30 min until
+    // 2026-09-28, hourly to 2026-10-12 (39% of a run's fetch was already seen), every 30 min
+    // 2026-10-12 → 10-16 for overnight supply. Per-org throttling below this
     // (`sourcing.cronEveryHours`) is a Firestore flip, never a redeploy.
-    schedule: '*/30 * * * *', // :00 and :30, 24h — 48 runs/day (topN 3 → each run ~12-16 min)
+    schedule: '0 * * * *', // :00 every hour, 24h — 24 runs/day (topN 3 → each run ~12-16 min)
     timeZone: 'Asia/Kolkata',
     secrets: [APIFY_TOKEN],
-    // 1500s (25 min) < the 30-min cadence, so a slow run can never overlap the next tick. A topN-3 run
+    // 1500s (25 min) < the hourly cadence, so a slow run can never overlap the next tick. A topN-3 run
     // measures ~12 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
     // wall, the next tick + seen/dead dedup pick up the remaining due targets next run — no lead
     // is lost, just deferred.
@@ -584,6 +583,14 @@ export async function runForOrg(
         shape: target.shape,
       });
       const side = verdict.side || 'offering'; // degraded verdicts carry no side — fail toward supply
+      // Another state, or a language the org's callers can't work (sourcing.allowedStates /
+      // allowedLanguages, see orgFitDropReason) — dead, on either side, salvage lane included.
+      const fitDrop = orgFitDropReason(verdict, cfg);
+      if (fitDrop) {
+        c.drop = true;
+        c.dropReason = fitDrop;
+        return;
+      }
       if (!verdict.keep && !verdict.degraded) {
         // Locality-UNKNOWN is not locality-WRONG. Google truncates titles right where Indian posts
         // put the place ("...for Sale near ...") and group-page snippets are often lifted from an
@@ -658,6 +665,7 @@ export async function runForOrg(
       else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
       else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
       else if (c.dropReason === 'supply-post') leg.bump('supplyDropped');
+      else if (isOrgFitDrop(c.dropReason)) leg.bump('orgFitDropped');
       else leg.bump('offTargetDropped');
       leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify', dropReason: c.dropReason || 'off-target' });
     }
@@ -785,6 +793,12 @@ export async function runForOrg(
           c.listing.classifyStatus = 'unverified';
           return;
         }
+        const fitDrop = orgFitDropReason(verdict, cfg);
+        if (fitDrop) {
+          c.drop = true;
+          c.dropReason = fitDrop;
+          return;
+        }
         if (!verdict.keep) {
           const salvageable = salvageOffTarget && side === 'offering' && verdict.isListing
             && !verdict.localityMatches && verdict.confidence >= MIN_CONFIDENCE
@@ -827,6 +841,7 @@ export async function runForOrg(
         else if (c.dropReason === 'degraded-no-india-signal') leg.bump('degradedDropped');
         else if (c.dropReason === 'buyer-post') leg.bump('buyerDropped');
         else if (c.dropReason === 'supply-post') leg.bump('supplyDropped');
+        else if (isOrgFitDrop(c.dropReason)) leg.bump('orgFitDropped');
         else leg.bump('fullTextDropped');
         leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'classify-full', dropReason: c.dropReason });
       }
@@ -1009,14 +1024,16 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
-  // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery).
+  // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery), and charge only the
+  // ones the receiver kept (see relayListing — an arrival auto-reject is seen but never billed).
   let relayed = 0;
+  let unbilled = 0;
   let buyerRelayed = 0;
   let projectRelayed = 0;
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
-    const ok = await relayOne({ webhookUrl, secret, orgId, listing });
+    const { ok, billable } = await relayListing({ webhookUrl, secret, orgId, listing });
     if (ok) {
       await seenCol.doc(key).set({
         url: listing.url,
@@ -1024,6 +1041,7 @@ export async function runForOrg(
         postedAt: listing.postedAt || null, // FB post date (for recency audits)
         leadType: listing.leadType || null, // 'buyer' / 'off-target' salvage lanes; null = supply
         relayedAt: FieldValue.serverTimestamp(),
+        ...(billable ? {} : { billed: false }), // receiver auto-rejected on arrival — audit marker
       });
       // Record the owner+property fingerprint so a future run's repost (a NEW URL for the SAME
       // property) is caught by the cross-run owner dedup (3f). Only a RELAYED lead writes this — a
@@ -1035,6 +1053,14 @@ export async function runForOrg(
           phone: listing.phone || null,
           relayedAt: FieldValue.serverTimestamp(),
         });
+      }
+      if (!billable) {
+        // Delivered, recorded as seen, but the receiver binned it on arrival: no charge, and it
+        // must not count toward `relayed` (that number IS the bill).
+        unbilled += 1;
+        leg.bump('relayedUnbilled');
+        leg.lead({ key, listing, stage: 'dropped', dropStage: 'relay', dropReason: 'receiver auto-rejected on arrival (not billed)' });
+        return;
       }
       if (listing.postedAt) relayedDates.push(listing.postedAt);
       relayed += 1;
@@ -1065,6 +1091,7 @@ export async function runForOrg(
     }
   });
   leg.count('relayed', relayed);
+  if (unbilled) console.log('runSourcingJobs:relayed-unbilled', orgId, JSON.stringify({ unbilled, billed: relayed }));
   // Persist the enriched-but-dropped links so they're never re-enriched (covers the normal path and
   // the relayed-0 path below). Runs after relay so a listing is never both relayed and marked dead.
   await flushDead();
@@ -1252,16 +1279,28 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
   }
 }
 
+/** A drop from the org's region/language allow-lists (orgFitDropReason) — counted on its own. */
+function isOrgFitDrop(reason) {
+  return /^(out-of-region|wrong-language):/.test(String(reason || ''));
+}
+
 // Build a short "2BHK · Villa / House · Sale" hint from a matrix target's dominant shape, if present.
 function shapeLabel(t) {
   const s = t.dominantShape || t.shape || {};
   return [s.bhkType, s.propertyType, s.listingType].filter(Boolean).join(' · ') || undefined;
 }
 
-// HMAC-sign and POST one listing to the org's webhook. Returns true on a 2xx, false on anything
-// else (so the caller does NOT mark it seen and does NOT charge — Bosun retries it next run).
+// HMAC-sign and POST one listing to the org's webhook. Returns `{ ok, billable }`:
+//   ok       — a 2xx. false on anything else, so the caller does NOT mark it seen and does NOT
+//              charge (Bosun retries it next run).
+//   billable — false when the receiver ACCEPTED the lead but auto-rejected it on arrival and said so
+//              in the body (`billable: false`, e.g. MaadiVeedu's "seller already has a posted
+//              property / was already called on an earlier lead" check). Marked seen like any
+//              delivery — it must never be re-sent — but not charged. Owner decision 2026-10-16:
+//              1,913 of 6,764 relays in the 30 days to that date (28%) were exactly this, billed
+//              for leads no caller ever saw. A receiver that says nothing stays billable (default).
 // Exported for the operator's manual per-lead relay (adminSourcing.js#adminSourcingRelayLead).
-export async function relayOne({ webhookUrl, secret, orgId, listing }) {
+export async function relayListing({ webhookUrl, secret, orgId, listing }) {
   const body = JSON.stringify({ orgId, listing, source: { via: 'bosun', url: listing.url } });
   const { signature, timestamp } = signPayload(secret, body);
   const ctrl = new AbortController();
@@ -1277,10 +1316,14 @@ export async function relayOne({ webhookUrl, secret, orgId, listing }) {
       body,
       signal: ctrl.signal,
     });
-    return resp.ok;
+    if (!resp.ok) return { ok: false, billable: false };
+    // Best-effort read of the ack — an empty or non-JSON 2xx body is an ordinary billable delivery.
+    const ack = await resp.json().catch(() => null);
+    const billable = !(ack && ack.billable === false);
+    return { ok: true, billable, autoRejected: billable ? null : String(ack.autoRejected || 'auto-rejected') };
   } catch (e) {
     console.error('relayOne:err', orgId, e?.message || e);
-    return false;
+    return { ok: false, billable: false };
   } finally {
     clearTimeout(timer);
   }

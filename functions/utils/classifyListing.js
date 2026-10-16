@@ -92,12 +92,17 @@ const SCHEMA = {
     isProject: { type: 'boolean' },
     projectName: { type: 'string' },
     promoterName: { type: 'string' },
+    // Where the property is and what the post is written in — read by `orgFitDropReason` against the
+    // org's own allow-lists. Not in `required`: absent degrades to '' = unknown = kept.
+    state: { type: 'string' },
+    language: { type: 'string', enum: ['english', 'tamil', 'hindi', 'telugu', 'malayalam', 'kannada', 'marathi', 'bengali', 'other'] },
     reason: { type: 'string' },
   },
   required: ['isListing', 'side', 'localityMatches', 'confidence'],
   propertyOrdering: [
     'isListing', 'side', 'localityMatches', 'localityNamed', 'confidence', 'locality', 'bhk',
-    'propertyType', 'listingType', 'priceText', 'phone', 'isProject', 'projectName', 'promoterName', 'reason',
+    'propertyType', 'listingType', 'priceText', 'phone', 'isProject', 'projectName', 'promoterName', 'state',
+    'language', 'reason',
   ],
 };
 
@@ -136,7 +141,8 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `'offering' because the snippet advertises one while the title asks):\n` +
     `"""${body.slice(0, 1500)}"""\n\n` +
     `Decide: isListing (a genuine post about ONE specific property need — either someone offering a ` +
-    `property or someone looking for one; NOT a shop ad, service promo, or news), side ('offering' ` +
+    `property or someone looking for one; NOT a shop ad, service promo, vehicle sale, job post, news, ` +
+    `a market-trend or price-rise article, or a personal / political post), side ('offering' ` +
     `when the poster HAS a property to sell/rent — owner, builder or agent; 'seeking' when the poster ` +
     `is LOOKING FOR a property to buy/rent). Seller ads routinely open with rhetorical hooks like ` +
     `"Looking for a spacious home?" before pitching a property for sale — those are 'offering'. So ` +
@@ -155,7 +161,15 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     `or villa project, a gated community, "new launch", "booking open", "promoters", "sites available" ` +
     `— NOT a single owner property, a resale flat, or a broker's one listing. When true, extract ` +
     `projectName (the layout/project's name, e.g. "Sri Karpaga Vinayagar Nagar") and promoterName ` +
-    `(the builder/promoter company) if stated.`;
+    `(the builder/promoter company) if stated. ` +
+    `state: the Indian STATE or union territory the property (or the place the seeker wants) is in, ` +
+    `as its full English name ("Tamil Nadu", "Kerala", "Uttar Pradesh", "Puducherry") — work it out ` +
+    `from the city/locality when the post names no state (Lucknow → "Uttar Pradesh", Borivali → ` +
+    `"Maharashtra"); empty string when the text doesn't let you tell. language: the language the ` +
+    `post is MAINLY written in, judged from the TITLE when title and snippet disagree. Tamil written ` +
+    `in English letters ("veedu virpanaikku") is 'tamil'; Hindi written in English letters ("plot ` +
+    `ke samne", "makan for sale") is 'hindi'; an English post that only quotes local place names is ` +
+    `'english'.`;
 
   // FLASH, not FLASH_LITE. This gate only ever sees the SERP title + ~145-char snippet (see the
   // caller in runSourcingJobs.js), which is truncated mid-sentence and strips the context that makes
@@ -196,6 +210,37 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
       projectName: String(j.projectName || '').slice(0, 120),
       promoterName: String(j.promoterName || '').slice(0, 120),
     },
+    state: String(j.state || '').trim().slice(0, 60),
+    language: String(j.language || '').trim().toLowerCase(),
     reason: String(j.reason || '').slice(0, 160),
   };
+}
+
+// ── Region + language fit (2026-10-16) ──────────────────────────────────────────────────────────
+// A post can be a genuine listing and still be worthless to the org that pays for it. MaadiVeedu's
+// callers reject, by hand, listings in Lucknow / Borivali / Hyderabad / Shimla (the off-target lane
+// salvages ANY confident listing, wherever it is) and posts in Hindi / Telugu / Malayalam that their
+// Tamil-and-English callers cannot work: ~140 a month in staff's "other" notes, every one of them
+// billed. So each org may declare what it can use:
+//   sourcing.allowedStates    — e.g. ['Tamil Nadu', 'Puducherry']
+//   sourcing.allowedLanguages — e.g. ['tamil', 'english']
+// Absent / empty = no filter (every other org is unchanged). Only a POSITIVE mismatch drops: an
+// unknown state or language keeps the lead — this gate removes the clearly-wrong, never the unsure.
+const normState = (s) => String(s || '').toLowerCase().replace(/[^a-z]/g, '')
+  .replace(/^pondicherry$/, 'puducherry').replace(/^tn$/, 'tamilnadu');
+
+/**
+ * Returns a drop reason ('out-of-region: Kerala' / 'wrong-language: hindi') when a confident verdict
+ * names a state or language outside the org's allow-lists, else ''. Degraded verdicts are never
+ * judged here (they carry no state/language).
+ */
+export function orgFitDropReason(verdict, cfg = {}) {
+  if (!verdict || verdict.degraded) return '';
+  const states = Array.isArray(cfg.allowedStates) ? cfg.allowedStates.map(normState).filter(Boolean) : [];
+  const langs = Array.isArray(cfg.allowedLanguages) ? cfg.allowedLanguages.map((l) => String(l).toLowerCase().trim()).filter(Boolean) : [];
+  const st = normState(verdict.state);
+  if (states.length && st && !states.includes(st)) return `out-of-region: ${verdict.state}`;
+  const lang = String(verdict.language || '');
+  if (langs.length && lang && lang !== 'other' && !langs.includes(lang)) return `wrong-language: ${lang}`;
+  return '';
 }
