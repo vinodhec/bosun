@@ -507,7 +507,9 @@ call injectable). Firestore, scheduling, money, endpoint: `handlers/buyerChecks.
   our own history (`sourcingSeen` owner docs = every seller phone we relayed; other `buyerChecks`
   records on the same phone/profile/poster); the platform's behaviour snapshot (`buyerCheck.snapshotUrl`,
   GET signed `${ts}.buyer-snapshot`); Google on the phone and name (the org's SERP actor);
-  the Facebook profile (`buyerCheck.profileActorId`, optional); staff call outcomes. Every line carries
+  the Facebook profile (Apify `cleansyntax~facebook-profile-posts-scraper` by default — details +
+  latest posts in two calls; `buyerCheck.profileActorId` overrides, `false` skips); staff call
+  outcomes. Every line carries
   its link and the exact words. A private profile / empty search is "no evidence", never a bad sign.
 - **Verdict**: Sonnet 5.5 via `utils/claude.js#generateStructured` (structured outputs — the forced-tool
   trick `generateJson` uses is a 400 on the 5.5 tier). The SCORE decides the label

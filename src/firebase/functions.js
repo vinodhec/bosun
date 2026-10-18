@@ -125,6 +125,12 @@ export const adminSourceBuyers = httpsCallable(functions, 'adminSourceBuyers');
 export const adminSetSourcingLanes = httpsCallable(functions, 'adminSetSourcingLanes');
 // Plan today's admin work queue by hand — recovers a day the wallet gate withheld, after a top-up.
 export const adminPlanNow = httpsCallable(functions, 'adminPlanNow');
+// Buyer background checks: configure an org (batch size, platform URLs, Telegram), run a batch now,
+// send today's digest now, and read the records / runs / one buyer's timeline.
+export const adminSetBuyerCheck = httpsCallable(functions, 'adminSetBuyerCheck');
+export const adminRunBuyerChecksNow = httpsCallable(functions, 'adminRunBuyerChecksNow');
+export const adminBuyerCheckReportNow = httpsCallable(functions, 'adminBuyerCheckReportNow');
+export const adminBuyerChecks = httpsCallable(functions, 'adminBuyerChecks');
 
 // Customer-facing GST invoices.
 export const listMyInvoices = httpsCallable(functions, 'listMyInvoices');

@@ -201,18 +201,41 @@ async function searchGoogle({ apifyToken, actorId, query }) {
   return (items || []).slice(0, 10);
 }
 
-/** One profile through the org's configured Apify actor; the actor's item shape is parsed leniently by profileEvidence. */
-async function fetchProfile({ apifyToken, actorId, profileUrl }) {
-  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}&timeout=120`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ startUrls: [{ url: profileUrl }], profileUrls: [profileUrl], resultsLimit: 10, maxPosts: 10 }),
-    signal: AbortSignal.timeout(150000),
-  });
+/** The actor the profile step was built and tested against (2026-10-18): details + posts are two "endpoints" of one actor. */
+export const DEFAULT_PROFILE_ACTOR = 'cleansyntax~facebook-profile-posts-scraper';
+const PROFILE_POSTS = 8;
+
+async function apifySync({ apifyToken, actorId, input, timeoutS = 150 }) {
+  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}&timeout=${timeoutS}`;
+  const resp = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout((timeoutS + 20) * 1000) });
   if (!resp.ok) throw new Error(`profile http ${resp.status}`);
   const items = await resp.json().catch(() => []);
-  if (!Array.isArray(items) || !items.length) return null;
+  return Array.isArray(items) ? items : [];
+}
+
+/**
+ * One Facebook profile / page → `{ name, intro, category, followers, posts[] , url }` for profileEvidence.
+ * The default actor answers in two calls (details, then the latest public posts); any other actor id is
+ * tried with the common `startUrls` shape and parsed leniently. A profile the actor cannot read → null
+ * ("no evidence"), never a throw past the caller's catch.
+ */
+async function fetchProfile({ apifyToken, actorId, profileUrl }) {
+  if (actorId === DEFAULT_PROFILE_ACTOR) {
+    const [details, posts] = await Promise.all([
+      apifySync({ apifyToken, actorId, input: { endpoint: 'details_by_url', urls_text: profileUrl } }).catch(() => []),
+      apifySync({ apifyToken, actorId, input: { endpoint: 'profile_posts_by_url', urls_text: profileUrl, max_posts: PROFILE_POSTS } }).catch(() => []),
+    ]);
+    const p = details.find((it) => it?.profile && typeof it.profile === 'object')?.profile || null;
+    const texts = posts.map((it) => it?.message || it?.text || '').filter(Boolean).slice(0, PROFILE_POSTS);
+    if (!p && !texts.length) return null;
+    return {
+      name: p?.name || null, intro: p?.intro || p?.about || null, category: p?.category || p?.categories || null,
+      followers: Number(p?.followers ?? p?.followers_count ?? p?.likes) || 0, url: p?.url || profileUrl,
+      type: p?.category ? 'page' : 'profile', posts: texts,
+    };
+  }
+  const items = await apifySync({ apifyToken, actorId, input: { startUrls: [{ url: profileUrl }], profileUrls: [profileUrl], resultsLimit: 10, maxPosts: PROFILE_POSTS } });
+  if (!items.length) return null;
   const first = items[0] && typeof items[0] === 'object' ? { ...items[0] } : null;
   if (!first) return null;
   // Some actors return one row per post rather than one profile row — fold the texts in.
@@ -239,7 +262,7 @@ export async function checkOne({ db, orgId, org, secret, recRef, rec, deps = {},
     fetchSnapshot: deps.fetchSnapshot || ((r) => fetchSnapshotFromPlatform({ cfg, secret, rec: r })),
     searchGoogle: deps.searchGoogle || (apifyToken ? ({ query }) => searchGoogle({ apifyToken, actorId: serpActor, query }) : null),
     // The profile scrape is the dear one; the override review re-reads behaviour + search only.
-    fetchProfile: dueReason === 'override_review' ? null : (deps.fetchProfile || (apifyToken && cfg.profileActorId ? (profileUrl) => fetchProfile({ apifyToken, actorId: cfg.profileActorId, profileUrl }) : null)),
+    fetchProfile: dueReason === 'override_review' ? null : (deps.fetchProfile || (apifyToken && cfg.profileActorId !== false ? (profileUrl) => fetchProfile({ apifyToken, actorId: cfg.profileActorId || DEFAULT_PROFILE_ACTOR, profileUrl }) : null)),
   };
   events.push(event('check_started', { atMs: nowMs, text: `Check #${checkNo} started (${dueReason.replace('_', ' ')})`, checkNo }));
 

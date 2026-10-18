@@ -46,6 +46,7 @@ import { onSnapshot, taskDocRef } from '../firebase/firestore.js';
 import Navbar from '../components/Navbar.jsx';
 import { shareOnWhatsApp, copyText } from '../utils/share.js';
 import SourcingRuns from '../components/SourcingRuns.jsx';
+import BuyerChecks from '../components/BuyerChecks.jsx';
 import RevenueCharts from '../components/RevenueCharts.jsx';
 import ScreenshotComposer from '../components/ScreenshotComposer.jsx';
 import { useImageAttachments } from '../hooks/useImageAttachments.js';
@@ -2064,6 +2065,8 @@ export default function Admin() {
         {metrics?.conversionRules && <ConversionRules data={metrics.conversionRules} />}
 
         <SourcingRuns orgs={orgs} />
+
+        <BuyerChecks orgs={orgs} />
 
         <section className="rounded-2xl border border-line bg-white p-5">
           <h2 className="font-semibold text-ink">Organisations</h2>
