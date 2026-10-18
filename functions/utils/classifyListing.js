@@ -107,6 +107,35 @@ const SCHEMA = {
   ],
 };
 
+// Haiku 5.5 reads "in or immediately around" much more narrowly than gemini-2.5-flash. On 120
+// recorded leads (2026-10-18) it dropped Old Pallavaram for Pallavaram, Shenoy Nagar for Anna Nagar
+// and Karanodai for Red Hills, and called a post that names only the CITY a locality mismatch. This
+// note is sent to Claude only, so the Gemini verdicts do not move.
+const CLAUDE_LOCALITY_NOTE =
+  `\n\nHow to judge the locality. "Immediately around" is a buyer's radius, not a boundary: a ` +
+  `neighbouring area, a suburb or village on the same side of town, an "Old"/"New"/"East"/"West" ` +
+  `part of the target, a road or nagar inside it, or anywhere a buyer looking in the target would ` +
+  `still drive over to see (roughly 5-8 km in a city, a little more outside one) is a MATCH. Only a ` +
+  `different town, a different part of a big city, or another state is a mismatch. When the text ` +
+  `names only the CITY (or district) and no locality, set localityNamed false and localityMatches ` +
+  `false: the full post is fetched and judged again, so this is a deferral, not a reject. A ` +
+  `directory or agency page that lists several properties in the target is still a genuine ` +
+  `listing for isListing. confidence is how sure you are that this is a genuine property post on ` +
+  `the side you chose; a missing place name does not lower it.`;
+
+// Claude fills a tool call's fields in schema order, so with `reason` last it commits to
+// localityMatches before it has placed the property ("Pallavaram is a neighbouring suburb of
+// Ponneri? No: ..." came back with localityMatches true). Asking for the reasoning FIRST fixes the order.
+const { reason: _reason, ...REST_PROPS } = SCHEMA.properties;
+const CLAUDE_SCHEMA = {
+  ...SCHEMA,
+  properties: {
+    reason: { type: 'string', description: 'Write this FIRST, in one or two sentences: what the post offers or seeks, where the property is, and how far that is from the target locality.' },
+    ...REST_PROPS,
+  },
+  required: ['reason', ...SCHEMA.required],
+};
+
 const SYSTEM =
   'You classify and extract fields from real-estate posts scraped from Facebook. Be strict about ' +
   'whether the property is located in or immediately around the target locality. Output JSON only.';
@@ -192,7 +221,7 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
   let j = null;
   let model = GEMINI_FLASH;
   if (useClaude) {
-    j = await generateJsonClaude({ model: CLAUDE_HAIKU, prompt, system: SYSTEM, schema: SCHEMA, maxOutputTokens: 700 });
+    j = await generateJsonClaude({ model: CLAUDE_HAIKU, prompt: prompt + CLAUDE_LOCALITY_NOTE, system: SYSTEM, schema: CLAUDE_SCHEMA, maxOutputTokens: 700 });
     if (j) model = CLAUDE_HAIKU;
   }
   if (!j && geminiConfigured()) j = await generateJson({ model: GEMINI_FLASH, prompt, system: SYSTEM, schema: SCHEMA, thinkingBudget: 0 });

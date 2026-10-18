@@ -229,6 +229,7 @@ export function startRun(db, orgId, trigger) {
             freshness: listing.freshness || null,
             leadType: listing.leadType || null, // 'buyer' / 'off-target' salvage lanes; null = supply
             classifyStatus: listing.classifyStatus || null,
+            classifyModel: listing.classifyModel || null,
             listingType: listing.extracted?.listingType || null,
             propertyType: listing.extracted?.propertyType || null,
             priceText: clip(listing.extracted?.price, 60) || null,
