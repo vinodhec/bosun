@@ -584,6 +584,9 @@ export async function runForOrg(
         provider: cfg.classifyProvider,
       });
       const side = verdict.side || 'offering'; // degraded verdicts carry no side — fail toward supply
+      // Which model judged it (Haiku 5.5 or Gemini Flash, see classifyListing `provider`) — kept on the
+      // audit row so the classifyProvider trial can compare staff acceptance per model.
+      c.listing.classifyModel = verdict.model || null;
       // Another state, or a language the org's callers can't work (sourcing.allowedStates /
       // allowedLanguages, see orgFitDropReason) — dead, on either side, salvage lane included.
       const fitDrop = orgFitDropReason(verdict, cfg);
@@ -785,6 +788,7 @@ export async function runForOrg(
           provider: cfg.classifyProvider,
         });
         const side = verdict.side || 'offering';
+        c.listing.classifyModel = verdict.model || null;
         if (verdict.degraded) {
           // Same signal-gated fail-open as 3b — a classifier outage mid-run must not flip fate.
           if (!hasIndiaSignal(`${c.listing.title || ''} ${c.listing.snippet || ''}`, target.locality)) {
