@@ -40,7 +40,7 @@ import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 import { settleMetered } from '../utils/meter.js';
 import { requireAdmin } from '../utils/admin.js';
-import { signPayload, callSerpActor } from '../utils/sourcing.js';
+import { signPayload, callSerpActor, listingKey } from '../utils/sourcing.js';
 import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import { isServicePaused, blocksNewWork } from '../shared/billing.js';
 import {
@@ -570,6 +570,19 @@ export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.
       return { body: { ok: true, existing: true, ...publicRecord({ ...rec, ...patch }) } };
     }
     const rec = newRecord({ orgId, buyerKey, payload: body, nowMs });
+    // A sourced buyer's poster never rode the relay webhook (not ours to forward), but the relay kept
+    // it on our own seen record for exactly this moment: a profile URL there is the Facebook step's
+    // input, a bare name is the cross-group poster signal.
+    if (!rec.author && !rec.profileUrl && rec.source === 'sourced' && rec.sourceRef.url) {
+      try {
+        const seen = await db.collection('sourcingSeen').doc(orgId).collection('keys').doc(listingKey(rec.sourceRef.url)).get();
+        const author = seen.exists ? String(seen.data().author || '') : '';
+        if (/^https?:\/\/(www\.|m\.)?facebook\.com\//i.test(author)) rec.profileUrl = author.slice(0, 300);
+        else if (author) rec.author = author.slice(0, 120);
+      } catch (e) {
+        console.warn('buyerChecks:enqueue:author-lookup', orgId, e?.message || e);
+      }
+    }
     await ref.set(rec);
     await appendEvents(db, ref, [event('arrived', { atMs: nowMs, text: `Arrived · ${rec.source === 'sourced' ? `sourced from ${rec.sourceRef.groupName || 'a Facebook group'}` : rec.source === 'enquiry' ? 'enquired on a listing' : rec.source === 'requirement' ? 'filed a requirement' : rec.source === 'backfill' ? 'already in the buyer bank' : 'joined on the portal'}${rec.author ? ` · poster: ${rec.author}` : ''}`, evidence: rec.sourceRef.url ? [{ source: 'source', kind: 'fact', url: rec.sourceRef.url, quote: rec.sourceRef.title || rec.sourceRef.text || 'origin post', signal: 'neutral', meta: {} }] : [] })]);
     await bumpDay(db, orgId, { enqueued: 1 }, nowMs);

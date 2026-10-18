@@ -1074,10 +1074,14 @@ export async function runForOrg(
   let projectRelayed = 0;
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
-  await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
+  await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey, author }) => {
     const { ok, billable, autoRejected } = await relayListing({ webhookUrl, secret, orgId, listing });
     if (ok) {
       await seenCol.doc(key).set({
+        // The poster of a BUYER post stays off the webhook (a scraped display name is not ours to
+        // forward) but is kept here, on our own record, so the buyer background check can read the
+        // public profile when the platform enqueues this lead (buyerChecks#enqueue looks it up by URL).
+        ...(listing.leadType === 'buyer' && author ? { author: String(author).slice(0, 120) } : {}),
         url: listing.url,
         title: listing.title || '',
         postedAt: listing.postedAt || null, // FB post date (for recency audits)
