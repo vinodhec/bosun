@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed } from '../utils/sourcing.js';
+import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed, phonesInText, rejectedPhoneKey, REJECTED_PHONE_TTL_MS } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE, orgFitDropReason } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -560,6 +560,42 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
+  // 3a2) KNOWN-SELLER skip. A phone the receiver auto-rejected on arrival before (step 4 records it
+  // under rejectedPhoneKey) is dropped here, while the number is still just text in the Google
+  // result — before the paid FB scrape and the classify. Measured 16–18 Oct: 55 of 56 auto-rejects
+  // carried the phone in the SERP title/snippet, so this is where they die cheaply. Marked dead: the
+  // URL is a known seller's; the PHONE entry itself expires (REJECTED_PHONE_TTL_MS) so a seller with a
+  // new property months later comes through again under a new URL.
+  {
+    const phonesOf = new Map(prospects.map((c) => [c.key, phonesInText(`${c.listing.title || ''} ${c.listing.snippet || ''}`)]));
+    const keys = [...new Set([...phonesOf.values()].flat().map(rejectedPhoneKey).filter(Boolean))];
+    const rejected = new Map();
+    for (let i = 0; i < keys.length; i += GETALL_CHUNK) {
+      const snaps = await db.getAll(...keys.slice(i, i + GETALL_CHUNK).map((k) => seenCol.doc(k)));
+      for (const sn of snaps) if (sn.exists && Number(sn.data().atMs) > Date.now() - REJECTED_PHONE_TTL_MS) rejected.set(sn.id, sn.data());
+    }
+    if (rejected.size) {
+      const kept = [];
+      let skipped = 0;
+      for (const c of prospects) {
+        const hit = (phonesOf.get(c.key) || []).map(rejectedPhoneKey).find((k) => k && rejected.has(k));
+        if (hit) {
+          skipped += 1;
+          markDead(c, 'known-seller');
+          leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'known-seller', dropReason: `phone auto-rejected by the receiver on ${new Date(rejected.get(hit).atMs).toISOString().slice(0, 10)}` });
+        } else kept.push(c);
+      }
+      prospects = kept;
+      leg.count('knownSellerSkipped', skipped);
+      console.log('runSourcingJobs:known-seller-skip', orgId, JSON.stringify({ skipped, kept: prospects.length, target: target?.locality || null }));
+      if (!prospects.length) {
+        await flushDead();
+        leg.done({ note: 'every prospect was a seller the receiver already rejected' });
+        return { relayed: 0, amountInr: 0 };
+      }
+    }
+  }
+
   // 3b) Relevance gate (only when targeting a specific locality) — MOVED AHEAD of enrichment. A cheap
   // deterministic pre-filter, then a Gemini classify on the FREE SERP snippet, so the paid FB scrape
   // only runs on plausible on-target listings (kills the ~29% we used to enrich then reject). Fails
@@ -1039,7 +1075,7 @@ export async function runForOrg(
   const relayedDates = [];
   leg.count('relayAttempted', candidates.length);
   await mapLimit(candidates, RELAY_CONCURRENCY, async ({ key, listing, ownerKey }) => {
-    const { ok, billable } = await relayListing({ webhookUrl, secret, orgId, listing });
+    const { ok, billable, autoRejected } = await relayListing({ webhookUrl, secret, orgId, listing });
     if (ok) {
       await seenCol.doc(key).set({
         url: listing.url,
@@ -1062,7 +1098,10 @@ export async function runForOrg(
       }
       if (!billable) {
         // Delivered, recorded as seen, but the receiver binned it on arrival: no charge, and it
-        // must not count toward `relayed` (that number IS the bill).
+        // must not count toward `relayed` (that number IS the bill). Remember the PHONE so the next
+        // post from the same seller dies in 3a2, before we pay to scrape and classify it.
+        const rpKey = rejectedPhoneKey(listing.phone);
+        if (rpKey) await seenCol.doc(rpKey).set({ rejectedPhone: true, phone: listing.phone, url: listing.url, atMs: Date.now(), reason: autoRejected || 'auto-rejected' }, { merge: true });
         unbilled += 1;
         leg.bump('relayedUnbilled');
         leg.lead({ key, listing, stage: 'dropped', dropStage: 'relay', dropReason: 'receiver auto-rejected on arrival (not billed)' });

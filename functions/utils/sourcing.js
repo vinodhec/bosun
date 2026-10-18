@@ -456,6 +456,30 @@ export function extractPhone(text) {
   return m ? `+91${m[1]}` : null;
 }
 
+/** EVERY Indian mobile in a text (last-10-digit form, deduped) — the SERP title + snippet usually carries the seller's. */
+export function phonesInText(text) {
+  const out = new Set();
+  const flat = String(text || '').replace(/[^\d]/g, ' ');
+  for (const m of flat.matchAll(/(?:91|0)?\s*([6-9]\d{9})(?!\d)/g)) out.add(m[1]);
+  // Numbers written with spaces ("98765 43210") survive the flatten above as "98765 43210" → joined:
+  for (const m of String(text || '').matchAll(/(?:\+?91[\s-]?)?([6-9]\d{4})[\s-]([\d]{5})(?!\d)/g)) out.add(`${m[1]}${m[2]}`);
+  return [...out];
+}
+
+/**
+ * Known-seller skip (2026-10-18). When the receiver auto-rejects a lead ON ARRIVAL (its own rule:
+ * the seller already has a posted property / was already called) the relay records that phone under
+ * this key; a later post whose SERP text carries the same number is dropped before the paid scrape
+ * and the classify. Keyed on the RECEIVER's rejections only — never on our relay history (10 of 102
+ * billed leads in the 16–18 Oct measurement were phones we had sent before, and the receiver kept
+ * them). Expires, so a seller with a genuinely new property is not buried for ever.
+ */
+export const REJECTED_PHONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export function rejectedPhoneKey(phone) {
+  const ph = normalizePhoneDigits(phone);
+  return ph ? `rejphone_${ph}` : null;
+}
+
 // How many post photos we relay per listing — enough for a property gallery preview without
 // bloating the webhook body.
 const MAX_POST_IMAGES = 5;
