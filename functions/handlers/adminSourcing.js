@@ -5,7 +5,7 @@ import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayListing } from './
 import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
-import { APIFY_TOKEN } from '../utils/secrets.js';
+import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 // Gemini auth is Vertex/ADC (the runtime service account) — no bound secret needed (see utils/gemini.js).
 
 // Operator-only flow to configure an org's sourced-listing relay (see utils/sourcing.js +
@@ -95,7 +95,7 @@ export const adminConfigureSourcing = onCall({ region: 'asia-south1' }, async (r
 // runForOrg pipeline (Apify fetch → dedup → signed relay → debit) once for the given org, regardless
 // of its `enabled` flag, so we can validate before turning the schedule on. Operator-only.
 export const adminRunSourcingNow = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 300, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY], timeoutSeconds: 300, memory: '512MiB' },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -128,7 +128,7 @@ export const adminRunSourcingNow = onCall(
 // queries. This is NOT the daily schedule and NOT tied to sourcing.enabled — it's a controlled test
 // that still incurs Apify cost + the per-listing wallet debit, capped by the org's maxPerRun.
 export const adminSourceTopTarget = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 300, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY], timeoutSeconds: 300, memory: '512MiB' },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -158,7 +158,7 @@ export const adminSourceTopTarget = onCall(
 // flipped; always a DRY matrix pull, so a manual buyer probe never consumes the supply lane's
 // rotation. Costs real Apify credit and bills the org per relayed lead, exactly like the supply probe.
 export const adminSourceBuyers = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 540, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY], timeoutSeconds: 540, memory: '512MiB' },
   async (request) => {
     requireAdmin(request);
     const orgId = String(request.data?.orgId ?? '').trim();
@@ -454,7 +454,7 @@ export const adminSourcingLeadLedger = onCall({ region: 'asia-south1' }, async (
  * nothing. Takes the run + lead row ids from the sourcing audit panel.
  */
 export const adminSourcingRelayLead = onCall(
-  { region: 'asia-south1', secrets: [APIFY_TOKEN], timeoutSeconds: 120, memory: '512MiB' },
+  { region: 'asia-south1', secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY], timeoutSeconds: 120, memory: '512MiB' },
   async (request) => {
     const email = requireAdmin(request);
     const runId = String(request.data?.runId ?? '').trim();

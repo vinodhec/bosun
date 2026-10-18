@@ -39,7 +39,7 @@ import { buildSourcingQueries } from '../utils/queryGen.js';
 import { probeBuyersForPlace } from '../utils/buyerProbe.js';
 import { sourceManualPosts } from '../utils/manualPosts.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
-import { APIFY_TOKEN } from '../utils/secrets.js';
+import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 const REGION = 'asia-south1';
 
@@ -53,7 +53,7 @@ const TIMEOUT_SECONDS = 540;
 const COOLDOWN_MS = 90 * 1000;
 
 export const sourceOnDemand = onRequest(
-  { region: REGION, cors: false, timeoutSeconds: TIMEOUT_SECONDS, memory: '512MiB', secrets: [APIFY_TOKEN] },
+  { region: REGION, cors: false, timeoutSeconds: TIMEOUT_SECONDS, memory: '512MiB', secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY] },
   async (req, res) => {
     if (req.method !== 'POST') {
       logReject('sourceOnDemand', { status: 405, reason: 'non-POST-method', extra: { method: req.method } });

@@ -5,7 +5,7 @@ import { classifyListing, hasPropertySignal, MIN_CONFIDENCE, orgFitDropReason } 
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
 import { startRun, NULL_LEG } from '../utils/sourcingRun.js';
-import { APIFY_TOKEN } from '../utils/secrets.js';
+import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 
 // How many demand-ranked targets the DAILY cron sources per org when a matrixUrl is configured
 // (each further bounded by the org's maxPerRun). Conservative by default so a day's spend stays
@@ -102,7 +102,7 @@ export const runSourcingJobs = onSchedule(
     // (`sourcing.cronEveryHours`) is a Firestore flip, never a redeploy.
     schedule: '0 * * * *', // :00 every hour, 24h — 24 runs/day (topN 3 → each run ~12-16 min)
     timeZone: 'Asia/Kolkata',
-    secrets: [APIFY_TOKEN],
+    secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY],
     // 1500s (25 min) < the hourly cadence, so a slow run can never overlap the next tick. A topN-3 run
     // measures ~12 min; the 20-min RUN_BUDGET_MS caps it well below this anyway. If a run ever hits the
     // wall, the next tick + seen/dead dedup pick up the remaining due targets next run — no lead
@@ -211,7 +211,7 @@ export const runBuyerSourcingJobs = onSchedule(
     region: 'asia-south1',
     schedule: '15 */2 * * *', // every 2h at :15 — supply runs on :00, so the lanes never collide
     timeZone: 'Asia/Kolkata',
-    secrets: [APIFY_TOKEN],
+    secrets: [APIFY_TOKEN, ANTHROPIC_API_KEY],
     timeoutSeconds: 1500,
     memory: '512MiB',
   },
@@ -581,6 +581,7 @@ export async function runForOrg(
         locality: target.locality,
         city: target.city,
         shape: target.shape,
+        provider: cfg.classifyProvider,
       });
       const side = verdict.side || 'offering'; // degraded verdicts carry no side — fail toward supply
       // Another state, or a language the org's callers can't work (sourcing.allowedStates /
@@ -781,6 +782,7 @@ export async function runForOrg(
           locality: target.locality,
           city: target.city,
           shape: target.shape,
+          provider: cfg.classifyProvider,
         });
         const side = verdict.side || 'offering';
         if (verdict.degraded) {
