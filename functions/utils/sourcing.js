@@ -90,15 +90,23 @@ export function cutoffMsForMonths(months) {
   return Date.now() - Math.round(n * 30.44 * 24 * 60 * 60 * 1000);
 }
 
+/** How long callSerpActor waits for one actor run before aborting it and keeping what it has. */
+export const SERP_MAX_WAIT_MS = 12 * 60 * 1000;
+const SERP_POLL_MS = 15 * 1000;
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
 /**
- * Run an Apify actor synchronously and return its dataset items, normalized to
- * `[{ url, title, snippet }]`. Uses run-sync-get-dataset-items so one HTTPS call both runs the
- * actor and returns results. `freshness` is Google's `tbs` value (e.g. 'qdr:d' = last 24h). Any
+ * Run an Apify actor and return its dataset items, normalized to `[{ url, title, snippet }]`.
+ * Starts the run, then polls it until it finishes, instead of holding one run-sync connection open:
+ * since 2026-10-18 google-search-scraper runs take 6-15 min and a sync call dies at fetch's 300 s
+ * timeout, discarding a run we already paid for. Waits at most SERP_MAX_WAIT_MS, or until
+ * `deadlineMs` (epoch ms) if that is sooner; past that it aborts the run and returns what the
+ * dataset already holds. `freshness` is Google's `tbs` value (e.g. 'qdr:d' = last 24h). Any
  * failure (missing config, non-2xx, network, bad JSON) returns `[]`.
  */
-export async function callSerpActor({ apifyToken, actorId, query, freshness, maxPages, extraInput = {} }) {
+export async function callSerpActor({ apifyToken, actorId, query, freshness, maxPages, extraInput = {}, deadlineMs, pollMs = SERP_POLL_MS }) {
   if (!apifyToken || !actorId || !query) return [];
-  const url = `${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items?token=${encodeURIComponent(apifyToken)}`;
+  const token = `token=${encodeURIComponent(apifyToken)}`;
   const input = {
     queries: query,          // apify/google-search-scraper accepts newline-separated queries
     maxPagesPerQuery: Math.max(1, Math.floor(Number(maxPages) || DEFAULT_SERP_PAGES)),
@@ -106,8 +114,10 @@ export async function callSerpActor({ apifyToken, actorId, query, freshness, max
     ...(freshness ? { tbs: freshness } : {}),
     ...extraInput,
   };
+  const until = Math.min(Date.now() + SERP_MAX_WAIT_MS, Number(deadlineMs) || Infinity);
+  let run;
   try {
-    const resp = await fetch(url, {
+    const resp = await fetch(`${APIFY_BASE}/acts/${encodeURIComponent(actorId)}/runs?${token}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(input),
@@ -116,10 +126,33 @@ export async function callSerpActor({ apifyToken, actorId, query, freshness, max
       console.error('callSerpActor:http', actorId, resp.status);
       return [];
     }
-    const items = await resp.json();
-    return normalizeSerpItems(items);
+    run = (await resp.json())?.data;
+    if (!run?.id) throw new Error('no run id');
   } catch (e) {
     console.error('callSerpActor:err', actorId, e?.message || e);
+    return [];
+  }
+  const startedMs = Date.now();
+  try {
+    while (!['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(run.status)) {
+      if (Date.now() >= until) {
+        console.warn('callSerpActor:abort', actorId, run.id, Math.round((Date.now() - startedMs) / 1000) + 's');
+        await fetch(`${APIFY_BASE}/actor-runs/${run.id}/abort?${token}`, { method: 'POST' }).catch(() => {});
+        break;
+      }
+      await sleep(Math.max(0, Math.min(pollMs, until - Date.now())));
+      const r = await fetch(`${APIFY_BASE}/actor-runs/${run.id}?${token}`);
+      if (r.ok) run = (await r.json())?.data || run;
+    }
+    if (run.status !== 'SUCCEEDED') console.warn('callSerpActor:status', actorId, run.id, run.status);
+    const r = await fetch(`${APIFY_BASE}/datasets/${run.defaultDatasetId}/items?${token}&clean=true`);
+    if (!r.ok) {
+      console.error('callSerpActor:items-http', actorId, r.status);
+      return [];
+    }
+    return normalizeSerpItems(await r.json());
+  } catch (e) {
+    console.error('callSerpActor:err', actorId, run.id, e?.message || e);
     return [];
   }
 }
