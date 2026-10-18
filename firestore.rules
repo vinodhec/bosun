@@ -160,6 +160,17 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Buyer background checks (handlers/buyerChecks.js): one record per buyer per org with its
+    // timeline subcollection, plus the per-batch forensics run docs. Backend-only, like sourcingSeen —
+    // the platform reads a buyer's verdict and timeline through the HMAC endpoint, and the operator
+    // through the admin callables. Verdicts about people never go to a browser directly.
+    match /buyerChecks/{id}/{doc=**} {
+      allow read, write: if false;
+    }
+    match /buyerCheckRuns/{runId} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

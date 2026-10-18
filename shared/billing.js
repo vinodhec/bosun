@@ -953,6 +953,30 @@ export const REEL_PHOTO_PRICE_PAISE = 5500;    // ₹55 per delivered photo reel
 export const REEL_ANIMATED_PRICE_PAISE = 9000;  // ₹90 per delivered animated reel (was ₹149 at demo launch)
 
 /**
+ * ── Buyer background check (buyer_check / buyer_check_deep) ──────────────────────────────────────
+ * Every buyer in the customer's buyer bank — sourced from a Facebook group, an enquiry on a listing,
+ * a requirement filed on the portal — is checked for agent activity (handlers/buyerChecks.js,
+ * utils/buyerCheck.js): our own sourcing history, the buyer's portal behaviour, a Google search on
+ * the phone and name, the Facebook profile. A verdict (buyer / possible agent / agent) with the
+ * evidence goes back to the platform's buyer bank and its timeline; "unclear" (nothing found) is
+ * FREE and the buyer goes on watch.
+ *
+ *   buyer_check      — ₹12 per verdict WITH evidence. Sonnet 5.5 judges (COGS ≈ ₹5).
+ *   buyer_check_deep — ₹36 when the standard check has evidence but cannot decide: Opus 5.5
+ *                      re-judges the same evidence (COGS ≈ ₹10–14). REPLACES the ₹12 for that
+ *                      check — one check settles exactly one of the two lines, never both.
+ *
+ * Priced by the owner (2026-10-18) on the value of catching an agent, like the ₹12.40 buyer lead,
+ * not cost-plus; ₹36 happens to be 3× both the standard check and Opus COGS, so the house rule still
+ * holds. Re-checks (behaviour trip ≤ 1/30 days, 90-day badge renewal, admin "check again") are
+ * ordinary buyer_check units; the 14-day OVERRIDE REVIEW is free — it audits the admin, not the
+ * buyer. Idempotent on `${buyerKey}:${checkNo}`. Apify (Google / profile scrapes) stays on the
+ * customer org's account, exactly as the sourcing lane — never fold it into the unit price.
+ */
+export const BUYER_CHECK_PRICE_PAISE = 1200;       // ₹12 per verdict with evidence (Sonnet 5.5)
+export const BUYER_CHECK_DEEP_PRICE_PAISE = 3600;  // ₹36 when Opus 5.5 has to re-judge a torn check (replaces the ₹12)
+
+/**
  * ── Defect tracking (defect_triage / defect_fix / defect_regression_test / defect_sla_report) ───
  * The customer's own staff raise defects from THEIR admin console; Bosun files them into the org's
  * GitHub repo, dedupes them, enriches them with evidence, and meters the lifecycle. A separate lane

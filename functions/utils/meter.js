@@ -39,6 +39,8 @@ import {
   VOICE_MINUTE_PRICE_PAISE,
   REEL_PHOTO_PRICE_PAISE,
   REEL_ANIMATED_PRICE_PAISE,
+  BUYER_CHECK_PRICE_PAISE,
+  BUYER_CHECK_DEEP_PRICE_PAISE,
   accrueComposeCharge,
   isServicePaused,
   priceForService,
@@ -218,6 +220,21 @@ export const SERVICE_DEFS = {
     accrualField: 'voiceMinuteAccrualPaise',
     kind: 'voice_minute',
     label: 'AI consent call — minute',
+  },
+  // Buyer background check (handlers/buyerChecks.js). Settled in-process by the batch on a verdict
+  // WITH evidence; an "unclear" verdict and the 14-day override review bill nothing. One check
+  // settles exactly one of the two lines (deep replaces standard). Idempotent on `${buyerKey}:${checkNo}`.
+  buyer_check: {
+    pricePaise: BUYER_CHECK_PRICE_PAISE,
+    accrualField: 'buyerCheckAccrualPaise',
+    kind: 'buyer_check',
+    label: 'Buyer background check — verdict with evidence',
+  },
+  buyer_check_deep: {
+    pricePaise: BUYER_CHECK_DEEP_PRICE_PAISE,
+    accrualField: 'buyerCheckDeepAccrualPaise',
+    kind: 'buyer_check_deep',
+    label: 'Buyer background check — deep (Opus re-judged a torn check)',
   },
 };
 

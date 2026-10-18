@@ -414,6 +414,11 @@ redeploy, for an org running out of Apify budget (Apify is the ORG's bill, see "
   receiver that answers `billable: false` (MaadiVeedu: seller already has a posted property / was
   already called) has the lead marked seen (`billed: false` on the seen doc, never re-sent) but not
   charged, and it is not counted in `relayed`; funnel key `relayedUnbilled`. Silence = billable.
+  **The known-seller skip (2026-10-18)** learns from those rejections: the rejected lead's phone is
+  recorded (`sourcingSeen` `rejphone_<10>`, 90-day expiry) and the next post carrying that number in
+  its Google title/snippet dies in step 3a2 (`knownSellerSkipped`, marked dead) before the paid scrape
+  and the classify. Keyed on the RECEIVER's rejections only, never on our relay history — 10 of 102
+  billed leads in the measurement week were phones we had sent before and MaadiVeedu kept them.
 - **Region / language gate** (2026-10-16) — the classifier also returns `state` and `language`;
   `orgFitDropReason` drops (dead, funnel `orgFitDropped`) a lead whose state or language is outside
   `sourcing.allowedStates` / `sourcing.allowedLanguages`. Empty lists = no filter; unknown = kept.
@@ -489,6 +494,56 @@ here; the DATA never leaves the platform.
   owner's view. Env: `BOSUN_ASSISTANT_URL` + the existing `BOSUN_SOURCING_SECRET` / `BOSUN_ORG_ID`.
 - **TTL**: transcripts carry `expiresAt` (30 days) — activate once with
   `gcloud firestore fields ttls update expiresAt --collection-group=assistantConversations --enable-ttl`.
+
+## Buyer background checks (is this buyer an agent?)
+
+Every buyer in the customer's buyer bank — sourced from a Facebook group, an enquiry on a listing, a
+requirement filed on the portal — is checked for agent activity, and a verdict WITH EVIDENCE goes back
+to the bank's timeline. Design page (founder-approved 2026-10-18):
+https://claude.ai/artifact/PfJcoQdmK98LasmuqGGWME. Brain: `utils/buyerCheck.js` (pure; every outside
+call injectable). Firestore, scheduling, money, endpoint: `handlers/buyerChecks.js`.
+
+- **Evidence, cheapest first**: where they came from (enquiry → buyer, group "wanted" post → neutral);
+  our own history (`sourcingSeen` owner docs = every seller phone we relayed; other `buyerChecks`
+  records on the same phone/profile/poster); the platform's behaviour snapshot (`buyerCheck.snapshotUrl`,
+  GET signed `${ts}.buyer-snapshot`); Google on the phone and name (the org's SERP actor);
+  the Facebook profile (`buyerCheck.profileActorId`, optional); staff call outcomes. Every line carries
+  its link and the exact words. A private profile / empty search is "no evidence", never a bad sign.
+- **Verdict**: Sonnet 5.5 via `utils/claude.js#generateStructured` (structured outputs — the forced-tool
+  trick `generateJson` uses is a 400 on the 5.5 tier). The SCORE decides the label
+  (`verdictFromScore`: ≥0.75 agent, ≥0.45 possible agent, else buyer); a torn answer (low confidence /
+  mid score) is re-judged by **Opus 5.5** = the deep check. No substance at all → `unclear`, no model
+  call, on watch. Measured COGS: Sonnet ≈ $0.01, Opus ≈ $0.03 per check.
+- **Money** (`shared/billing.js` "Buyer background check"): `buyer_check` ₹12 on a verdict with
+  evidence, `buyer_check_deep` ₹36 when Opus re-judged — one check settles exactly ONE of the two
+  (`serviceFor`), idempotent on `${buyerKey}:${checkNo}`. Free: unclear, the 14-day override review,
+  staff outcomes, behaviour events, redelivery. Both lanes in `adminMetrics`.
+- **Records**: `buyerChecks/{orgId__buyerKey}` (`buyerKey` = `lead:<id>` | `user:<uid>` | `phone:<10>`)
+  + `timeline` subcollection (every event with evidence); `buyerCheckRuns` (per batch forensics, 90-day
+  TTL — `gcloud firestore fields ttls update expiresAt --collection-group=buyerCheckRuns --enable-ttl`);
+  `buyerCheckDays/{orgId}:{dateKey}` counters for the digest. All backend-only.
+- **Lifecycle**: status `due` → (batch) → `done` | `watch` (unclear; re-judged on behaviour or after
+  `watchDays` = 90 on behaviour alone) | `review_pending` (an override, audited free after 14 days:
+  `confirmed` or `challenged` → task to the overriding admin + super-admin). `dueReason` pick order:
+  override_review, manual, new, behaviour, renewal (badge every 90 days), watch_expiry, backfill —
+  newest activity first, capped at `buyerCheck.maxPerBatch` (owner: **5 per batch**, two batches a day
+  at **10:00 and 22:00 IST**, `runBuyerChecks`). The EFFECTIVE verdict (`effective`) is the staff call
+  outcome or admin override if newer than the last check, else the model's.
+- **Endpoint `buyerChecks`** (same HMAC as every customer call): enqueue / behaviour / override
+  (reason required) / staffOutcome / history / status / list. Verdicts, evidence, events and tasks
+  (`buyer_verify_call` for a possible agent, `override_challenge`) are POSTed to `buyerCheck.verdictUrl`
+  (platform `/api/ingest/buyer-verdict`); a failed delivery retries next batch, never re-bills.
+- **Telegram digest** `buyerCheckDailyReport` 22:30 IST — temporary (founder: "just for a few days"):
+  `buyerCheck.telegram = { enabled, chatId }` on the org, bot token in the vault
+  (`orgSecrets.buyerCheck.telegramBotToken`), both via `adminSetBuyerCheck`. Counts "converted" from
+  the platform's `behaviour {event:{type:'converted'}}`.
+- **Validate**: `node scripts/validate-buyer-check.mjs` (pure: fake Firestore, scripted model, pins
+  every money rule above). Live loop: `ANTHROPIC_API_KEY=… node scripts/validate-buyer-check.mjs --live`
+  (the stub assertions are name-keyed; read the printed verdicts).
+- **Platform side** (maadiveedu-unified-platform, PR `feat/buyer-background-check`): client
+  `lib/bosunBuyerCheck.ts`, routes `/api/ingest/buyer-verdict` + `/api/sourcing/buyer-snapshot`, verdict
+  chip + Why + Override on the buyer card and bank, the two task types on Today's Tasks, super-admin
+  `/admin/buyer-checks` (challenge queue, per-admin override scorecard, backfill button).
 
 ## Listing reels (a video lane inside the website assistant)
 

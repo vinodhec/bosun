@@ -140,6 +140,14 @@ export { staffCoach } from './handlers/staffCoach.js';
 // ONE reel_photo / reel_animated on delivery. See utils/reel.js and shared/billing.js.
 export { reelJobs, processReelJob } from './handlers/reelJobs.js';
 
+// Buyer background checks (shared/billing.js "Buyer background check"): every buyer in the
+// customer's buyer bank is checked for agent activity — our own history, portal behaviour, Google,
+// the Facebook profile — and a verdict with evidence goes back to the bank's timeline. `buyerChecks`
+// is the HMAC endpoint (enqueue / behaviour / override / staffOutcome / history / status / list);
+// `runBuyerChecks` runs the 10:00 + 22:00 IST batches; `buyerCheckDailyReport` is the 22:30 Telegram
+// digest (temporary); the admin* callables configure, run now, report now and inspect.
+export { buyerChecks, runBuyerChecks, buyerCheckDailyReport, adminSetBuyerCheck, adminRunBuyerChecksNow, adminBuyerCheckReportNow, adminBuyerChecks } from './handlers/buyerChecks.js';
+
 // HTTP (customer→Bosun, same HMAC): "source THIS place now". The platform's buyer queue names a
 // locality + intent and one targeted supply leg runs immediately — same pipeline, audit trail and
 // charge-on-delivery as a cron leg; leads reach the org through the ordinary webhook while the

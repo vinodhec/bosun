@@ -13,7 +13,7 @@ import { writeWalletCredit, invoiceCounterRef } from '../utils/walletCredit.js';
 import { normalizeAutoTopUp } from '../utils/autoTopUp.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
-import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE, REEL_PHOTO_PRICE_PAISE, REEL_ANIMATED_PRICE_PAISE } from '../shared/billing.js';
+import { SELFPOST_COMPOSE_PRICE_PAISE, AUTOPOST_USAGE_PRICE_PAISE, DAILY_PLAN_PRICE_PAISE, ASSISTANT_MESSAGE_PRICE_PAISE, ASSISTANT_OUTCOME_PRICE_PAISE, REEL_PHOTO_PRICE_PAISE, REEL_ANIMATED_PRICE_PAISE, BUYER_CHECK_PRICE_PAISE, BUYER_CHECK_DEEP_PRICE_PAISE } from '../shared/billing.js';
 
 // Operator-only admin callables. Gated by an ADMIN_EMAILS allowlist (see utils/admin.js).
 // Credits live at the ORGANISATION level; the operator seeds them manually.
@@ -611,6 +611,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       .where('kind', 'in', [
         'sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage',
         'conversion_popup', 'assistant_message', 'assistant_outcome', 'reel_photo', 'reel_animated',
+        'buyer_check', 'buyer_check_deep',
       ])
       .get(),
     // Waived meter events (testing / goodwill pause): recorded but never debited — the reconcilable
@@ -810,6 +811,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     assistant_outcome: { label: 'Website assistant captures', unit: 'capture', pricePaise: ASSISTANT_OUTCOME_PRICE_PAISE },
     reel_photo: { label: 'Listing reels — photo', unit: 'reel', pricePaise: REEL_PHOTO_PRICE_PAISE },
     reel_animated: { label: 'Listing reels — animated', unit: 'reel', pricePaise: REEL_ANIMATED_PRICE_PAISE },
+    buyer_check: { label: 'Buyer checks', unit: 'check', pricePaise: BUYER_CHECK_PRICE_PAISE },
+    buyer_check_deep: { label: 'Buyer checks — deep', unit: 'check', pricePaise: BUYER_CHECK_DEEP_PRICE_PAISE },
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -851,7 +854,11 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let assistantOutcomeAccrualPaise = 0;
   let reelPhotoAccrualPaise = 0;
   let reelAnimatedAccrualPaise = 0;
+  let buyerCheckAccrualPaise = 0;
+  let buyerCheckDeepAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
+    buyerCheckAccrualPaise += Number(o.data().buyerCheckAccrualPaise) || 0;
+    buyerCheckDeepAccrualPaise += Number(o.data().buyerCheckDeepAccrualPaise) || 0;
     reelPhotoAccrualPaise += Number(o.data().reelPhotoAccrualPaise) || 0;
     reelAnimatedAccrualPaise += Number(o.data().reelAnimatedAccrualPaise) || 0;
     assistantAccrualPaise += Number(o.data().assistantAccrualPaise) || 0;
@@ -884,7 +891,9 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
         : kind === 'assistant_message' ? assistantAccrualPaise / 100
         : kind === 'assistant_outcome' ? assistantOutcomeAccrualPaise / 100
         : kind === 'reel_photo' ? reelPhotoAccrualPaise / 100
-        : kind === 'reel_animated' ? reelAnimatedAccrualPaise / 100 : 0,
+        : kind === 'reel_animated' ? reelAnimatedAccrualPaise / 100
+        : kind === 'buyer_check' ? buyerCheckAccrualPaise / 100
+        : kind === 'buyer_check_deep' ? buyerCheckDeepAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });
