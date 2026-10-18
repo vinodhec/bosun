@@ -1,4 +1,5 @@
 import { generateJson, geminiConfigured, GEMINI_FLASH } from './gemini.js';
+import { generateJson as generateJsonClaude, claudeConfigured, CLAUDE_HAIKU } from './claude.js';
 
 // Gemini relevance + extraction gate for a sourced Facebook post. Built on the shared utils/gemini.js
 // client. Given a post's text and the TARGET locality, it decides whether the post is a genuine
@@ -118,11 +119,17 @@ const SYSTEM =
  * Absent/garbled side degrades to 'offering', which reproduces the pre-side behaviour exactly.
  * Fails OPEN (keep:true, degraded:true) when Gemini is unconfigured or errors — a broken classifier
  * must never silently drop leads we already paid Apify to fetch; the human consent call is the backstop.
+ *
+ * `provider` is the org's `sourcing.classifyProvider`: 'claude' asks Haiku 5.5 first (cheaper than
+ * flash, paid from the Max plan's API credits; 2026-10-18) and falls back to Gemini on any Claude
+ * failure or when the function has no ANTHROPIC_API_KEY; anything else is Gemini, as before. It is
+ * a Firestore flip, so going back needs no deploy. `model` on the verdict says which one answered.
  */
-export async function classifyListing({ text, locality, city, shape, minConfidence = MIN_CONFIDENCE }) {
+export async function classifyListing({ text, locality, city, shape, minConfidence = MIN_CONFIDENCE, provider = 'gemini' }) {
   const body = String(text || '').trim();
   if (!body) return { keep: false, isListing: false, localityMatches: false, confidence: 0, reason: 'empty' };
-  if (!geminiConfigured()) return { keep: true, degraded: true, confidence: 0, reason: 'gemini-unconfigured' };
+  const useClaude = provider === 'claude' && claudeConfigured();
+  if (!useClaude && !geminiConfigured()) return { keep: true, degraded: true, confidence: 0, reason: 'gemini-unconfigured' };
 
   const target = [locality, city].filter(Boolean).join(', ');
   const prompt =
@@ -182,8 +189,14 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
   // input is this thin. A wrongly-kept lead costs a ₹2.50 relay + Apify enrichment + admin time to
   // reject, which dwarfs the ~10 paise/property the better model adds.
   // thinkingBudget 0: reasoning tokens are billed at the output rate and truncate the JSON — see gemini.js.
-  const j = await generateJson({ model: GEMINI_FLASH, prompt, system: SYSTEM, schema: SCHEMA, thinkingBudget: 0 });
-  if (!j) return { keep: true, degraded: true, confidence: 0, reason: 'gemini-error' };
+  let j = null;
+  let model = GEMINI_FLASH;
+  if (useClaude) {
+    j = await generateJsonClaude({ model: CLAUDE_HAIKU, prompt, system: SYSTEM, schema: SCHEMA, maxOutputTokens: 700 });
+    if (j) model = CLAUDE_HAIKU;
+  }
+  if (!j && geminiConfigured()) j = await generateJson({ model: GEMINI_FLASH, prompt, system: SYSTEM, schema: SCHEMA, thinkingBudget: 0 });
+  if (!j) return { keep: true, degraded: true, confidence: 0, reason: useClaude ? 'classify-error' : 'gemini-error' };
 
   const confidence = Number(j.confidence) || 0;
   const isListing = !!j.isListing;
@@ -213,6 +226,7 @@ export async function classifyListing({ text, locality, city, shape, minConfiden
     state: String(j.state || '').trim().slice(0, 60),
     language: String(j.language || '').trim().toLowerCase(),
     reason: String(j.reason || '').slice(0, 160),
+    model,
   };
 }
 

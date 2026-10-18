@@ -1,8 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { CLAUDE_HAIKU } from './claude.js';
 
 // Classify a website-fix request into a complexity tier. SHARED by classifyTask (the
 // estimate step) and createTask (which binds the agent's hard budget cap to the tier, so
-// the spend cap always matches the complexity we quoted). Cheap Haiku call (~₹0.50),
+// the spend cap always matches the complexity we quoted). Cheap Haiku call (Haiku 5.5 since 2026-10-18, a fraction of a rupee),
 // absorbed by us. Fails safe to 'medium'.
 export async function classifyComplexity(prompt) {
   const problem = String(prompt ?? '').trim();
@@ -11,7 +12,7 @@ export async function classifyComplexity(prompt) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   try {
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: CLAUDE_HAIKU,
       max_tokens: 200,
       system: 'You classify website fix requests. Respond with JSON only — no prose, no code fences.',
       messages: [
