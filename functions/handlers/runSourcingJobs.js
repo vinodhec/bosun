@@ -358,7 +358,7 @@ export async function runForOrg(
   apifyToken,
   orgId,
   cfg,
-  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG, mode = 'supply', harvestSupply = false } = {},
+  { fetchSerp = callSerpActor, rng, classify = classifyListing, queries: queriesOverride, freshness: freshnessOverride, target, policy, leg = NULL_LEG, mode = 'supply', harvestSupply = false, serpDeadlineMs } = {},
 ) {
   // SUPPLY (the default) sources inventory and treats a buyer post as salvage. BUYER inverts it:
   // the queries asked for demand (queryGen.js), so a 'seeking' post IS the product and an 'offering'
@@ -398,7 +398,7 @@ export async function runForOrg(
   const maxPages = cfg.maxPagesPerQuery;
   const perQuery = new Array(queries.length);
   await mapLimit(queries.map((query, i) => ({ query, i })), FETCH_CONCURRENCY, async ({ query, i }) => {
-    const items = await fetchSerp({ apifyToken, actorId, query, freshness, maxPages });
+    const items = await fetchSerp({ apifyToken, actorId, query, freshness, maxPages, deadlineMs: serpDeadlineMs });
     // Query provenance — relayed with the listing so the receiver can audit WHY a lead was fetched.
     for (const it of items) if (it && !it.sourceQuery) it.sourceQuery = query;
     perQuery[i] = items;
@@ -1259,7 +1259,9 @@ export async function sourceTopTargets(db, apifyToken, orgId, cfg, { topN = 1, d
       // Deliberately ignore the target's per-target freshness (the platform stamps a tight qdr:d /
       // 24h window). The requirement is "posted in the last 3 months", so let runForOrg use the org's
       // freshness window (cfg.freshness = qdr:m3) uniformly across every target.
-      const r = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, policy, leg, mode });
+      // A slow SERP run must not push this target past the wall-clock budget: stop waiting 3 min
+      // before it (classify + enrich + relay still need time) and keep the partial results.
+      const r = await runForOrg(db, apifyToken, orgId, cfg, { queries, target, policy, leg, mode, serpDeadlineMs: startedMs + RUN_BUDGET_MS - 3 * 60 * 1000 });
       relayed += r.relayed || 0;
       amountInr += r.amountInr || 0;
       perTarget.push({
