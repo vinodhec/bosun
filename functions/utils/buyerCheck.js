@@ -427,8 +427,12 @@ export async function judge({ rec, evidence, cfg = {}, priorVerdict = null, over
   let data = sanitizeVerdict(first.data);
   let deep = false;
   let model = first.model;
-  const torn = data.torn || data.confidence < (cfg.tornConfidence ?? DEFAULTS.tornConfidence)
-    || (data.agentScore > 0.35 && data.agentScore < 0.65);
+  // Deep only when the SCORE is genuinely in the middle (or the model says so). A low-confidence
+  // answer with a clear-cut score is not torn — the first live check (2026-10-18) sent an ordinary
+  // 15%-agent buyer to Opus on confidence alone and billed ₹36 for a ₹12 answer.
+  const mid = data.agentScore >= 0.3 && data.agentScore <= 0.7;
+  const torn = data.torn || (mid && data.confidence < (cfg.tornConfidence ?? DEFAULTS.tornConfidence))
+    || (data.agentScore > 0.4 && data.agentScore < 0.6);
   if (allowDeep && torn && data.verdict !== 'unclear') {
     const second = await generate({ model: CLAUDE_OPUS, system: SYSTEM, prompt: `${prompt}\n\nA first reading found this torn. Take the time to weigh it properly.`, schema: VERDICT_SCHEMA, effort: 'high', maxOutputTokens: 8000 });
     if (second?.data) {
