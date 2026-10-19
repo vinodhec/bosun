@@ -92,7 +92,7 @@ db.store.set(`sourcingSeen/${ORG}/keys/owner_a`, { owner: true, phone: '+9198765
 db.store.set(`sourcingSeen/${ORG}/keys/owner_b`, { owner: true, phone: '+919876543210', url: 'https://facebook.com/groups/g/posts/2', relayedAt: { toMillis: () => Date.now() - 3 * DAY } });
 
 const cfg = db.store.get(`organisations/${ORG}`).buyerCheck;
-const act = (action, body) => handleAction({ db, orgId: ORG, cfg, action, body: { orgId: ORG, ...body } });
+const act = (action, body) => handleAction({ db, orgId: ORG, cfg, action, body: { orgId: ORG, ...body }, deps: { deliver: deps.deliver } });
 const rec = (key) => db.store.get(`${RECORDS}/${recordId(ORG, key)}`);
 const timeline = (key) => db.under(`${RECORDS}/${recordId(ORG, key)}/${TIMELINE}/`).sort((a, b) => a.atMs - b.atMs);
 const txns = () => db.under('transactions/');
@@ -282,6 +282,27 @@ assert.ok(stats.revenueInr >= 72);
 const text = formatTelegram(stats);
 assert.ok(text.includes('Buyer checks · MaadiVeedu') && text.includes('Overrides: <b>2</b>') && /Revenue <b>₹\d+<\/b>/.test(text));
 console.log('\n' + text.replace(/<[^>]+>/g, '') + '\n');
+
+// ── 14. One person, one record: the same buyer under a second key merges, never a second check.
+// (a) Kavitha (lead:SP-1, done, paid) enquires signed in → the account joins her record; no user: record.
+const mergedKav = (await act('enqueue', { userId: 'u-kav', phone: '9123456780', name: 'Kavitha', source: 'enquiry' })).body;
+assert.equal(mergedKav.existing, true); assert.equal(mergedKav.buyerKey, 'lead:SP-1');
+assert.equal(rec('lead:SP-1').userId, 'u-kav'); assert.equal(rec('user:u-kav'), undefined, 'no second record for the same phone');
+assert.ok(timeline('lead:SP-1').some((e) => e.type === 'arrived' && e.merged === true), 'the merge is on the timeline');
+// (b) Enquiry first (user:), the mirror sweep's lead minutes later (lead:) → one record, keyed on the first.
+const nav1 = (await act('enqueue', { userId: 'u-nav', phone: '9000000011', name: 'Naveen', source: 'enquiry' })).body;
+assert.equal(nav1.existing, false); assert.equal(nav1.buyerKey, 'user:u-nav');
+const nav2 = (await act('enqueue', { buyerId: 'req_nav', userId: 'u-nav', phone: '+919000000011', source: 'enquiry' })).body;
+assert.equal(nav2.existing, true); assert.equal(nav2.buyerKey, 'user:u-nav'); assert.equal(nav2.redelivered, false, 'nothing to re-deliver before a verdict');
+assert.equal(rec('user:u-nav').buyerId, 'req_nav'); assert.equal(rec('lead:req_nav'), undefined);
+assert.equal((await act('status', { buyerId: 'req_nav' })).body.buyerKey, 'user:u-nav', 'the lead id resolves to the merged record');
+// (c) A paid verdict reaches a lead that arrives AFTER the check, for free.
+db.store.set(`${RECORDS}/${recordId(ORG, 'user:u-nav')}`, { ...rec('user:u-nav'), buyerId: null, status: 'done', verdict: 'buyer', lastPayload: JSON.stringify({ orgId: ORG, kind: 'verdict', buyerKey: 'user:u-nav', buyerId: null, userId: 'u-nav', phone: '9000000011', checkNo: 1, verdict: 'buyer', label: 'Buyer', events: [{ id: 'e1' }], charge: { inr: 12 } }) });
+const deliveredBefore = delivered.length;
+const nav3 = (await act('enqueue', { buyerId: 'req_nav2', userId: 'u-nav', source: 'requirement' })).body;
+assert.equal(nav3.existing, true); assert.equal(nav3.redelivered, true);
+assert.equal(delivered.length, deliveredBefore + 1); assert.equal(delivered.at(-1).buyerId, 'req_nav2'); assert.equal(delivered.at(-1).redelivery, true); assert.deepEqual(delivered.at(-1).tasks, []);
+assert.equal(txns().filter((t) => t.description?.includes('Naveen')).length, 0, 'a redelivery is never billed');
 
 const recordCount = db.under(`${RECORDS}/`).filter((r) => r.path.split('/').length === 2).length;
 console.log(`validate-buyer-check: OK (${LIVE ? 'live model' : 'stubbed model'}) — ${recordCount} records, ${txns().length} transactions, ${delivered.length} deliveries`);

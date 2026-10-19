@@ -45,7 +45,7 @@ import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import { isServicePaused, blocksNewWork } from '../shared/billing.js';
 import {
   VERDICTS, DUE_REASONS, DEFAULTS, buyerKeyFor, recordId, newRecord, cleanSnapshot, behaviourTrips,
-  quietBuyerOnBehaviour, labelFor, gatherEvidence, judge, serviceFor, event, verdictText, callQuestions,
+  quietBuyerOnBehaviour, labelFor, gatherEvidence, judge, serviceFor, event, verdictText, callQuestions, normalizePhone,
 } from '../utils/buyerCheck.js';
 
 const REGION = 'asia-south1';
@@ -376,6 +376,9 @@ export async function checkOne({ db, orgId, org, secret, recRef, rec, deps = {},
     patch.deliveryPending = false;
     patch.pendingPayload = null;
   }
+  // Kept so the same person arriving under a NEW lead id later (an enquiry first, the lead doc minutes
+  // after) gets this verdict re-delivered to that lead for free instead of a second ₹12 check.
+  patch.lastPayload = JSON.stringify(payload).slice(0, 400000);
   out.delivered = delivered;
   await appendEvents(db, recRef, events);
   await recRef.set(patch, { merge: true });
@@ -529,7 +532,7 @@ export const buyerChecks = onRequest(
       return;
     }
     try {
-      const result = await handleAction({ db, orgId, cfg, action, body, nowMs: Date.now() });
+      const result = await handleAction({ db, orgId, cfg, action, body, nowMs: Date.now(), secret });
       res.status(result.httpStatus || 200).json(result.body);
     } catch (e) {
       console.error('buyerChecks:action', orgId, action, e?.message || e);
@@ -538,8 +541,31 @@ export const buyerChecks = onRequest(
   },
 );
 
+/**
+ * The record behind ANY of a buyer's identifiers. One person reaches us under several keys — an
+ * enquiry names the account (`user:`), the lead the mirror sweep writes minutes later names the lead
+ * (`lead:`), a group post names only a phone — and a buyer is one record however many doors they came
+ * in by, or the same person is checked (and billed) twice and the later verdict overwrites the paid
+ * one on their card. Canonical ids first (one read each), then the stored aliases, oldest record wins.
+ */
+async function findRecord(db, orgId, { buyerKey, buyerId, userId, phone }) {
+  const col = db.collection(RECORDS);
+  const ids = { buyerId: s(buyerId, 120), userId: s(userId, 128), phone: normalizePhone(phone) };
+  const keys = [s(buyerKey, 160), ids.buyerId && `lead:${ids.buyerId}`, ids.userId && `user:${ids.userId}`, ids.phone && `phone:${ids.phone}`].filter(Boolean);
+  for (const k of [...new Set(keys)]) {
+    const snap = await col.doc(recordId(orgId, k)).get();
+    if (snap.exists) return snap;
+  }
+  for (const f of ['buyerId', 'userId', 'phone']) {
+    if (!ids[f]) continue;
+    const q = await col.where('orgId', '==', orgId).where(f, '==', ids[f]).limit(5).get();
+    if (q.size) return q.docs.slice().sort((a, b) => (a.data().createdAtMs || 0) - (b.data().createdAtMs || 0))[0];
+  }
+  return null;
+}
+
 /** The action switch, separated from HTTP so the validator can call it directly. */
-export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.now() }) {
+export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.now(), secret = null, deps = {} }) {
   const col = db.collection(RECORDS);
   const keyOf = (b) => s(b.buyerKey, 160) || buyerKeyFor({ buyerId: b.buyerId, userId: b.userId, phone: b.phone });
 
@@ -553,10 +579,14 @@ export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.
 
   const buyerKey = keyOf(body);
   if (!buyerKey) return { httpStatus: 400, body: { error: 'buyerKey, buyerId, userId or phone required' } };
-  const ref = col.doc(recordId(orgId, buyerKey));
+  let ref = col.doc(recordId(orgId, buyerKey));
+  let snap = await ref.get();
+  if (!snap.exists) {
+    const alias = await findRecord(db, orgId, body);
+    if (alias) { snap = alias; ref = alias.ref; }
+  }
 
   if (action === 'enqueue') {
-    const snap = await ref.get();
     if (snap.exists) {
       const rec = snap.data();
       const patch = { updatedAtMs: nowMs };
@@ -566,8 +596,24 @@ export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.
       if (body.snapshot) patch.snapshot = cleanSnapshot({ ...(rec.snapshot || {}), ...body.snapshot });
       if (Number(body.activityAtMs) > (rec.activityAtMs || 0)) patch.activityAtMs = Number(body.activityAtMs);
       if (body.force === true && rec.status !== 'due') { patch.status = 'due'; patch.dueReason = 'manual'; }
+      if (patch.buyerId || patch.userId) {
+        await appendEvents(db, ref, [event('arrived', { atMs: nowMs, text: `Also known as ${patch.buyerId ? `lead ${patch.buyerId}` : `account ${patch.userId}`} — same ${rec.phone && normalizePhone(body.phone) === rec.phone ? 'phone' : rec.userId && body.userId === rec.userId ? 'account' : 'person'}; one record, one check`, extra: { merged: true } })]);
+      }
       await ref.set(patch, { merge: true });
-      return { body: { ok: true, existing: true, ...publicRecord({ ...rec, ...patch }) } };
+      // A verdict already paid for reaches the buyer's NEW lead for free (the platform dedups events).
+      let redelivered = false;
+      if (patch.buyerId && rec.lastPayload && cfg.verdictUrl && (secret || deps.deliver) && body.force !== true) {
+        try {
+          const p = JSON.parse(rec.lastPayload);
+          const payload = { ...p, buyerId: patch.buyerId, userId: patch.userId || p.userId || null, phone: patch.phone || p.phone || null, tasks: [], redelivery: true };
+          const r = await (deps.deliver || ((x) => postSigned(cfg.verdictUrl, secret, x)))(payload);
+          redelivered = r.ok === true;
+          if (!r.ok) console.warn('buyerChecks:redeliver-http', orgId, rec.buyerKey, r.status);
+        } catch (e) {
+          console.warn('buyerChecks:redeliver-err', orgId, rec.buyerKey, e?.message || e);
+        }
+      }
+      return { body: { ok: true, existing: true, redelivered, ...publicRecord({ ...rec, ...patch }) } };
     }
     const rec = newRecord({ orgId, buyerKey, payload: body, nowMs });
     // A sourced buyer's poster never rode the relay webhook (not ours to forward), but the relay kept
@@ -589,7 +635,6 @@ export async function handleAction({ db, orgId, cfg, action, body, nowMs = Date.
     return { body: { ok: true, existing: false, ...publicRecord(rec) } };
   }
 
-  const snap = await ref.get();
   if (!snap.exists) return { httpStatus: 404, body: { error: 'unknown buyer' } };
   const rec = snap.data();
 

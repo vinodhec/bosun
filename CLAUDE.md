@@ -521,7 +521,13 @@ call injectable). Firestore, scheduling, money, endpoint: `handlers/buyerChecks.
   (`serviceFor`), idempotent on `${buyerKey}:${checkNo}`. Free: unclear, the 14-day override review,
   staff outcomes, behaviour events, redelivery. Both lanes in `adminMetrics`.
 - **Records**: `buyerChecks/{orgId__buyerKey}` (`buyerKey` = `lead:<id>` | `user:<uid>` | `phone:<10>`)
-  + `timeline` subcollection (every event with evidence); `buyerCheckRuns` (per batch forensics, 90-day
+  + `timeline` subcollection (every event with evidence). **One person, one record** (2026-10-19):
+  every action resolves the caller's buyerKey / buyerId / userId / phone against the canonical ids AND
+  the stored aliases (`findRecord`) before creating anything, so an enquiry (`user:`) followed minutes
+  later by the mirror sweep's lead (`lead:`) merges into the first record instead of a second ₹12 check
+  whose Unclear overwrote the paid Buyer on the card (the 2026-10-19 morning batch did exactly that).
+  A merge that adds a lead id re-POSTs the record's `lastPayload` (free, `redelivery:true`) so the new
+  lead carries the verdict + timeline; `buyerCheckRuns` (per batch forensics, 90-day
   TTL — `gcloud firestore fields ttls update expiresAt --collection-group=buyerCheckRuns --enable-ttl`);
   `buyerCheckDays/{orgId}:{dateKey}` counters for the digest. All backend-only.
 - **Lifecycle**: status `due` → (batch) → `done` | `watch` (unclear; re-judged on behaviour or after
