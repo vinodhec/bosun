@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import { handleAction, runBatchForOrg, pickDue, formatTelegram, buildDailyReport, RECORDS, TIMELINE, RUNS, DAYS } from '../handlers/buyerChecks.js';
-import { buyerKeyFor, recordId, serpEvidence, profileEvidence, verdictFromScore, behaviourTrips, DEFAULTS } from '../utils/buyerCheck.js';
+import { buyerKeyFor, recordId, serpEvidence, profileEvidence, verdictFromScore, behaviourTrips, staffCheckReason, DEFAULTS } from '../utils/buyerCheck.js';
 
 // ── In-memory Admin SDK: enough of the query surface for this lane (equality / in / limit / orderBy / count).
 const getPath = (o, dotted) => dotted.split('.').reduce((x, k) => (x == null ? undefined : x[k]), o);
@@ -305,4 +305,12 @@ assert.equal(delivered.length, deliveredBefore + 1); assert.equal(delivered.at(-
 assert.equal(txns().filter((t) => t.description?.includes('Naveen')).length, 0, 'a redelivery is never billed');
 
 const recordCount = db.under(`${RECORDS}/`).filter((r) => r.path.split('/').length === 2).length;
+// Staff confirm-by-call: possible agent, unclear, or any verdict below 60% confidence (owner, 2026-10-20).
+assert.equal(staffCheckReason({ verdict: 'buyer', confidence: 0.45 }), 'low confidence 45%');
+assert.equal(staffCheckReason({ verdict: 'buyer', confidence: 0.6 }), null);
+assert.equal(staffCheckReason({ verdict: 'agent', confidence: 0.5 }), 'low confidence 50%');
+assert.equal(staffCheckReason({ verdict: 'unclear', confidence: 0.3 }), 'unclear');
+assert.equal(staffCheckReason({ verdict: 'possible_agent', confidence: 0.9 }), 'possible agent');
+assert.equal(staffCheckReason({ verdict: 'buyer', confidence: 0.65 }, { staffCheckConfidence: 0.7 }), 'low confidence 65%');
+
 console.log(`validate-buyer-check: OK (${LIVE ? 'live model' : 'stubbed model'}) — ${recordCount} records, ${txns().length} transactions, ${delivered.length} deliveries`);

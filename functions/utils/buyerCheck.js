@@ -45,6 +45,7 @@ export const DEFAULTS = {
   agentScore: 0.75,          // ≥ → agent
   possibleScore: 0.45,       // ≥ → possible agent (< → buyer)
   tornConfidence: 0.6,       // Sonnet below this with evidence → Opus re-judges
+  staffCheckConfidence: 0.6, // a verdict below this confidence (or unclear) → staff confirm-by-call task
 };
 
 /** Behaviour that pulls a checked buyer back onto the batch (a "trip"). Any one is enough. */
@@ -458,6 +459,20 @@ function sanitizeVerdict(d) {
     reasons: (Array.isArray(d.reasons) ? d.reasons : []).map((r) => clean(r, 200)).filter(Boolean).slice(0, 6),
     signals: (Array.isArray(d.signals) ? d.signals : []).map((s) => ({ evidenceIndex: Math.max(0, Math.floor(Number(s?.evidenceIndex) || 0)), supports: ['agent', 'buyer', 'neutral'].includes(s?.supports) ? s.supports : 'neutral', note: clean(s?.note, 160) })).slice(0, 12),
   };
+}
+
+/**
+ * Why staff must confirm this verdict by call, or null. Owner (2026-10-20): every buyer is checked,
+ * and whichever verdict the model is not sure of goes to staff — a possible agent, an unclear, or any
+ * label given below `staffCheckConfidence`.
+ */
+export function staffCheckReason(result, cfg = {}) {
+  if (!result || result.failed) return null;
+  if (result.verdict === 'possible_agent') return 'possible agent';
+  if (result.verdict === 'unclear') return 'unclear';
+  const floor = Number.isFinite(Number(cfg.staffCheckConfidence)) ? Number(cfg.staffCheckConfidence) : DEFAULTS.staffCheckConfidence;
+  if (Number(result.confidence) < floor) return `low confidence ${Math.round(Number(result.confidence) * 100)}%`;
+  return null;
 }
 
 /** The questions staff ask on a "confirm by call" task — tailored to what the evidence suggested. */

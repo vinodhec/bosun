@@ -45,7 +45,7 @@ import { APIFY_TOKEN, ANTHROPIC_API_KEY } from '../utils/secrets.js';
 import { isServicePaused, blocksNewWork } from '../shared/billing.js';
 import {
   VERDICTS, DUE_REASONS, DEFAULTS, buyerKeyFor, recordId, newRecord, cleanSnapshot, behaviourTrips,
-  quietBuyerOnBehaviour, labelFor, gatherEvidence, judge, serviceFor, event, verdictText, callQuestions, normalizePhone,
+  quietBuyerOnBehaviour, labelFor, gatherEvidence, judge, serviceFor, event, verdictText, callQuestions, staffCheckReason, normalizePhone,
 } from '../utils/buyerCheck.js';
 
 const REGION = 'asia-south1';
@@ -335,9 +335,10 @@ export async function checkOne({ db, orgId, org, secret, recRef, rec, deps = {},
     events.push(event('verdict', { atMs: nowMs + 3, text: verdictText(result), checkNo, verdict: result.verdict, agentScore: result.agentScore, chargeInr: charge.inr || 0, service: charge.service, extra: { reasons: result.reasons || [], signals: result.signals || [], model: result.model, deep: result.deep, confidence: result.confidence } }));
     if (badge && !wasBadge) events.push(event('badge', { atMs: nowMs + 4, text: 'Verified Buyer badge granted', checkNo, extra: { granted: true } }));
     if (!badge && wasBadge) events.push(event('badge', { atMs: nowMs + 4, text: `Verified Buyer badge withdrawn (${labelFor(result.verdict)})`, checkNo, extra: { granted: false } }));
-    if (result.verdict === 'possible_agent') {
-      tasks.push({ type: 'buyer_verify_call', title: `Confirm by call: ${rec.name || rec.buyerKey}`, why: result.summary, questions: callQuestions(result, evidence) });
-      events.push(event('task', { atMs: nowMs + 5, text: 'Task: confirm by call (possible agent)', checkNo }));
+    const staffReason = staffCheckReason(result, cfg);
+    if (staffReason) {
+      tasks.push({ type: 'buyer_verify_call', reason: staffReason, title: `Confirm by call: ${rec.name || rec.buyerKey}`, why: `${labelFor(result.verdict)} (${staffReason}) · ${result.summary}`, questions: callQuestions(result, evidence) });
+      events.push(event('task', { atMs: nowMs + 5, text: `Task: confirm by call (${staffReason})`, checkNo }));
     } else if (!badge && wasBadge && dueReason === 'renewal') {
       tasks.push({ type: 'buyer_verify_call', title: `Badge withdrawn on renewal: ${rec.name || rec.buyerKey}`, why: result.summary, questions: callQuestions(result, evidence) });
     }
