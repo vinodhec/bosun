@@ -3,6 +3,7 @@ import {
   adminListOrgs,
   adminCreateOrg,
   adminAddCredits,
+  adminIssueServiceInvoice,
   adminDeductCredits,
   adminListTransactions,
   adminSetUserOrg,
@@ -1950,6 +1951,7 @@ export default function Admin() {
   const [busy, setBusy] = useState(false);
   const [newOrg, setNewOrg] = useState('');
   const [credit, setCredit] = useState({ orgId: '', amount: '' });
+  const [svcInv, setSvcInv] = useState({ orgId: '', amount: '', inclusive: true, description: '', sac: '998314' });
   const [deduct, setDeduct] = useState({ orgId: '', amount: '', description: '' });
   const [assign, setAssign] = useState({ email: '', orgId: '' });
   const [gh, setGh] = useState({ orgId: '', repoFullName: '', token: '', baseBranch: 'main', deployHost: 'vercel', testingProject: '', prodProject: '', testingUrl: '' });
@@ -2116,6 +2118,31 @@ export default function Admin() {
           </select>
           <input className={field} type="number" value={credit.amount} onChange={(e) => setCredit({ ...credit, amount: e.target.value })} placeholder="amount (₹)" />
           <button className={btn} disabled={busy || !credit.orgId || !credit.amount} onClick={() => run(() => adminAddCredits({ orgId: credit.orgId.trim(), amount: Number(credit.amount) }), 'Credits added.')}>Add credits</button>
+        </section>
+
+        <section className="space-y-2 rounded-2xl border border-line bg-white p-5">
+          <h2 className="font-semibold text-ink">Service invoice</h2>
+          <p className="text-xs text-ink-soft">A tax invoice for work billed outside the wallet (e.g. freelance development). Next SW/ number; the balance is not touched.</p>
+          <select className={field} value={svcInv.orgId} onChange={(e) => setSvcInv({ ...svcInv, orgId: e.target.value })}>
+            <option value="">Select organisation…</option>
+            {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          <input className={field} type="number" value={svcInv.amount} onChange={(e) => setSvcInv({ ...svcInv, amount: e.target.value })} placeholder="amount (₹)" />
+          <label className="flex items-center gap-2 text-xs text-ink-soft">
+            <input type="checkbox" checked={svcInv.inclusive} onChange={(e) => setSvcInv({ ...svcInv, inclusive: e.target.checked })} />
+            Amount includes 18% GST
+          </label>
+          <input className={field} value={svcInv.description} onChange={(e) => setSvcInv({ ...svcInv, description: e.target.value })} placeholder="description (printed on the invoice)" />
+          <input className={field} value={svcInv.sac} onChange={(e) => setSvcInv({ ...svcInv, sac: e.target.value })} placeholder="SAC (998314 = IT design & development)" />
+          <button
+            className={btn}
+            disabled={busy || !svcInv.orgId || !svcInv.amount || !svcInv.description.trim()}
+            onClick={() => run(async () => {
+              const r = await adminIssueServiceInvoice({ orgId: svcInv.orgId, amountInr: Number(svcInv.amount), inclusive: svcInv.inclusive, description: svcInv.description.trim(), sac: svcInv.sac.trim() });
+              setSvcInv({ ...svcInv, amount: '', description: '' });
+              return r;
+            }, 'Service invoice issued.')}
+          >Issue invoice</button>
         </section>
 
         <section className="space-y-2 rounded-2xl border border-line bg-white p-5">

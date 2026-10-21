@@ -146,6 +146,52 @@ export function buildInvoiceRecord({ org, orgId, creditInr, number, fy, seq, txn
   };
 }
 
+// Bespoke work billed outside the wallet (e.g. freelance development for a customer) — IT design &
+// development services. Deliberately NOT INVOICE_SAC_CODE: that one frames the automated platform.
+export const SERVICE_INVOICE_SAC_CODE = '998314';
+
+/**
+ * Build the frozen record for a SERVICE invoice: one free-text line, same SW/ series + GSTIN as a
+ * top-up, but no wallet credit and no platform fee. `amountInr` is the taxable value, or — with
+ * `inclusive` — the GST-inclusive total, backed out to the paise (₹50,000 incl. → ₹42,372.88 +
+ * ₹7,627.12 GST). Receivables (payments, advance, share link) treat it like any other invoice.
+ */
+export function buildServiceInvoiceRecord({ org, orgId, amountInr, inclusive = false, description, sac, number, fy, seq, by, issuedAtMs }) {
+  const buyer = buyerFromOrg(org);
+  const amount = Number(amountInr);
+  const taxableInr = inclusive ? Math.round((amount / (1 + OUTPUT_GST_RATE)) * 100) / 100 : amount;
+  const gst = gstBreakdown(taxableInr, { intraState: buyer.intraState });
+  return {
+    number, fy, seq,
+    orgId,
+    kind: 'service',
+    status: 'issued',
+    txnId: null,
+    issuedBy: by || null,
+    issuedAtMs: issuedAtMs || Date.now(),
+    supplier: (({ logoDataUri, signatureDataUri, ...rest }) => rest)(SUPPLIER),
+    buyer,
+    reverseCharge: false,
+    lineItems: [{ description, sac: sac || SERVICE_INVOICE_SAC_CODE, taxableInr: gst.taxable }],
+    gstRate: OUTPUT_GST_RATE,
+    platformFeeInr: 0,
+    taxableInr: gst.taxable,
+    cgstInr: gst.cgst,
+    sgstInr: gst.sgst,
+    igstInr: gst.igst,
+    taxInr: gst.tax,
+    totalInr: gst.total,
+    roundOffInr: Math.round((Math.round(gst.total) - gst.total) * 100) / 100,
+    payableInr: Math.round(gst.total),
+    creditInr: 0,                                         // nothing lands in the wallet
+    paidInr: 0,
+    dueInr: Math.round(gst.total),
+    paymentStatus: 'unpaid',
+    paidAtMs: null,
+    payments: [],
+  };
+}
+
 // Indian-system number to words for whole rupees (…Thousand, …Lakh, …Crore). e.g. 234560 →
 // "Two Lakh Thirty Four Thousand Five Hundred Sixty Rupees only".
 export function amountInWords(num) {

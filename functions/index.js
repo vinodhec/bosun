@@ -22,6 +22,7 @@ export { startChat, replyToChat, approveChatBuild, getChatMockHtml, listMyChats 
 export {
   adminCreateOrg,
   adminAddCredits,
+  adminIssueServiceInvoice,
   adminDeductCredits,
   adminListTransactions,
   adminListOrgs,

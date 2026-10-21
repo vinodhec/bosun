@@ -68,6 +68,7 @@ export const listMyConsoleSessions = httpsCallable(functions, 'listMyConsoleSess
 // Operator-only admin callables (gated server-side by ADMIN_EMAILS).
 export const adminCreateOrg = httpsCallable(functions, 'adminCreateOrg');
 export const adminAddCredits = httpsCallable(functions, 'adminAddCredits');
+export const adminIssueServiceInvoice = httpsCallable(functions, 'adminIssueServiceInvoice');
 export const adminDeductCredits = httpsCallable(functions, 'adminDeductCredits');
 export const adminListTransactions = httpsCallable(functions, 'adminListTransactions');
 export const adminListOrgs = httpsCallable(functions, 'adminListOrgs');

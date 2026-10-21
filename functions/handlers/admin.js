@@ -4,12 +4,12 @@ import { getAuth } from 'firebase-admin/auth';
 import { getUsdToInrRate } from '../utils/fxRate.js';
 import { applyFixAward, applyShipAward, emptyMember } from '../utils/gamification.js';
 import { requireAdmin } from '../utils/admin.js';
-import { renderInvoiceHtml, invoiceSummary, shareUrlFor, shareMessageFor, duesUrlFor, duesMessageFor } from '../utils/invoice.js';
+import { renderInvoiceHtml, invoiceSummary, buildServiceInvoiceRecord, shareUrlFor, shareMessageFor, duesUrlFor, duesMessageFor } from '../utils/invoice.js';
 import { receivablesSummary, paymentSummary } from '../utils/payments.js';
 import { recordPayment, deletePayment } from '../utils/receivables.js';
 import { ensureShareToken, ensureDuesToken } from '../utils/invoiceShare.js';
 import { invoiceDueInr } from '../utils/payments.js';
-import { writeWalletCredit, invoiceCounterRef } from '../utils/walletCredit.js';
+import { writeWalletCredit, invoiceCounterRef, nextInvoiceNumber, applyAdvance } from '../utils/walletCredit.js';
 import { normalizeAutoTopUp } from '../utils/autoTopUp.js';
 import { GST_REPORTS } from '../utils/gstReport.js';
 import { GST_TREATMENTS, buildPurchaseRecord, purchaseSummary, reportablePurchases } from '../utils/purchase.js';
@@ -51,6 +51,40 @@ export const adminAddCredits = onCall({ region: REGION }, async (request) => {
     return { balance, invoiceId, invoiceNumber, advanceAppliedInr };
   });
   return { orgId, ...result };
+});
+
+// A tax invoice for work billed OUTSIDE the wallet (freelance development etc.): next SW/ number,
+// same GSTIN and buyer profile, receivables + GST reports as usual — but the balance is untouched,
+// so there is no `credit` transaction. `inclusive` treats `amountInr` as the GST-inclusive total.
+export const adminIssueServiceInvoice = onCall({ region: REGION }, async (request) => {
+  const by = requireAdmin(request);
+  const d = request.data || {};
+  const orgId = String(d.orgId ?? '');
+  const amountInr = Number(d.amountInr);
+  const description = String(d.description ?? '').trim();
+  const sac = String(d.sac ?? '').trim() || undefined;
+  if (!orgId) throw new HttpsError('invalid-argument', 'orgId required.');
+  if (!Number.isFinite(amountInr) || amountInr <= 0) throw new HttpsError('invalid-argument', 'amountInr must be a positive number.');
+  if (!description) throw new HttpsError('invalid-argument', 'description required.');
+  if (sac && !/^\d{6}$/.test(sac)) throw new HttpsError('invalid-argument', 'sac must be 6 digits.');
+  const db = getFirestore();
+  const orgRef = db.collection('organisations').doc(orgId);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(orgRef);
+    if (!snap.exists) throw new HttpsError('not-found', 'Organisation not found.');
+    const counterSnap = await tx.get(invoiceCounterRef(db));
+    const org = snap.data();
+    const { fy, seq, number } = nextInvoiceNumber(counterSnap);
+    const invoice = buildServiceInvoiceRecord({
+      org, orgId, amountInr, inclusive: !!d.inclusive, description, sac, number, fy, seq, by,
+    });
+    const { advance, advanceAppliedInr } = applyAdvance(invoice, org);
+    const invRef = db.collection('invoices').doc();
+    if (advanceAppliedInr > 0) tx.update(orgRef, { advanceInr: advance - advanceAppliedInr });
+    tx.set(invoiceCounterRef(db), { [fy]: seq }, { merge: true });
+    tx.set(invRef, { ...invoice, createdAt: FieldValue.serverTimestamp() });
+    return { orgId, invoiceId: invRef.id, invoiceNumber: number, payableInr: invoice.payableInr, taxableInr: invoice.taxableInr, taxInr: invoice.taxInr, paymentStatus: invoice.paymentStatus, advanceAppliedInr };
+  });
 });
 
 // ── Receivables: payments received against invoices ─────────────────────────────────────────
