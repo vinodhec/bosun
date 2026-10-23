@@ -1,6 +1,6 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed, phonesInText, rejectedPhoneKey, REJECTED_PHONE_TTL_MS } from '../utils/sourcing.js';
+import { callSerpActor, settleEnrichment, blankSharedSnippets, listingKey, ownerListingKey, buyerRequestKey, signPayload, enrichPosts, isIndividualPost, isBlockedSourcePage, tbsForMonths, cutoffMsForMonths, DEFAULT_FRESHNESS_MONTHS, fetchQueryMatrix, normalizeSourcingPolicy, hasIndiaSignal, fetchGroupFeed, phonesInText, rejectedPhoneKey, REJECTED_PHONE_TTL_MS, blockedPhoneSet, blockedPhoneIn } from '../utils/sourcing.js';
 import { classifyListing, hasPropertySignal, MIN_CONFIDENCE, orgFitDropReason } from '../utils/classifyListing.js';
 import { buildSourcingQueries } from '../utils/queryGen.js';
 import { priceForSourcedBatch } from '../utils/billing.js';
@@ -560,6 +560,30 @@ export async function runForOrg(
     return { relayed: 0, amountInr: 0 };
   }
 
+  // 3a1) BLOCKED-PHONE gate, first pass (sourcing.blockedPhones — the receiver's never-again list).
+  // Here it reads only the SERP title/snippet, so a blocked seller dies before the paid scrape; the
+  // second pass just before the relay (step 3g) re-checks the FULL post text, which is what makes
+  // the block a hard guarantee rather than a heuristic. Permanent: the URL is marked dead.
+  const blocked = blockedPhoneSet(cfg);
+  if (blocked.size) {
+    const kept = [];
+    for (const c of prospects) {
+      const hit = blockedPhoneIn(c.listing, blocked);
+      if (hit) {
+        markDead(c, 'blocked-phone');
+        leg.bump('blockedPhoneSkipped');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'blocked-phone', dropReason: `phone ${hit} is on the org's blocked list` });
+      } else kept.push(c);
+    }
+    if (kept.length < prospects.length) console.log('runSourcingJobs:blocked-phone', orgId, JSON.stringify({ pass: 'serp', skipped: prospects.length - kept.length }));
+    prospects = kept;
+    if (!prospects.length) {
+      await flushDead();
+      leg.done({ note: 'every prospect carried a blocked phone' });
+      return { relayed: 0, amountInr: 0 };
+    }
+  }
+
   // 3a2) KNOWN-SELLER skip. A phone the receiver auto-rejected on arrival before (step 4 records it
   // under rejectedPhoneKey) is dropped here, while the number is still just text in the Google
   // result — before the paid FB scrape and the classify. Measured 16–18 Oct: 55 of 56 auto-rejects
@@ -1064,6 +1088,28 @@ export async function runForOrg(
     await flushDead();
     leg.done({ note: 'every survivor was a repost of an already-known property (owner dedup)' });
     return { relayed: 0, amountInr: 0 };
+  }
+
+  // 3g) BLOCKED-PHONE gate, final pass — the last thing before the webhook. By now every survivor
+  // carries its enriched full text + extracted phone (or arrived full: group feed / pasted posts),
+  // so a number the SERP snippet hid is caught here. Nothing reaches step 4 with a blocked phone.
+  if (blocked.size) {
+    const kept = [];
+    for (const c of candidates) {
+      const hit = blockedPhoneIn(c.listing, blocked);
+      if (hit) {
+        markDead(c, 'blocked-phone');
+        leg.bump('blockedPhoneSkipped');
+        leg.lead({ key: c.key, listing: c.listing, stage: 'dropped', dropStage: 'blocked-phone', dropReason: `phone ${hit} is on the org's blocked list` });
+      } else kept.push(c);
+    }
+    if (kept.length < candidates.length) console.log('runSourcingJobs:blocked-phone', orgId, JSON.stringify({ pass: 'final', skipped: candidates.length - kept.length }));
+    candidates = kept;
+    if (!candidates.length) {
+      await flushDead();
+      leg.done({ note: 'every survivor carried a blocked phone' });
+      return { relayed: 0, amountInr: 0 };
+    }
   }
 
   // 4) Relay each new listing; mark it seen ONLY on a 2xx (charge-on-delivery), and charge only the

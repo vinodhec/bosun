@@ -154,6 +154,7 @@ export { buyerChecks, runBuyerChecks, buyerCheckDailyReport, adminSetBuyerCheck,
 // charge-on-delivery as a cron leg; leads reach the org through the ordinary webhook while the
 // platform polls its own queue. 90s per-org cooldown; deliberately not gated on sourcing.enabled.
 export { sourceOnDemand } from './handlers/sourceOnDemand.js';
+export { sourcingBlocklist } from './handlers/sourcingBlocklist.js';
 
 // Builder projects from the TN RERA register → the platform's sourced-project ingest (field-visit
 // lane), weekly cron + operator run-now. Direct fetch, no Apify; billed flat per relayed project.

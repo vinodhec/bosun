@@ -1,6 +1,6 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts, settleEnrichment } from '../utils/sourcing.js';
+import { generateSourcingSecret, freshnessForMonths, DEFAULT_FRESHNESS_MONTHS, listingKey, enrichPosts, settleEnrichment, blockedPhoneSet, blockedPhoneIn, parseBlockedPhones } from '../utils/sourcing.js';
 import { runForOrg, sourceTopTargets, sourceBuyerGroups, relayListing } from './runSourcingJobs.js';
 import { runPlanForOrg, istDateKey } from './planDailyTasks.js';
 import { startRun } from '../utils/sourcingRun.js';
@@ -250,6 +250,18 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
     }
     patch['sourcing.buyerGroups'] = cleaned;
   }
+  // The hard phone blocklist (runSourcingJobs 3a1/3g). Add/remove rather than replace — it only
+  // ever grows by a number or two, and a replace with a stale list would silently un-block someone.
+  for (const [k, op] of [['blockedPhonesAdd', FieldValue.arrayUnion], ['blockedPhonesRemove', FieldValue.arrayRemove]]) {
+    if (request.data?.[k] == null) continue;
+    let phones;
+    try { phones = parseBlockedPhones(request.data[k]); } catch (e) { throw new HttpsError('invalid-argument', e.message); }
+    if (phones.length) {
+      if (patch['sourcing.blockedPhones']) throw new HttpsError('invalid-argument', 'Send blockedPhonesAdd or blockedPhonesRemove, not both.');
+      patch['sourcing.blockedPhones'] = op(...phones);
+      patch['sourcing.blockedPhonesUpdatedAt'] = FieldValue.serverTimestamp();
+    }
+  }
   if (!Object.keys(patch).length) throw new HttpsError('invalid-argument', 'Nothing to update.');
   await ref.update(patch);
   const after = (await ref.get()).data()?.sourcing || {};
@@ -264,6 +276,7 @@ export const adminSetSourcingLanes = onCall({ region: 'asia-south1' }, async (re
       buyerMaxPerRun: after.buyerMaxPerRun ?? null,
       buyerFreshnessMonths: after.buyerFreshnessMonths ?? null,
       buyerGroups: (after.buyerGroups || []).length,
+      blockedPhones: after.blockedPhones || [],
     },
   };
 });
@@ -507,6 +520,13 @@ export const adminSourcingRelayLead = onCall(
     // Same settle as the pipeline: the scraped post always beats the SERP snippet, and a body that
     // is still SERP text (miss, or a scrape with no text) relays marked `snippetOnly` (maadiveedu #1655).
     settleEnrichment(listing, enriched || null);
+
+    // The blocked-phone list is a HARD rule, not a gate the operator can override — the receiver
+    // asked never to be sent this person again (see utils/sourcing.js#blockedPhoneSet).
+    const blockedHit = blockedPhoneIn(listing, blockedPhoneSet(cfg));
+    if (blockedHit) {
+      throw new HttpsError('failed-precondition', `Phone ${blockedHit} is on this org's blocked list — not relayed, nothing billed.`);
+    }
 
     const { ok, billable, autoRejected } = await relayListing({ webhookUrl: cfg.webhookUrl, secret, orgId, listing });
     if (!ok) throw new HttpsError('unavailable', 'The org webhook did not accept the lead (non-2xx). Nothing was billed.');

@@ -84,6 +84,7 @@ export function outcomeFromLead({ stage, dropStage, dropReason, listing }) {
   if (stage === 'deferred') return { status: 'deferred', reason: 'Over this run\'s limit — paste it again later' };
   if (dropStage === 'owner-dedup') return { status: 'duplicate', reason: 'Same person already queued for this' };
   if (dropStage === 'recency' || dropStage === 'serp-date') return { status: 'too-old', reason: 'Older than the lead window' };
+  if (dropStage === 'blocked-phone') return { status: 'rejected', reason: 'This number is on the blocked list' };
   if (dropStage === 'relay') return { status: 'failed', reason: 'The queue did not accept it — paste it again later' };
   const why = String(dropReason || '');
   if (why === 'no-signal') return { status: 'rejected', reason: 'Not about a property' };

@@ -47,6 +47,7 @@ function blankFunnel() {
     seenBefore: 0,         // dedup-forever hit against sourcingSeen (relayed OR dead)
     newProspects: 0,       // genuinely new keys entering the vetting gates
     serpStaleSkipped: 0,   // 3a — cheap SERP-date pre-filter (fail-open, not marked dead)
+    blockedPhoneSkipped: 0, // 3a1 + 3g — a phone on sourcing.blockedPhones, in the SERP text or the full post (→ dead)
     knownSellerSkipped: 0, // 3a2 — phone in the SERP text was auto-rejected by the receiver before (→ dead)
     noSignalDropped: 0,    // 3b — deterministic property-signal pre-filter
     offTargetDropped: 0,   // 3b — Gemini classify said off-target (confident reject → dead)

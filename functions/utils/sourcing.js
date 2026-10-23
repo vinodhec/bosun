@@ -480,6 +480,38 @@ export function rejectedPhoneKey(phone) {
   return ph ? `rejphone_${ph}` : null;
 }
 
+/**
+ * Hard phone blocklist (2026-10-23). `sourcing.blockedPhones` is the receiver's "never send us this
+ * person again" list — abusive sellers whose properties the org already deleted. Unlike the
+ * known-seller skip above it NEVER expires and it is not a SERP-text heuristic: a lead is refused if
+ * the number appears ANYWHERE we can see it (the extracted phone, the title, the snippet, the full
+ * post text), on every lane (supply, buyer, group feed, pasted posts) and on the operator's manual
+ * "Relay & bill". Returns the set of 10-digit numbers.
+ */
+export function blockedPhoneSet(cfg) {
+  const list = Array.isArray(cfg?.blockedPhones) ? cfg.blockedPhones : [];
+  return new Set(list.map(normalizePhoneDigits).filter(Boolean));
+}
+
+/** The first blocked number a listing carries, or null. `blocked` is a blockedPhoneSet. */
+export function blockedPhoneIn(listing, blocked) {
+  if (!blocked?.size || !listing) return null;
+  const own = normalizePhoneDigits(listing.phone);
+  if (own && blocked.has(own)) return own;
+  const text = [listing.title, listing.snippet, listing.text, listing.extracted?.phone].filter(Boolean).join('\n');
+  return phonesInText(text).find((p) => blocked.has(p)) || null;
+}
+
+/** Validate an operator-supplied list of numbers → 10-digit form; throws on anything that isn't a mobile. */
+export function parseBlockedPhones(list) {
+  if (!Array.isArray(list)) throw new Error('blockedPhones must be an array of phone numbers.');
+  return [...new Set(list.map((p) => {
+    const ph = normalizePhoneDigits(p);
+    if (!ph) throw new Error(`Not an Indian mobile number: ${String(p).slice(0, 30)}`);
+    return ph;
+  }))];
+}
+
 // How many post photos we relay per listing — enough for a property gallery preview without
 // bloating the webhook body.
 const MAX_POST_IMAGES = 5;
