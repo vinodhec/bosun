@@ -419,6 +419,15 @@ redeploy, for an org running out of Apify budget (Apify is the ORG's bill, see "
   its Google title/snippet dies in step 3a2 (`knownSellerSkipped`, marked dead) before the paid scrape
   and the classify. Keyed on the RECEIVER's rejections only, never on our relay history — 10 of 102
   billed leads in the measurement week were phones we had sent before and MaadiVeedu kept them.
+- **Hard phone blocklist** (2026-10-23) — `sourcing.blockedPhones` (10-digit) is the receiver's
+  never-again list (abusive sellers it already deleted). Unlike the known-seller skip it never
+  expires and is not a heuristic: `utils/sourcing.js#blockedPhoneIn` checks the extracted phone AND
+  every number in title/snippet/full text, at 3a1 (SERP text, before the paid scrape) and again at 3g
+  (right before the webhook, after enrichment) — every lane, dead-marked, funnel `blockedPhoneSkipped`.
+  `adminSourcingRelayLead` refuses it too. The platform's Blocked numbers page owns the list and pushes
+  it whole to the HMAC endpoint `sourcingBlocklist` (`set` / `list`); operators can also use
+  `adminSetSourcingLanes {blockedPhonesAdd|blockedPhonesRemove}`. The platform's ingest refuses the
+  same numbers (`billable:false`) as a second gate.
 - **Region / language gate** (2026-10-16) — the classifier also returns `state` and `language`;
   `orgFitDropReason` drops (dead, funnel `orgFitDropped`) a lead whose state or language is outside
   `sourcing.allowedStates` / `sourcing.allowedLanguages`. Empty lists = no filter; unknown = kept.
