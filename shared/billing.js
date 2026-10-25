@@ -736,6 +736,25 @@ export function isServicePaused(org, service) {
 }
 
 /**
+ * ── Ops watch (ops_watch_day) ──────────────────────────────────────────────────────────────────
+ * The cost guard + flow monitor that runs on the customer's ops host (MaadiVeedu: mv-guard, since
+ * 2026-10-24): Algolia/Vercel/bot cost signals every 5 min with auto-block within a written policy,
+ * hourly spend checks, twice-daily critical-flow walks, a daily summary. The runner reports ONE
+ * `ops_watch_day` event per IST day through usageMeter (idempotencyKey = YYYY-MM-DD). Priced
+ * banded-flat ₹450/500/550 (operator decision 2026-10-23), drawn DETERMINISTICALLY from the date so a
+ * replay of the same day always prices the same — the runner never sends an amount. Accrued on the
+ * org as `opsWatchAccrualPaise`.
+ */
+export const OPS_WATCH_DAY_PRICES_PAISE = [45000, 50000, 55000];
+export function opsWatchDayPricePaise(dateKey) {
+  // sha256 of the day → one of the three bands; the same function the runner uses to predict its line.
+  let h = 0;
+  const s = `ops_watch_day:${String(dateKey || '')}`;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
+  return OPS_WATCH_DAY_PRICES_PAISE[h % OPS_WATCH_DAY_PRICES_PAISE.length];
+}
+
+/**
  * ── Conversion popups (conversion_popup) ───────────────────────────────────────────────────────
  * Every popup the agent OPENS on the customer's portal (login popup / number-capture overlay) is a
  * billable conversion action — deterministic or LLM alike, per the operator's per-action principle.

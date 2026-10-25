@@ -118,6 +118,7 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
         refId: String(body.refId || ''),
         propertyId: String(body.propertyId || ''),
         displayId: String(body.displayId || ''),
+        memo: String(body.memo || '').slice(0, 200),
       },
     });
   } catch (e) {
@@ -132,11 +133,11 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
     // Not an error — this is the idempotency guarantee doing its job, and during a historical
     // ledger replay it's the signal that the already-billed events are being skipped correctly.
     console.log('usageMeter:duplicate', orgId, JSON.stringify({ service, idempotencyKey }));
-    res.status(200).json({ ok: true, duplicate: true, charged: 0 });
+    res.status(200).json({ ok: true, duplicate: true, charged: 0, pricePaise: result.pricePaise ?? null });
     return;
   }
 
   const charged = result.charged;
   console.log('usageMeter:ok', orgId, service, JSON.stringify({ idempotencyKey, qty, charged }));
-  res.status(200).json({ ok: true, charged });
+  res.status(200).json({ ok: true, charged, pricePaise: result.pricePaise ?? null });
 });

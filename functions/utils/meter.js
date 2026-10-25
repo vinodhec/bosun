@@ -45,6 +45,7 @@ import {
   isServicePaused,
   priceForService,
 } from '../shared/billing.js';
+import { opsWatchDayPricePaise } from '../shared/billing.js';
 
 export const METER_LOG = 'usage_meter_log';
 
@@ -94,6 +95,15 @@ export const SERVICE_DEFS = {
   // Normally settled in-process by seoWeeklyReport at the flat held price; this tracks the same
   // constant so a ledger replay prices identically — after any successful run the shared log row
   // makes such a replay a charged:0 no-op anyway.
+  // Ops watch (2026-10-24): one event per IST day from the customer's ops-host runner, priced by
+  // the date itself (banded-flat 450/500/550, shared/billing.js) — `priceFor` wins over pricePaise.
+  ops_watch_day: {
+    pricePaise: 50000,
+    priceFor: (idempotencyKey) => opsWatchDayPricePaise(idempotencyKey),
+    accrualField: 'opsWatchAccrualPaise',
+    kind: 'ops_watch',
+    label: 'Ops watch — cost guard, auto-block and flow checks (per day)',
+  },
   seo_weekly_report: {
     pricePaise: SEO_REPORT_REPLAY_PRICE_PAISE,
     accrualField: 'seoReportAccrualPaise',
@@ -297,7 +307,8 @@ export async function settleMetered({
 
     const org = orgSnap.data();
     // This org's live price — its own override if it carries one, else the module default.
-    const pricePaise = priceForService(org, service, def.pricePaise);
+    // A banded line draws its default from the event key (ops_watch_day); the org override still wins.
+    const pricePaise = priceForService(org, service, def.priceFor ? def.priceFor(idempotencyKey) : def.pricePaise);
     const row = {
       orgId,
       service,

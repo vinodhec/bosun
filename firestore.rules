@@ -171,6 +171,12 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Provider alerts recorded by opsAlertHook; read by the customer's ops runner through the Admin
+    // SDK and by the operator. Never a browser.
+    match /opsAlerts/{id} {
+      allow read, write: if false;
+    }
+
     // Default deny everything else.
     match /{document=**} {
       allow read, write: if false;

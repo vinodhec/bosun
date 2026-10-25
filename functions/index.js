@@ -204,3 +204,9 @@ export { refreshExchangeRate } from './handlers/fxRate.js';
 // console box (console/server.mjs); consoleHook is where that box reports its URL, each live
 // minute (metered: console_minute), each turn and each shipped PR.
 export { openConsoleSession, consoleHook, listMyConsoleSessions } from './handlers/consoleTasks.js';
+
+// HTTP (provider→Bosun, per-org bearer token in the URL): inbound PROVIDER alerts for the ops-watch
+// service — Vercel spend management, GCP budgets (Pub/Sub push), GCP alert policies. Records one
+// opsAlerts row + a Telegram line; the customer's ops-host runner (mv-guard) picks the row up on its
+// next pass. Not billed. Billing for the service is the ops_watch_day line through usageMeter.
+export { opsAlertHook } from './handlers/opsAlertHook.js';
