@@ -27,7 +27,8 @@
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import { SERVICE_DEFS, settleMetered, voiceAiCallPricePaise } from '../utils/meter.js';
+import { SERVICE_DEFS, settleMetered } from '../utils/meter.js';
+import { voiceAiCallPricePaise } from '../shared/billing.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
