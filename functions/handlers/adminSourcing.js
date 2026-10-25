@@ -613,6 +613,7 @@ export const adminSourcingRelayLead = onCall(
  *
  * It is the SAME `runPlanForOrg` the cron runs — every gate still applies, in the same order:
  *   - already planned today  → 'skipped/already-planned', charged nothing (the meter-log pre-check)
+ *   - weekly rest day        → OVERRIDDEN: a click on a rest day plans it (the cron still skips it)
  *   - balance still negative → 'blocked/low-balance', re-posts the notice, charged nothing
  *   - otherwise              → a real plan, delivered and BILLED at the flat plan-day price.
  * That last line is why the UI labels the button with the money: this click can charge the org.
@@ -633,7 +634,9 @@ export const adminPlanNow = onCall(
     // Trigger label 'admin' keeps Bosun's plannerRuns audit honest about a human having clicked.
     // (The platform's ingest only distinguishes 'on-demand' from everything else, so its own meta
     // records this as a cron run — Bosun's audit is the forensic one.)
-    const summary = await runPlanForOrg(db, orgId, cfg, 'admin');
+    // A human click overrides the weekly rest day: whoever is working gets a plan (anyone off is
+    // paused on the platform roster). The other gates — already planned, low balance — still apply.
+    const summary = await runPlanForOrg(db, orgId, cfg, 'admin', { ignoreRestDay: true });
     console.log('adminPlanNow', orgId, email, JSON.stringify(summary));
     if (summary.status === 'error') {
       throw new HttpsError('internal', `Planning failed: ${summary.reason || 'unknown'}`);

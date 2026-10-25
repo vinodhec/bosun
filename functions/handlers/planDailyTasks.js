@@ -163,7 +163,7 @@ async function withholdDay({ db, orgId, planner, secret, dateKey, trigger, summa
  * Plan one org's day. Returns a summary object (never throws — a planner failure must not break the
  * org loop, and the platform's degraded state covers a missed morning).
  */
-export async function runPlanForOrg(db, orgId, cfg, trigger) {
+export async function runPlanForOrg(db, orgId, cfg, trigger, { ignoreRestDay = false } = {}) {
   const planner = cfg.planner || {};
   const dateKey = istDateKey();
   const summary = { orgId, dateKey, trigger, status: 'skipped' };
@@ -195,7 +195,10 @@ export async function runPlanForOrg(db, orgId, cfg, trigger) {
     // read a deliberately empty Sunday as an outage and ask us to plan it. Ordered ahead of the
     // wallet gate because a rest day is not about money: telling a team that isn't working to go
     // top up would be the wrong answer to the right silence.
-    if (isRestDay(planner)) {
+    // `ignoreRestDay` is the operator's override (adminPlanNow): a person clicking "plan now" on a
+    // Sunday means part of the team IS working it, so the day is planned and billed like any other.
+    // Admins who are off stay off via their own date-range pause on the platform roster.
+    if (!ignoreRestDay && isRestDay(planner)) {
       summary.status = 'blocked';
       summary.reason = 'weekly-holiday';
       summary.message = HOLIDAY_MESSAGE;
