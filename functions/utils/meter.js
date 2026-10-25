@@ -37,6 +37,7 @@ import {
   STAFF_TRAINING_DAY_PRICE_PAISE,
   CONSOLE_MINUTE_PRICE_PAISE,
   VOICE_MINUTE_PRICE_PAISE,
+  voiceAiCallPricePaise,
   REEL_PHOTO_PRICE_PAISE,
   REEL_ANIMATED_PRICE_PAISE,
   BUYER_CHECK_PRICE_PAISE,
@@ -229,7 +230,16 @@ export const SERVICE_DEFS = {
     pricePaise: VOICE_MINUTE_PRICE_PAISE,
     accrualField: 'voiceMinuteAccrualPaise',
     kind: 'voice_minute',
-    label: 'AI consent call — minute',
+    label: 'AI consent call — minute (retired 2026-10-25)',
+  },
+  // AI calls priced per call from Gemini token usage (shared/billing.js voiceAiCallPricePaise):
+  // cost × 1.5 in training, × 2.4 live. The event carries `usage` + `training`; usageMeter computes
+  // the price and hands it in as `pricePaiseOverride`, so `pricePaise` here is only the fallback.
+  voice_ai_call: {
+    pricePaise: 0,
+    accrualField: 'voiceAiAccrualPaise',
+    kind: 'voice_ai_call',
+    label: 'AI call — Gemini usage, cost-plus',
   },
   // Buyer background check (handlers/buyerChecks.js). Settled in-process by the batch on a verdict
   // WITH evidence; an "unclear" verdict and the 14-day override review bill nothing. One check
@@ -275,6 +285,8 @@ export function meterLogId(orgId, service, idempotencyKey) {
  * @param {number} [p.qty=1]           units this event covers (price × qty)
  * @param {string} [p.description]     ledger line text; defaults to the service label
  * @param {object} [p.extra]           extra fields to record on the log row (audit trail)
+ * @param {number} [p.pricePaiseOverride]  a price computed per event (voice_ai_call) — used as is, no
+ *                                     org override: it is already cost-plus for THIS event
  */
 export async function settleMetered({
   orgId,
@@ -283,6 +295,7 @@ export async function settleMetered({
   qty = 1,
   description = '',
   extra = {},
+  pricePaiseOverride = null,
   db = getFirestore(),
 }) {
   const def = SERVICE_DEFS[service];
@@ -308,7 +321,10 @@ export async function settleMetered({
     const org = orgSnap.data();
     // This org's live price — its own override if it carries one, else the module default.
     // A banded line draws its default from the event key (ops_watch_day); the org override still wins.
-    const pricePaise = priceForService(org, service, def.priceFor ? def.priceFor(idempotencyKey) : def.pricePaise);
+    const pricePaise =
+      Number.isInteger(pricePaiseOverride) && pricePaiseOverride >= 0
+        ? pricePaiseOverride
+        : priceForService(org, service, def.priceFor ? def.priceFor(idempotencyKey) : def.pricePaise);
     const row = {
       orgId,
       service,

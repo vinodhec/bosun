@@ -27,7 +27,7 @@
  */
 import { onRequest } from 'firebase-functions/v2/https';
 import { getFirestore } from 'firebase-admin/firestore';
-import { SERVICE_DEFS, settleMetered } from '../utils/meter.js';
+import { SERVICE_DEFS, settleMetered, voiceAiCallPricePaise } from '../utils/meter.js';
 import { verifyCustomerSignature, logReject } from '../utils/customerAuth.js';
 
 const REGION = 'asia-south1';
@@ -105,6 +105,11 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
   // events by lead id and their own claim transaction guarantees one publish per lead, so an
   // already-logged key is a redelivery — acknowledged, unbilled, and the reason a full historical
   // ledger replay after an outage settles only what was never billed.
+  // voice_ai_call: priced per event from the Gemini usage it carries (cost × 1.5 training / × 2.4 live).
+  const voiceAi = service === 'voice_ai_call';
+  const usage = voiceAi && body.usage && typeof body.usage === 'object' ? body.usage : null;
+  const training = voiceAi && body.training === true;
+  const pricePaiseOverride = voiceAi ? voiceAiCallPricePaise(usage, training) : null;
   let result;
   try {
     result = await settleMetered({
@@ -113,12 +118,14 @@ export const usageMeter = onRequest({ region: REGION, cors: false }, async (req,
       service,
       idempotencyKey,
       qty,
+      pricePaiseOverride,
       extra: {
         leadId: String(body.leadId || ''),
         refId: String(body.refId || ''),
         propertyId: String(body.propertyId || ''),
         displayId: String(body.displayId || ''),
         memo: String(body.memo || '').slice(0, 200),
+        ...(voiceAi ? { callId: String(body.callId || ''), usage, training } : {}),
       },
     });
   } catch (e) {

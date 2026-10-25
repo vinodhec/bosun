@@ -1080,13 +1080,35 @@ export function priceForService(org, service, fallbackPaise) {
 export const CONSOLE_MINUTE_PRICE_PAISE = 1300;  // ₹13 per session-minute (₹780/hour, operator-set 2026-09-04), flat; minimum one minute
 
 /**
- * ── AI consent calls (voice_minute) ────────────────────────────────────────────────────────────
- * Meera, the platform's AI caller, rings sourced owners for listing consent over Exotel with a
- * Gemini Live session on the line. The cost is time — a telephony channel plus a live model per
- * minute — so the unit is the started minute of a placed call, reported by the platform on the
- * carrier's terminal status (one event per minute, idempotent `<callId>:m<k>`).
- *   voice_minute — ₹30 per started minute (PLACEHOLDER until the operator sets it; covers
- *                  ~₹1/min carrier + ~₹8–10/min model at the house 3× markup).
- * DEFAULT. An org's `pricing.voice_minute` overrides (priceForService).
+ * ── AI calls (voice_ai_call) ───────────────────────────────────────────────────────────────────
+ * Meera, the platform's AI caller, rings sellers and buyers with a Gemini Live session on the line
+ * (Bosun's Vertex project). The platform reports ONE event per finished call carrying the Gemini
+ * token usage by modality; the price is computed from it here — cost-plus, no flat rate:
+ *   cost  = tokens × Google's Vertex Live API list rates (USD per million, checked 2026-10-25) × ₹/USD
+ *   price = cost × 1.5 while that card type is in TRAINING (event `training: true`), × 2.4 once LIVE
+ *   (owner decision 2026-10-25). The phone line is the customer's own (Plivo), never billed here.
+ * Mirrored in the platform's web/src/lib/voiceAgent/billing.ts — keep in lockstep.
+ *
+ *   voice_minute — the OLD flat ₹30 per started minute, retired 2026-10-25; kept so a ledger replay
+ *                  prices an old row as it was billed.
  */
 export const VOICE_MINUTE_PRICE_PAISE = 3000;
+export const VOICE_AI_USD_PER_MILLION = { audioIn: 3, textIn: 0.5, audioOut: 12, textOut: 2 };
+export const VOICE_AI_INR_PER_USD = 84;
+export const VOICE_AI_TRAINING_MULTIPLIER = 1.5;
+export const VOICE_AI_LIVE_MULTIPLIER = 2.4;
+
+/** Google's cost of one call in paise, from its token usage (rounded up). */
+export function voiceAiCostPaise(usage) {
+  const u = usage && typeof usage === 'object' ? usage : {};
+  const n = (k) => Math.max(0, Math.round(Number(u[k]) || 0));
+  const usd =
+    (n('audioIn') * VOICE_AI_USD_PER_MILLION.audioIn + n('textIn') * VOICE_AI_USD_PER_MILLION.textIn + n('audioOut') * VOICE_AI_USD_PER_MILLION.audioOut + n('textOut') * VOICE_AI_USD_PER_MILLION.textOut) /
+    1_000_000;
+  return Math.ceil(usd * VOICE_AI_INR_PER_USD * 100);
+}
+
+/** What the customer pays for one call, in paise. */
+export function voiceAiCallPricePaise(usage, training) {
+  return Math.ceil(voiceAiCostPaise(usage) * (training ? VOICE_AI_TRAINING_MULTIPLIER : VOICE_AI_LIVE_MULTIPLIER));
+}
