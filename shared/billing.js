@@ -753,7 +753,8 @@ export function opsWatchDayPricePaise(dateKey) {
   // Hash of the day → one rupee value in [MIN, MAX]; the same function the runner uses to predict its line.
   let h = 0;
   const s = `ops_watch_day:${String(dateKey || '')}`;
-  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h ^ s.charCodeAt(i), 16777619)) >>> 0; // FNV-1a
+  h ^= h >>> 16; h = Math.imul(h, 0x45d9f3b) >>> 0; h ^= h >>> 16; // mix, so neighbouring dates do not step by ₹1
   const steps = (OPS_WATCH_DAY_MAX_PRICE_PAISE - OPS_WATCH_DAY_MIN_PRICE_PAISE) / 100 + 1; // 56 rupee values
   return OPS_WATCH_DAY_MIN_PRICE_PAISE + (h % steps) * 100;
 }
