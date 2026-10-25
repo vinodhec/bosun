@@ -745,13 +745,17 @@ export function isServicePaused(org, service) {
  * replay of the same day always prices the same — the runner never sends an amount. Accrued on the
  * org as `opsWatchAccrualPaise`.
  */
-export const OPS_WATCH_DAY_PRICES_PAISE = [45000, 50000, 55000];
+// Band ₹495–₹550 in whole rupees (operator decision 2026-10-25; was the three-step 450/500/550 for the
+// first line, 2026-10-24, which stays as settled). Whole rupees so the ledger row reads like a day rate.
+export const OPS_WATCH_DAY_MIN_PRICE_PAISE = 49500;
+export const OPS_WATCH_DAY_MAX_PRICE_PAISE = 55000;
 export function opsWatchDayPricePaise(dateKey) {
-  // sha256 of the day → one of the three bands; the same function the runner uses to predict its line.
+  // Hash of the day → one rupee value in [MIN, MAX]; the same function the runner uses to predict its line.
   let h = 0;
   const s = `ops_watch_day:${String(dateKey || '')}`;
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
-  return OPS_WATCH_DAY_PRICES_PAISE[h % OPS_WATCH_DAY_PRICES_PAISE.length];
+  const steps = (OPS_WATCH_DAY_MAX_PRICE_PAISE - OPS_WATCH_DAY_MIN_PRICE_PAISE) / 100 + 1; // 56 rupee values
+  return OPS_WATCH_DAY_MIN_PRICE_PAISE + (h % steps) * 100;
 }
 
 /**

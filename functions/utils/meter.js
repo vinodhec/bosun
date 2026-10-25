@@ -98,7 +98,7 @@ export const SERVICE_DEFS = {
   // Ops watch (2026-10-24): one event per IST day from the customer's ops-host runner, priced by
   // the date itself (banded-flat 450/500/550, shared/billing.js) — `priceFor` wins over pricePaise.
   ops_watch_day: {
-    pricePaise: 50000,
+    pricePaise: 52500,
     priceFor: (idempotencyKey) => opsWatchDayPricePaise(idempotencyKey),
     accrualField: 'opsWatchAccrualPaise',
     kind: 'ops_watch',
