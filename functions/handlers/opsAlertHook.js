@@ -106,6 +106,18 @@ export const opsAlertHook = onRequest({ region: REGION, cors: false, memory: '25
     return;
   }
 
+  // Vercel signs every webhook: x-vercel-signature = HMAC-SHA1 hex of the raw body with the webhook secret.
+  // When the org has stored that secret (orgSecrets.opsWatch.vercelWebhookSecret) the signature is REQUIRED
+  // for source=vercel, so a leaked URL token alone cannot forge a spend alert.
+  if (source === 'vercel' && ops.vercelWebhookSecret) {
+    const expected = crypto.createHmac('sha1', String(ops.vercelWebhookSecret)).update(raw).digest('hex');
+    if (!tokenOk(req.get('x-vercel-signature'), expected)) {
+      logReject('opsAlertHook', { orgId, status: 401, reason: req.get('x-vercel-signature') ? 'vercel-signature-mismatch' : 'missing-vercel-signature', extra: { source } });
+      res.status(401).json({ error: 'unauthorised' });
+      return;
+    }
+  }
+
   let body;
   try { body = raw ? JSON.parse(raw) : {}; } catch { body = { raw: raw.slice(0, 4000) }; }
   const summary = summarise(source, body).slice(0, 500);

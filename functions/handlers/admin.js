@@ -636,6 +636,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     //   whatsapp_usage  — outreach-bot delivered messages (₹1.65) + accepted postings (₹3), accrued
     //   assistant_*     — website assistant replies (₹0.50, accrued) and captures (₹5 flat)
     //   reel_*          — listing reels made from inside the assistant (₹55 photo / ₹90 animated)
+    //   ops_watch       — cost guard / auto-block / flow checks on the ops host (one per IST day)
     //
     // KEEP THIS LIST AND `LANES` IN STEP. They were allowed to drift once: assistant_message and
     // assistant_outcome were added to LANES but not here, so both lanes rendered a confident ₹0
@@ -645,7 +646,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
       .where('kind', 'in', [
         'sourcing', 'selfpost_compose', 'autopost_usage', 'daily_plan', 'whatsapp_usage',
         'conversion_popup', 'assistant_message', 'assistant_outcome', 'reel_photo', 'reel_animated',
-        'buyer_check', 'buyer_check_deep',
+        'buyer_check', 'buyer_check_deep', 'ops_watch',
       ])
       .get(),
     // Waived meter events (testing / goodwill pause): recorded but never debited — the reconcilable
@@ -847,6 +848,7 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
     reel_animated: { label: 'Listing reels — animated', unit: 'reel', pricePaise: REEL_ANIMATED_PRICE_PAISE },
     buyer_check: { label: 'Buyer checks', unit: 'check', pricePaise: BUYER_CHECK_PRICE_PAISE },
     buyer_check_deep: { label: 'Buyer checks — deep', unit: 'check', pricePaise: BUYER_CHECK_DEEP_PRICE_PAISE },
+    ops_watch: { label: 'Ops watch (guard)', unit: 'day', pricePaise: null }, // priced by the date, ₹450–600
   };
   const laneBlank = () => ({
     revenueInr: 0, units: 0, txns: 0,
@@ -890,9 +892,11 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
   let reelAnimatedAccrualPaise = 0;
   let buyerCheckAccrualPaise = 0;
   let buyerCheckDeepAccrualPaise = 0;
+  let opsWatchAccrualPaise = 0;
   for (const o of orgsSnap.docs) {
     buyerCheckAccrualPaise += Number(o.data().buyerCheckAccrualPaise) || 0;
     buyerCheckDeepAccrualPaise += Number(o.data().buyerCheckDeepAccrualPaise) || 0;
+    opsWatchAccrualPaise += Number(o.data().opsWatchAccrualPaise) || 0;
     reelPhotoAccrualPaise += Number(o.data().reelPhotoAccrualPaise) || 0;
     reelAnimatedAccrualPaise += Number(o.data().reelAnimatedAccrualPaise) || 0;
     assistantAccrualPaise += Number(o.data().assistantAccrualPaise) || 0;
@@ -927,7 +931,8 @@ export const adminMetrics = onCall({ region: REGION }, async (request) => {
         : kind === 'reel_photo' ? reelPhotoAccrualPaise / 100
         : kind === 'reel_animated' ? reelAnimatedAccrualPaise / 100
         : kind === 'buyer_check' ? buyerCheckAccrualPaise / 100
-        : kind === 'buyer_check_deep' ? buyerCheckDeepAccrualPaise / 100 : 0,
+        : kind === 'buyer_check_deep' ? buyerCheckDeepAccrualPaise / 100
+        : kind === 'ops_watch' ? opsWatchAccrualPaise / 100 : 0,
       byOrg: [...a.byOrg.values()].sort((x, y) => y.revenueInr - x.revenueInr),
     };
   });

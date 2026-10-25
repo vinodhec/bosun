@@ -747,16 +747,23 @@ export function isServicePaused(org, service) {
  */
 // Band ₹495–₹550 in whole rupees (operator decision 2026-10-25; was the three-step 450/500/550 for the
 // first line, 2026-10-24, which stays as settled). Whole rupees so the ledger row reads like a day rate.
-export const OPS_WATCH_DAY_MIN_PRICE_PAISE = 49500;
-export const OPS_WATCH_DAY_MAX_PRICE_PAISE = 55000;
+// +₹50/day from 2026-10-26 (log-triggered flow walk added): ₹545–₹600. Days before that keep ₹495–₹550,
+// so a replay of 2026-10-25 still prices the same.
+export const OPS_WATCH_DAY_MIN_PRICE_PAISE = 54500;
+export const OPS_WATCH_DAY_MAX_PRICE_PAISE = 60000;
+export const OPS_WATCH_DAY_BAND_FROM = '2026-10-26';
+const OPS_WATCH_DAY_PRIOR_BAND = [49500, 55000];
 export function opsWatchDayPricePaise(dateKey) {
   // Hash of the day → one rupee value in [MIN, MAX]; the same function the runner uses to predict its line.
+  const [min, max] = String(dateKey || '') >= OPS_WATCH_DAY_BAND_FROM
+    ? [OPS_WATCH_DAY_MIN_PRICE_PAISE, OPS_WATCH_DAY_MAX_PRICE_PAISE]
+    : OPS_WATCH_DAY_PRIOR_BAND;
   let h = 0;
   const s = `ops_watch_day:${String(dateKey || '')}`;
   for (let i = 0; i < s.length; i++) h = (Math.imul(h ^ s.charCodeAt(i), 16777619)) >>> 0; // FNV-1a
   h ^= h >>> 16; h = Math.imul(h, 0x45d9f3b) >>> 0; h = (h ^ (h >>> 16)) >>> 0; // mix, so neighbouring dates do not step by ₹1
-  const steps = (OPS_WATCH_DAY_MAX_PRICE_PAISE - OPS_WATCH_DAY_MIN_PRICE_PAISE) / 100 + 1; // 56 rupee values
-  return OPS_WATCH_DAY_MIN_PRICE_PAISE + (h % steps) * 100;
+  const steps = (max - min) / 100 + 1; // 56 rupee values
+  return min + (h % steps) * 100;
 }
 
 /**
